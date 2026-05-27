@@ -1,38 +1,34 @@
 # TAREAS_PENDIENTES.md — HermesAI Flow
 > Backlog activo del proyecto. Actualizar al inicio y fin de cada sesión.
 
-**Última actualización:** 26 Mayo 2026  
-**Fase actual:** F0 — Fundaciones (commit inicial listo, pendiente Supabase)
+**Última actualización:** 27 Mayo 2026  
+**Fase actual:** F0 completado — pendiente debug login + deploy Netlify
 
 ---
 
-## 🔴 PRÓXIMA SESIÓN — Prioridad Máxima
+## 🔴 AGENDA PRÓXIMA SESIÓN (27 Mayo 2026)
 
-### PASO 1 — Crear proyecto Supabase (5 min — tú)
-- [ ] Ir a supabase.com → New Project
-- [ ] Nombre: `hermesai-flow`
-- [ ] Región: la más cercana (us-east-1 o similar)
-- [ ] Copiar **URL** y **Anon Key** al archivo `.env.local`
-- [ ] Ejecutar `database/schema.sql` en SQL Editor
-- [ ] Ejecutar `database/policies/rls_policies.sql` en SQL Editor
-- [ ] Confirmar que las 6 tablas se crearon sin error
+### PASO 1 — 🐛 Debug error de login (BLOQUEANTE)
+- [ ] Identificar el error exacto (copiar mensaje completo de consola del navegador)
+- [ ] Verificar que el perfil en `public.profiles` tiene el `id` correcto (debe coincidir con `auth.users.id`)
+- [ ] Verificar que `organization_id` en el perfil no es null
+- [ ] Verificar que la política RLS `profiles_read_own_org` permite SELECT al usuario
+- [ ] Si es error 406/PGRST: verificar que `.single()` encuentra exactamente 1 fila
+- [ ] Fix y validar login exitoso
 
-### PASO 2 — Conectar frontend a Supabase (Claude)
-- [ ] Crear `src/core/supabase.ts` — cliente singleton
-- [ ] Crear `src/core/user.types.ts` — tipos User, Role, Organization
-- [ ] Crear `src/core/auth.service.ts` — login, logout, getCurrentUser, syncSession
-- [ ] Crear login UI (`src/modules/iam/LoginView.tsx`) — two-panel dark, branding HermesAI
-- [ ] Crear `src/core/auth.guard.ts` — protección de rutas por rol
+### PASO 2 — Deploy Netlify
+- [ ] Crear sitio en Netlify → conectar repo `hermeshs34/Hermesai-flow`
+- [ ] Agregar variables de entorno en Netlify Dashboard:
+  - `VITE_SUPABASE_URL` = `https://kbscaxcokxwdbnrltkup.supabase.co`
+  - `VITE_SUPABASE_ANON_KEY` = (la anon key)
+  - `VITE_APP_ENV` = `production`
+- [ ] Verificar build exitoso y URL pública funcionando
 
-### PASO 3 — Refactorizar WorkflowService (Claude)
-- [ ] Reemplazar `WorkflowService` (localStorage) → queries Supabase con `organization_id`
-- [ ] Migrar `workflowStore.ts` para usar el nuevo servicio
-- [ ] Validar que canvas guarda/carga flujos desde Supabase
-
-### PASO 4 — Deploy Netlify inicial (Claude + tú)
-- [ ] Crear sitio en Netlify apuntando al repo GitHub
-- [ ] Configurar variables de entorno en Netlify Dashboard
-- [ ] Verificar build exitoso
+### PASO 3 — Validar flujo completo post-login
+- [ ] Login → Dashboard carga sin errores
+- [ ] Crear flujo de prueba → se guarda en Supabase (no localStorage)
+- [ ] Cerrar sesión → vuelve al login
+- [ ] Refrescar página autenticado → syncSession() mantiene sesión
 
 ---
 
