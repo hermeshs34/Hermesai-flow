@@ -1,43 +1,41 @@
 
-import { 
-  LayoutDashboard, 
-  Workflow, 
-  Activity, 
+import {
+  LayoutDashboard,
+  Workflow,
+  Activity,
   Settings as SettingsIcon,
-  Database,
   Zap,
   ChevronRight,
-  HelpCircle
+  LogOut,
 } from 'lucide-react';
 import type { ViewType } from '../App';
+import type { User } from '../core/user.types';
 
 interface SidebarProps {
   currentView: ViewType;
   onViewChange: (view: ViewType) => void;
   onShowTutorial?: () => void;
+  currentUser?: User;
+  onLogout?: () => void;
 }
 
-export function Sidebar({ currentView, onViewChange, onShowTutorial }: SidebarProps) {
+export function Sidebar({ currentView, onViewChange, onShowTutorial: _onShowTutorial, currentUser, onLogout }: SidebarProps) {
   const menuItems = [
-    { id: 'dashboard' as ViewType, label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'canvas' as ViewType, label: 'Constructor de Flujos', icon: Workflow },
-    { id: 'monitoring' as ViewType, label: 'Monitoreo', icon: Activity },
-    { id: 'migration' as ViewType, label: 'Migración DB', icon: Database },
-    { id: 'settings' as ViewType, label: 'Configuración', icon: SettingsIcon },
+    { id: 'dashboard'  as ViewType, label: 'Dashboard',           icon: LayoutDashboard },
+    { id: 'canvas'     as ViewType, label: 'Constructor de Flujos', icon: Workflow },
+    { id: 'monitoring' as ViewType, label: 'Monitoreo',            icon: Activity },
+    { id: 'settings'   as ViewType, label: 'Configuración',        icon: SettingsIcon },
   ];
 
   return (
     <div className="w-64 bg-white border-r border-gray-200 flex flex-col">
-      <div className="p-6 border-b border-gray-200">
+      <div className="p-4 border-b border-gray-200">
         <div className="flex items-center space-x-2">
-          <div className="w-8 h-8 bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg flex items-center justify-center">
-            <Zap className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold text-gray-900">FlowMaster</h1>
-            <p className="text-xs text-gray-500">Automatización IA</p>
-          </div>
+          <img src="/hermesai-logo.svg" alt="HermesAI Flow" className="h-8 w-auto" />
         </div>
+        <p className="text-xs text-gray-400 mt-1 flex items-center gap-1">
+          <Zap className="w-3 h-3" /> Hub de Automatización
+        </p>
       </div>
 
       <nav className="flex-1 p-4">
@@ -67,21 +65,21 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial }: SidebarPr
       </nav>
 
       <div className="p-4 border-t border-gray-200 space-y-3">
-        {onShowTutorial && (
+        {currentUser && (
+          <div className="px-3 py-2">
+            <p className="text-xs font-semibold text-gray-500 truncate">{currentUser.name}</p>
+            <p className="text-xs text-gray-400 truncate">{currentUser.email}</p>
+          </div>
+        )}
+        {onLogout && (
           <button
-            onClick={onShowTutorial}
-            className="w-full flex items-center space-x-3 px-3 py-2 rounded-lg text-left transition-colors text-gray-700 hover:bg-gray-100 border border-gray-200"
+            onClick={onLogout}
+            className="w-full flex items-center space-x-3 px-3 py-2 rounded-lg text-left transition-colors text-gray-700 hover:bg-red-50 hover:text-red-600"
           >
-            <HelpCircle className="w-5 h-5" />
-            <span className="font-medium">Tutorial</span>
+            <LogOut className="w-5 h-5" />
+            <span className="font-medium">Cerrar Sesión</span>
           </button>
         )}
-        
-        <div className="bg-gradient-to-r from-blue-50 to-purple-50 p-3 rounded-lg border border-blue-200">
-          <p className="text-sm font-medium text-gray-800">Flujos Activos</p>
-          <p className="text-2xl font-bold text-blue-600">12</p>
-          <p className="text-xs text-gray-600">ejecutándose ahora</p>
-        </div>
       </div>
     </div>
   );
