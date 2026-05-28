@@ -50,14 +50,51 @@ function topologicalSort(nodes: any[], connections: any[]): any[] {
 
 // ── Resolución de valores de contexto ───────────────────────────────────────
 function resolveValue(expr: string, context: Record<string, any>): any {
-    if (!expr || !expr.startsWith('{{')) return expr;
-    const path = expr.replace('{{', '').replace('}}', '').trim();
-    const parts = path.split('.');
-    let val: any = context;
-    for (const p of parts) {
-        val = val?.[p];
+    if (!expr) return expr;
+
+    // Reemplazar todas las expresiones {{...}} dentro de una cadena
+    if (expr.includes('{{')) {
+        return expr.replace(/\{\{([^}]+)\}\}/g, (_, rawPath) => {
+            const path = rawPath.trim();
+
+            // {{summary}} → tabla HTML con todos los datos del contexto
+            if (path === 'summary') return buildContextSummary(context);
+
+            // {{previous.campo}} → último nodo ejecutado
+            if (path.startsWith('previous.')) {
+                const field = path.slice(9);
+                const nodeIds = Object.keys(context).filter(k => k !== '__lastNodeId');
+                const lastId  = nodeIds[nodeIds.length - 1];
+                return lastId ? (context[lastId]?.[field] ?? '') : '';
+            }
+
+            const parts = path.split('.');
+            let val: any = context;
+            for (const p of parts) val = val?.[p];
+            return val ?? '';
+        });
     }
-    return val;
+
+    return expr;
+}
+
+// ── Resumen HTML del contexto para emails ────────────────────────────────────
+function buildContextSummary(context: Record<string, any>): string {
+    const rows = Object.entries(context)
+        .filter(([k]) => k !== '__lastNodeId')
+        .map(([, v]) => {
+            if (typeof v !== 'object' || v === null) return '';
+            return Object.entries(v)
+                .filter(([k]) => !['skipped', 'triggered'].includes(k))
+                .map(([k, val]) => {
+                    const label = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                    return `<tr><td style="padding:6px 12px;color:#6b7280;font-size:13px">${label}</td><td style="padding:6px 12px;font-weight:600;font-size:13px">${val}</td></tr>`;
+                }).join('');
+        }).join('');
+
+    return rows
+        ? `<table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:8px;overflow:hidden">${rows}</table>`
+        : '<p style="color:#9ca3af">Sin datos disponibles</p>';
 }
 
 // ── Ejecutor de nodo individual ──────────────────────────────────────────────
@@ -80,11 +117,25 @@ async function executeNode(
         // ── Email (Resend) ────────────────────────────────────────────────
         case 'output:email': {
             if (!deps.resendKey) throw new Error('RESEND_API_KEY no configurado en Supabase Secrets');
-            const to      = resolveValue(cfg.to, context);
-            const subject = resolveValue(cfg.subject, context) ?? 'Notificación HermesAI Flow';
-            const body    = resolveValue(cfg.body, context)    ?? '';
+            const to      = resolveValue(cfg.to ?? '', context);
+            const subject = resolveValue(cfg.subject ?? 'Notificación HermesAI Flow', context);
+            let   body    = resolveValue(cfg.body ?? '', context);
 
             if (!to) throw new Error('Nodo Email: campo "to" requerido');
+
+            // Si no hay cuerpo configurado, generar uno automático con todos los datos del flujo
+            if (!body || body.trim() === '') {
+                body = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+  <div style="background:#1e3a5f;padding:24px;border-radius:8px 8px 0 0">
+    <h2 style="color:#fff;margin:0;font-size:18px">📋 Resultado del Flujo — HermesAI Flow</h2>
+  </div>
+  <div style="padding:24px;background:#f8fafc">
+    <p style="color:#374151;font-size:14px">El flujo se completó exitosamente. Datos obtenidos:</p>
+    ${buildContextSummary(context)}
+    <p style="color:#9ca3af;font-size:11px;margin-top:20px">Generado automáticamente · HermesAI Flow</p>
+  </div>
+</div>`;
+            }
 
             const res = await fetch('https://api.resend.com/emails', {
                 method:  'POST',
@@ -93,10 +144,10 @@ async function executeNode(
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    from:    cfg.from   ?? 'HermesAI Flow <onboarding@resend.dev>',
+                    from:    cfg.from ?? 'HermesAI Flow <onboarding@resend.dev>',
                     to:      [to],
                     subject,
-                    html:    `<div style="font-family:sans-serif;max-width:600px">${body}</div>`,
+                    html:    body,
                 }),
             });
             if (!res.ok) {

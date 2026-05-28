@@ -124,7 +124,43 @@ function ManualTriggerForm() {
     );
 }
 
+const BCV_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff">
+  <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);padding:32px 24px;border-radius:12px 12px 0 0;text-align:center">
+    <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700">📊 Informe Diario — Tasa BCV</h1>
+    <p style="color:#93c5fd;margin:8px 0 0;font-size:14px">Generado automáticamente por HermesAI Flow</p>
+  </div>
+  <div style="padding:28px 24px;background:#f8fafc">
+    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden">
+      <tr style="background:#eff6ff">
+        <td style="padding:14px 18px;font-size:13px;color:#64748b;font-weight:600;width:50%">Tasa BCV Oficial (USD)</td>
+        <td style="padding:14px 18px;font-size:20px;font-weight:700;color:#1e40af">Bs. {{previous.bcv_rate}}</td>
+      </tr>
+      <tr>
+        <td style="padding:14px 18px;font-size:13px;color:#64748b;font-weight:600">Fuente</td>
+        <td style="padding:14px 18px;font-size:13px;color:#374151">{{previous.source}}</td>
+      </tr>
+      <tr style="background:#eff6ff">
+        <td style="padding:14px 18px;font-size:13px;color:#64748b;font-weight:600">Fecha y hora</td>
+        <td style="padding:14px 18px;font-size:13px;color:#374151">{{previous.timestamp}}</td>
+      </tr>
+    </table>
+    <div style="margin-top:20px;padding:14px 18px;background:#fef3c7;border-left:4px solid #f59e0b;border-radius:0 8px 8px 0">
+      <p style="margin:0;font-size:13px;color:#92400e">
+        <strong>Nota:</strong> Esta tasa es referencial. Verificar siempre con la fuente oficial del BCV antes de operaciones cambiarias.
+      </p>
+    </div>
+  </div>
+  <div style="padding:16px 24px;background:#1e3a5f;border-radius:0 0 12px 12px;text-align:center">
+    <p style="margin:0;font-size:11px;color:#93c5fd">HermesAI Flow · Automatización Inteligente de Procesos</p>
+  </div>
+</div>`;
+
 function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    const applyBcvTemplate = () => {
+        set('subject', '📊 Tasa BCV del día — {{previous.bcv_rate}} Bs/USD');
+        set('body', BCV_TEMPLATE);
+    };
+
     return (
         <div className="space-y-4">
             <Field label="Para (destinatario)" hint="Email de quien recibirá el mensaje">
@@ -133,17 +169,30 @@ function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void })
             <Field label="Asunto">
                 <Input value={cfg.subject ?? ''} onChange={v => set('subject', v)} placeholder="Alerta desde HermesAI Flow" />
             </Field>
-            <Field label="Cuerpo del mensaje" hint="Puedes usar variables de nodos anteriores: {{id_nodo.campo}}">
+            <div>
+                <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-semibold text-gray-700">Cuerpo del mensaje</label>
+                    <button
+                        type="button"
+                        onClick={applyBcvTemplate}
+                        className="text-xs px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg transition-colors font-medium"
+                    >
+                        📊 Usar plantilla BCV
+                    </button>
+                </div>
                 <Textarea value={cfg.body ?? ''} onChange={v => set('body', v)}
-                    placeholder="Hola,&#10;&#10;Este es un mensaje automático de HermesAI Flow.&#10;&#10;Tasa BCV hoy: {{bcv.bcv_rate}}"
-                    rows={5} />
-            </Field>
-            <Field label="Remitente (opcional)" hint="Dejar vacío usa: HermesAI Flow <noreply@hermesai.io>">
+                    placeholder="Hola,&#10;&#10;Tasa BCV hoy: {{previous.bcv_rate}}&#10;&#10;O usa el botón 'Plantilla BCV' arriba para un diseño profesional."
+                    rows={6} />
+                <p className="text-xs text-gray-400 mt-1">
+                    Variables disponibles: <code className="bg-gray-100 px-1 rounded">{'{{previous.bcv_rate}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{previous.timestamp}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{summary}}'}</code>
+                </p>
+            </div>
+            <Field label="Remitente (opcional)" hint="Dejar vacío usa: HermesAI Flow <onboarding@resend.dev>">
                 <Input value={cfg.from ?? ''} onChange={v => set('from', v)} placeholder="Mi Empresa <alertas@miempresa.com>" />
             </Field>
             <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-700">
                 <Info className="w-3.5 h-3.5 inline mr-1" />
-                El envío usa <strong>Resend API</strong>. Asegúrate de que el secret <code>RESEND_API_KEY</code> esté configurado en Supabase → Settings → Edge Functions.
+                El envío usa <strong>Resend API</strong>. Secret <code>RESEND_API_KEY</code> debe estar en Supabase → Settings → Edge Functions.
             </div>
         </div>
     );
