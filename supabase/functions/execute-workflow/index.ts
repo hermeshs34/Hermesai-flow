@@ -93,7 +93,7 @@ async function executeNode(
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    from:    cfg.from   ?? 'HermesAI Flow <noreply@hermesai.io>',
+                    from:    cfg.from   ?? 'HermesAI Flow <onboarding@resend.dev>',
                     to:      [to],
                     subject,
                     html:    `<div style="font-family:sans-serif;max-width:600px">${body}</div>`,
