@@ -1,185 +1,225 @@
-import React, { useState, useRef } from 'react';
-import { Mail, Globe, Database, Brain, FileText, Trash2, Settings } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import {
+    Mail, Clock, Zap, GitBranch, FileText, Timer,
+    Shield, TrendingUp, Bell, Package, UserCheck,
+    Database, Play, AlertTriangle, Settings, Trash2,
+    CheckCircle, AlertCircle, RefreshCw,
+} from 'lucide-react';
 import type { WorkflowNodeData } from '../types/workflow';
 
 interface WorkflowNodeProps {
-  node: WorkflowNodeData;
-  isSelected: boolean;
-  onSelect: () => void;
-  onMove: (nodeId: string, newPosition: { x: number; y: number }) => void;
-  onDelete: (nodeId: string) => void;
-  onConnectionStart?: (nodeId: string) => void;
-  onConnectionEnd?: (nodeId: string) => void;
-  onConfigure?: (nodeId: string) => void;
+    node:               WorkflowNodeData;
+    isSelected:         boolean;
+    isConnecting:       boolean;   // este nodo es el origen de una conexión activa
+    canBeTarget:        boolean;   // hay una conexión activa y este puede ser destino
+    onSelect:           () => void;
+    onMove:             (nodeId: string, pos: { x: number; y: number }) => void;
+    onDelete:           (nodeId: string) => void;
+    onConnectionStart?: (nodeId: string) => void;
+    onConnectionEnd?:   (nodeId: string) => void;
+    onConfigure?:       (nodeId: string) => void;
 }
 
-export function WorkflowNode({ node, isSelected, onSelect, onMove, onDelete, onConnectionStart, onConnectionEnd, onConfigure }: WorkflowNodeProps) {
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const nodeRef = useRef<HTMLDivElement>(null);
+const ICON_MAP: Record<string, React.ComponentType<any>> = {
+    cron:         Clock,
+    manual:       Play,
+    webhook:      Zap,
+    email:        Mail,
+    decision:     GitBranch,
+    log:          FileText,
+    delay:        Timer,
+    bcv:          TrendingUp,
+    riskguard:    AlertTriangle,
+    aml:          Shield,
+    notificacion: Bell,
+    inventario:   Package,
+    aprobacion:   UserCheck,
+    erp:          Database,
+};
 
-  const getNodeIcon = () => {
-    switch (node.category) {
-      case 'email': return Mail;
-      case 'web': return Globe;
-      case 'ai': return Brain;
-      case 'excel': return FileText;
-      case 'crm': return Database;
-      default: return Settings;
-    }
-  };
+const TYPE_STYLES: Record<string, { border: string; header: string; dot: string }> = {
+    trigger:   { border: 'border-green-300',  header: 'bg-green-50  text-green-800',  dot: 'bg-green-500'  },
+    processor: { border: 'border-blue-300',   header: 'bg-blue-50   text-blue-800',   dot: 'bg-blue-500'   },
+    output:    { border: 'border-orange-300', header: 'bg-orange-50 text-orange-800', dot: 'bg-orange-400' },
+};
 
-  const getNodeColor = () => {
-    switch (node.type) {
-      case 'trigger': return 'bg-green-100 border-green-300 text-green-800';
-      case 'processor': return 'bg-blue-100 border-blue-300 text-blue-800';
-      case 'output': return 'bg-orange-100 border-orange-300 text-orange-800';
-      default: return 'bg-gray-100 border-gray-300 text-gray-800';
-    }
-  };
+const TYPE_LABEL: Record<string, string> = {
+    trigger: 'Trigger', processor: 'Proceso', output: 'Salida',
+};
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (!nodeRef.current) return;
-    
-    const rect = nodeRef.current.getBoundingClientRect();
-    setDragOffset({
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    });
-    setIsDragging(true);
-    onSelect();
-    e.preventDefault();
-  };
+const STATUS_EL: Record<string, React.ReactNode> = {
+    success: <span className="flex items-center gap-1 text-green-600"><CheckCircle className="w-3 h-3" />Completado</span>,
+    error:   <span className="flex items-center gap-1 text-red-600"><AlertCircle className="w-3 h-3" />Error</span>,
+    running: <span className="flex items-center gap-1 text-blue-600"><RefreshCw className="w-3 h-3 animate-spin" />Ejecutando</span>,
+    idle:    <span className="text-gray-400">○ Inactivo</span>,
+};
 
-  const handleMouseMove = (e: MouseEvent) => {
-    if (!isDragging || !nodeRef.current?.parentElement) return;
+export function WorkflowNode({
+    node, isSelected, isConnecting, canBeTarget,
+    onSelect, onMove, onDelete, onConnectionStart, onConnectionEnd, onConfigure,
+}: WorkflowNodeProps) {
+    const [isDragging, setIsDragging] = useState(false);
+    const dragOffset = useRef({ x: 0, y: 0 });
+    const nodeRef    = useRef<HTMLDivElement>(null);
 
-    const parentRect = nodeRef.current.parentElement.getBoundingClientRect();
-    const newX = e.clientX - parentRect.left - dragOffset.x;
-    const newY = e.clientY - parentRect.top - dragOffset.y;
+    const styles = TYPE_STYLES[node.type] ?? TYPE_STYLES.processor;
+    const Icon   = ICON_MAP[node.category] ?? Settings;
 
-    onMove(node.id, { x: Math.max(0, newX), y: Math.max(0, newY) });
-  };
+    // ── Drag ────────────────────────────────────────────────────────────────
+    const handleMouseDown = (e: React.MouseEvent) => {
+        if ((e.target as HTMLElement).closest('[data-handle]')) return;
+        if (!nodeRef.current) return;
+        const rect = nodeRef.current.getBoundingClientRect();
+        dragOffset.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        setIsDragging(true);
+        onSelect();
+        e.preventDefault();
+        e.stopPropagation();
+    };
 
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
+    useEffect(() => {
+        if (!isDragging) return;
+        const onMove_ = (e: MouseEvent) => {
+            const parent = nodeRef.current?.parentElement;
+            if (!parent) return;
+            const pr = parent.getBoundingClientRect();
+            onMove(node.id, {
+                x: Math.max(0, e.clientX - pr.left - dragOffset.current.x),
+                y: Math.max(0, e.clientY - pr.top  - dragOffset.current.y),
+            });
+        };
+        const onUp = () => setIsDragging(false);
+        document.addEventListener('mousemove', onMove_);
+        document.addEventListener('mouseup',   onUp);
+        return () => {
+            document.removeEventListener('mousemove', onMove_);
+            document.removeEventListener('mouseup',   onUp);
+        };
+    }, [isDragging, node.id, onMove]);
 
-  React.useEffect(() => {
-    if (isDragging) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-      
-      return () => {
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
-      };
-    }
-  }, [isDragging, dragOffset]);
-
-  const Icon = getNodeIcon();
-
-  return (
-    <div
-      ref={nodeRef}
-      className={`absolute w-48 bg-white rounded-lg border-2 shadow-lg cursor-move select-none transition-all duration-200 ${
-        getNodeColor()
-      } ${isSelected ? 'ring-2 ring-blue-500 ring-offset-2' : ''} ${
-        isDragging ? 'scale-105 shadow-xl' : 'hover:shadow-md'
-      }`}
-      style={{
-        left: node.position.x,
-        top: node.position.y,
-        zIndex: isSelected ? 10 : 1
-      }}
-      onMouseDown={handleMouseDown}
-    >
-      {/* Node Header */}
-      <div className="flex items-center justify-between p-3 border-b border-gray-200">
-        <div className="flex items-center space-x-2">
-          <Icon className="w-5 h-5" />
-          <span className="font-medium text-sm">{node.title}</span>
-        </div>
-        <div className="flex items-center space-x-1">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onConfigure?.(node.id);
-            }}
-            className="text-gray-400 hover:text-blue-500 transition-colors"
-            title="Configurar nodo"
-          >
-            <Settings className="w-4 h-4" />
-          </button>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(node.id);
-            }}
-            className="text-gray-400 hover:text-red-500 transition-colors"
-            title="Eliminar nodo"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
-
-      {/* Node Body */}
-      <div className="p-3">
-        <div className="text-xs text-gray-600 mb-2">
-          ID: {node.id.split('-').pop()}
-        </div>
-        <div className="text-xs text-gray-600 mb-2">
-          {node.type === 'trigger' && 'Disparador'}
-          {node.type === 'processor' && 'Procesador'}
-          {node.type === 'output' && 'Salida'}
-        </div>
-        
-        <div className="text-xs text-gray-500">
-          {node.category === 'email' && 'Monitoreo de correos'}
-          {node.category === 'web' && 'Extracción web'}
-          {node.category === 'ai' && 'Procesamiento IA'}
-          {node.category === 'logic' && 'Lógica condicional'}
-          {node.category === 'excel' && 'Exportar a Excel'}
-          {node.category === 'crm' && 'Integración CRM'}
-        </div>
-        
-        {node.status && (
-          <div className={`text-xs mt-2 px-2 py-1 rounded ${
-            node.status === 'success' ? 'bg-green-100 text-green-800' :
-            node.status === 'error' ? 'bg-red-100 text-red-800' :
-            node.status === 'running' ? 'bg-blue-100 text-blue-800' :
-            'bg-gray-100 text-gray-800'
-          }`}>
-            {node.status === 'success' && '✓ Completado'}
-            {node.status === 'error' && '✗ Error'}
-            {node.status === 'running' && '⟳ Ejecutando'}
-            {node.status === 'idle' && '○ Inactivo'}
-          </div>
-        )}
-      </div>
-
-      {/* Connection Points */}
-      {node.type !== 'output' && (
-        <div 
-          className="absolute -right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 bg-blue-500 rounded-full border-2 border-white shadow cursor-pointer hover:bg-blue-600 transition-colors"
-          onMouseDown={(e) => {
-            e.stopPropagation();
-            onConnectionStart?.(node.id);
-          }}
-          title="Arrastrar para conectar"
-        />
-      )}
-      {node.type !== 'trigger' && (
-        <div 
-          className="absolute -left-2 top-1/2 transform -translate-y-1/2 w-4 h-4 bg-gray-400 rounded-full border-2 border-white shadow cursor-pointer hover:bg-gray-500 transition-colors"
-          onMouseUp={(e) => {
+    // ── Clic en nodo destino durante conexión ─────────────────────────────
+    const handleNodeClick = (e: React.MouseEvent) => {
+        if ((e.target as HTMLElement).closest('[data-handle]')) return;
+        if (canBeTarget) {
             e.stopPropagation();
             onConnectionEnd?.(node.id);
-          }}
-          title="Punto de conexión de entrada"
-        />
-      )}
-    </div>
-  );
+        } else {
+            onSelect();
+        }
+    };
+
+    // ── Borde visual según estado ─────────────────────────────────────────
+    const borderClass = isConnecting
+        ? 'border-indigo-500 ring-2 ring-indigo-300 shadow-indigo-100'
+        : canBeTarget
+        ? 'border-indigo-400 ring-2 ring-indigo-200 shadow-indigo-100 cursor-crosshair'
+        : isSelected
+        ? 'border-indigo-400 ring-2 ring-indigo-200'
+        : `${styles.border} hover:shadow-md`;
+
+    return (
+        <div
+            ref={nodeRef}
+            className={`absolute w-52 bg-white rounded-xl border-2 shadow-md select-none transition-shadow ${borderClass} ${isDragging ? 'shadow-xl scale-105 z-20' : 'z-10'}`}
+            style={{ left: node.position.x, top: node.position.y, cursor: canBeTarget ? 'crosshair' : isDragging ? 'grabbing' : 'grab' }}
+            onMouseDown={handleMouseDown}
+            onClick={handleNodeClick}
+        >
+            {/* Header */}
+            <div className={`flex items-center justify-between px-3 py-2.5 rounded-t-xl ${styles.header}`}>
+                <div className="flex items-center gap-2 min-w-0">
+                    <Icon className="w-4 h-4 flex-shrink-0" />
+                    <span className="text-sm font-semibold truncate">{node.title}</span>
+                </div>
+                <div className="flex items-center gap-1 flex-shrink-0 ml-1" data-handle="actions">
+                    <button
+                        onClick={e => { e.stopPropagation(); onConfigure?.(node.id); }}
+                        className="p-1 rounded hover:bg-black/10 transition-colors"
+                        title="Configurar"
+                    >
+                        <Settings className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                        onClick={e => { e.stopPropagation(); onDelete(node.id); }}
+                        className="p-1 rounded hover:bg-red-200 hover:text-red-700 transition-colors"
+                        title="Eliminar"
+                    >
+                        <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                </div>
+            </div>
+
+            {/* Body */}
+            <div className="px-3 py-2.5">
+                <div className="flex items-center justify-between mb-1.5">
+                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                        node.type === 'trigger'   ? 'bg-green-100  text-green-700'  :
+                        node.type === 'processor' ? 'bg-blue-100   text-blue-700'   :
+                                                    'bg-orange-100 text-orange-700'
+                    }`}>
+                        {TYPE_LABEL[node.type]}
+                    </span>
+                    <span className="text-[10px] text-gray-400">{node.category}</span>
+                </div>
+
+                {/* Config preview */}
+                {node.config?.to && (
+                    <p className="text-[11px] text-gray-500 truncate">→ {node.config.to}</p>
+                )}
+                {node.config?.cron && (
+                    <p className="text-[11px] text-gray-500 font-mono">{node.config.cron}</p>
+                )}
+                {node.config?.message && (
+                    <p className="text-[11px] text-gray-500 truncate italic">"{node.config.message}"</p>
+                )}
+                {node.config?.left && (
+                    <p className="text-[11px] text-gray-500 font-mono truncate">
+                        {node.config.left} {node.config.operator} {node.config.right}
+                    </p>
+                )}
+
+                {/* Status */}
+                <div className="mt-2 text-[11px]">
+                    {STATUS_EL[node.status ?? 'idle']}
+                </div>
+            </div>
+
+            {/* ── Handle salida (derecha) — solo para trigger y processor ── */}
+            {node.type !== 'output' && (
+                <div
+                    data-handle="output"
+                    className={`absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full border-2 border-white shadow-md flex items-center justify-center cursor-pointer transition-transform hover:scale-125 ${styles.dot}`}
+                    title="Clic para iniciar conexión"
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => {
+                        e.stopPropagation();
+                        onConnectionStart?.(node.id);
+                    }}
+                >
+                    <span className="text-white text-[10px] font-bold leading-none">→</span>
+                </div>
+            )}
+
+            {/* ── Handle entrada (izquierda) — solo para processor y output ── */}
+            {node.type !== 'trigger' && (
+                <div
+                    data-handle="input"
+                    className={`absolute -left-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full border-2 border-white shadow-md flex items-center justify-center transition-transform ${
+                        canBeTarget ? 'bg-indigo-500 scale-125 cursor-crosshair' : 'bg-gray-300 cursor-default'
+                    }`}
+                    title={canBeTarget ? 'Clic para conectar aquí' : 'Entrada del nodo'}
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => {
+                        e.stopPropagation();
+                        if (canBeTarget) onConnectionEnd?.(node.id);
+                    }}
+                />
+            )}
+
+            {/* Indicador "destino disponible" */}
+            {canBeTarget && (
+                <div className="absolute inset-0 rounded-xl bg-indigo-500/5 pointer-events-none" />
+            )}
+        </div>
+    );
 }

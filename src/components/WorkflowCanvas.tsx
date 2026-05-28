@@ -391,6 +391,8 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                 key={node.id}
                                 node={node}
                                 isSelected={selectedNode === node.id}
+                                isConnecting={connectingFrom === node.id}
+                                canBeTarget={!!connectingFrom && connectingFrom !== node.id && node.type !== 'trigger'}
                                 onSelect={()   => handleNodeSelect(node.id)}
                                 onMove={handleNodeMove}
                                 onDelete={handleNodeDelete}
