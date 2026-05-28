@@ -222,6 +222,20 @@ async function executeNode(
             return { logged: message, timestamp: new Date().toISOString() };
         }
 
+        // ── Aprobación Humana ─────────────────────────────────────────────
+        case 'processor:aprobacion': {
+            // En Sprint S2: auto-aprueba y registra. Sprint S3 agregará pausa real con token.
+            const approver = cfg.approver ?? 'supervisor';
+            const reason   = resolveValue(cfg.reason ?? 'Requiere revisión manual', context);
+            return {
+                approved:    true,
+                approver,
+                reason,
+                mode:        'auto-approved (Sprint S3 agregará pausa real)',
+                timestamp:   new Date().toISOString(),
+            };
+        }
+
         // ── Siniestro RiskGuard ───────────────────────────────────────────
         case 'trigger:riskguard':
         case 'processor:riskguard': {
@@ -343,12 +357,25 @@ serve(async (req) => {
 
         // 5. Ejecutar nodos en secuencia
         const context: Record<string, any> = {};
+        const skippedNodes = new Set<string>(); // nodos en rama no tomada
         let hasError = false;
         let errorMessage = '';
 
         await addLog(null, 'info', `▶ Flujo "${workflow.name}" iniciado (${sorted.length} nodos)`);
 
         for (const node of sorted) {
+            // Omitir nodos en rama no seleccionada por una Decisión anterior
+            if (skippedNodes.has(node.id)) {
+                await supabase.from('workflow_nodes').update({ status: 'idle' }).eq('id', node.id);
+                await addLog(node.id, 'warning', `↷ Nodo "${node.title}" omitido (rama no activa)`);
+                // Propagar skip a descendientes de este nodo también
+                const connList = connections ?? [];
+                for (const c of connList) {
+                    if (c.source_node_id === node.id) skippedNodes.add(c.target_node_id);
+                }
+                continue;
+            }
+
             const nodeStart = Date.now();
             try {
                 await supabase
@@ -361,8 +388,23 @@ serve(async (req) => {
                     resendKey: RESEND_API_KEY,
                 });
 
-                context[node.id]   = result;
-                const elapsed      = Date.now() - nodeStart;
+                context[node.id] = result;
+                const elapsed    = Date.now() - nodeStart;
+
+                // Si es un nodo de Decisión, marcar rama perdedora como skipped
+                if (node.category === 'decision' && result.branch) {
+                    const losingBranch = result.branch === 'true' ? 'false' : 'true';
+                    const connList = connections ?? [];
+                    for (const c of connList) {
+                        if (c.source_node_id === node.id && c.branch === losingBranch) {
+                            skippedNodes.add(c.target_node_id);
+                        }
+                    }
+                    await addLog(
+                        node.id, 'info',
+                        `🔀 Decisión: condición ${result.evaluated ? 'VERDADERA' : 'FALSA'} → tomando rama ${result.branch === 'true' ? 'SI ✅' : 'NO ❌'}`
+                    );
+                }
 
                 await supabase
                     .from('workflow_nodes')

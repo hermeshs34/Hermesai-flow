@@ -280,6 +280,24 @@ function DelayForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void })
     );
 }
 
+function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
+                <UserCheck className="w-4 h-4 inline mr-1.5" />
+                El flujo pausará aquí y esperará aprobación manual antes de continuar.
+            </div>
+            <Field label="Aprobador requerido" hint="Rol o nombre del responsable de aprobar">
+                <Input value={cfg.approver ?? ''} onChange={v => set('approver', v)} placeholder="Ej: supervisor, gerente_riesgos" />
+            </Field>
+            <Field label="Motivo / instrucción" hint="Qué debe revisar el aprobador. Acepta variables {{previous.campo}}">
+                <Textarea value={cfg.reason ?? ''} onChange={v => set('reason', v)}
+                    placeholder="Revisar tasa BCV: {{previous.bcv_rate}} Bs/USD antes de continuar." rows={3} />
+            </Field>
+        </div>
+    );
+}
+
 function GenericForm({ cfg, set, nodeTitle }: { cfg: any; set: (k: string, v: any) => void; nodeTitle: string }) {
     return (
         <div className="space-y-4">
@@ -322,8 +340,9 @@ const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, titl
     email:   (c, s)    => <EmailForm cfg={c} set={s} />,
     decision:(c, s)    => <DecisionForm cfg={c} set={s} />,
     log:     (c, s)    => <LogForm cfg={c} set={s} />,
-    bcv:     (c, s)    => <BcvForm cfg={c} set={s} />,
-    delay:   (c, s)    => <DelayForm cfg={c} set={s} />,
+    bcv:        (c, s) => <BcvForm cfg={c} set={s} />,
+    delay:      (c, s) => <DelayForm cfg={c} set={s} />,
+    aprobacion: (c, s) => <AprobacionForm cfg={c} set={s} />,
 };
 
 // ── Componente principal ──────────────────────────────────────────────────────

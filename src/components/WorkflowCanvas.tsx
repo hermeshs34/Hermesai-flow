@@ -195,9 +195,21 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             const tgt = nodes.find(n => n.id === nodeId);
             if (src && tgt && src.type !== 'output' && tgt.type !== 'trigger') {
                 setConnections(prev => {
-                    // Evitar duplicados source→target
                     const exists = prev.some(c => c.sourceId === connectingFrom && c.targetId === nodeId);
                     if (exists) return prev;
+
+                    // Nodo decisión: máx 2 salidas, primera = SI (true), segunda = NO (false)
+                    if (src.category === 'decision') {
+                        const existing = prev.filter(c => c.sourceId === connectingFrom);
+                        if (existing.length >= 2) {
+                            toast.error('Un nodo Decisión solo puede tener 2 salidas: SI y NO');
+                            return prev;
+                        }
+                        const branch = existing.length === 0 ? 'true' : 'false';
+                        toast.info(branch === 'true' ? '✅ Rama SI conectada' : '❌ Rama NO conectada');
+                        return [...prev, { id: crypto.randomUUID(), sourceId: connectingFrom, targetId: nodeId, branch: branch as 'true' | 'false' }];
+                    }
+
                     return [...prev, { id: crypto.randomUUID(), sourceId: connectingFrom, targetId: nodeId }];
                 });
             }

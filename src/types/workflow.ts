@@ -15,6 +15,7 @@ export interface WorkflowConnection {
   id: string;
   sourceId: string;
   targetId: string;
+  branch?: 'true' | 'false'; // solo para nodos decision: rama SI (true) o NO (false)
 }
 
 export interface Workflow {

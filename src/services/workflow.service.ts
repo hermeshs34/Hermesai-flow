@@ -65,6 +65,7 @@ export class WorkflowService {
             id:       c.id,
             sourceId: c.source_node_id,
             targetId: c.target_node_id,
+            branch:   c.branch ?? undefined,
         } as WorkflowConnection));
 
         return workflow;
@@ -173,6 +174,7 @@ export class WorkflowService {
                 workflow_id:    workflowId,
                 source_node_id: c.sourceId,
                 target_node_id: c.targetId,
+                branch:         c.branch ?? null,
             }));
 
         const { error } = await supabase
