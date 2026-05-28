@@ -1,88 +1,89 @@
 # TAREAS_PENDIENTES.md — HermesAI Flow
 > Backlog activo del proyecto. Actualizar al inicio y fin de cada sesión.
 
-**Última actualización:** 28 Mayo 2026  
-**Fase actual:** Sprint S1 completado ✅ — Próximo: S2 (Gateway + Aprobación humana + Conectores)
+**Última actualización:** 28 Mayo 2026 — Fin de sesión  
+**Fase actual:** Sprint S2 completado ✅ — Próximo: S3 (EE.FF. + Indicadores + Plantillas industria)
 
 ---
 
-## ✅ Completado esta sesión (28 Mayo 2026)
+## ✅ Completado hoy (28 Mayo 2026)
 
-- [x] Fix error 54001 — SECURITY DEFINER en helpers RLS (commit 6121ce6)
-- [x] Login funciona correctamente
-- [x] Motor de ejecución — Edge Function `execute-workflow` completa
-- [x] WorkflowCanvas migrado a Supabase (fuera localStorage)
-- [x] Selector de flujos + auto-guardado debounced 1.5s
-- [x] Botón Ejecutar → llama Edge Function → muestra resultado
-- [x] NodePalette: 27 nodos de industria (Seguros/Reaseguros, Banca, Manufactura, Universal)
-- [x] Dashboard: datos reales desde Supabase + Realtime
-- [x] Monitoring: execution_runs + logs por ejecución + Realtime
-- [x] Migración DB: tabla `execution_runs` + RLS
-- [x] Push a GitHub (commit 966c391)
+### Sprint S1
+- [x] Motor de ejecución Edge Function `execute-workflow` (DAG + logging)
+- [x] WorkflowCanvas migrado a Supabase (auto-save debounced)
+- [x] NodePalette 27 nodos de industria
+- [x] Dashboard y Monitoring con datos reales + Realtime
+- [x] Fix UUID, float→int, NodeConfigPanel, duplicados, conexión UX
+
+### Sprint S2
+- [x] Ramificación visual SI/NO en nodo Decisión (flechas verde/roja con etiquetas)
+- [x] Motor de ejecución respeta ramas — omite nodos en rama no activa
+- [x] Nodo Aprobación Humana (processor:aprobacion) + form configuración
+- [x] Email profesional: variables `{{previous.campo}}` y `{{summary}}`
+- [x] Plantilla BCV con 1 clic en NodeConfigPanel
+- [x] API BCV con 3 fuentes + fallback (pydolarve → dolarapi → dolartoday)
+- [x] Edge Function `get-bcv-rate` para test desde Settings sin CORS
+- [x] Settings reescrito: estado sistema, APIs, notificaciones, guía de nodos
+- [x] Migración DB: columna `branch` en `workflow_connections`
 
 ---
 
-## 🔴 PENDIENTE INMEDIATO — Antes de probar
+## 🔴 PENDIENTE INMEDIATO
 
-- [ ] Deploy Edge Function en Supabase:
+- [ ] Ejecutar migración en Supabase SQL Editor:
+  ```sql
+  ALTER TABLE workflow_connections
+      ADD COLUMN IF NOT EXISTS branch TEXT CHECK (branch IN ('true', 'false'));
   ```
-  npx supabase functions deploy execute-workflow --project-ref kbscaxcokxwdbnrltkup
-  ```
-- [ ] Agregar secret RESEND_API_KEY en Supabase → Settings → Edge Functions Secrets
-- [ ] Configurar Netlify (cuando el usuario lo decida):
-  - Site → Add new → Import from Git → hermeshs34/Hermesai-flow
+- [ ] Netlify deploy:
+  - app.netlify.com → Import from Git → hermeshs34/Hermesai-flow
   - Env vars: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_APP_ENV=production
 
 ---
 
-## 🟠 Sprint S2 — Gateway + Aprobación Humana + Conectores RiskGuard
+## 🟠 MAÑANA — Sprint S3: Integración EE.FF. + Indicadores de Gestión
 
-### Nodos nuevos a implementar
+### 1. Análisis de automatización con Estados Financieros
+- [ ] Revisar qué procesos del sistema EE.FF. son automatizables
+- [ ] Nodos candidatos:
+  - `trigger:eeff` — detectar nuevo cierre contable / período fiscal
+  - `processor:eeff_kpi` — calcular KPIs: ROE, ROA, liquidez, solvencia, EBITDA
+  - `processor:eeff_variacion` — comparar período actual vs anterior → % cambio
+  - `output:eeff_reporte` — generar y enviar informe PDF ejecutivo
+- [ ] Plantilla de flujo "Cierre Mensual EE.FF." pre-configurada
+- [ ] Plantilla "Alerta KPI fuera de rango" (si ROE < umbral → email gerencia)
 
-- [ ] **Gateway de Decisión visual** — cuando el nodo `decision` evalúa true/false,
-      el canvas debe mostrar 2 ramas distintas (la conexión se bifurca visualmente)
-- [ ] **Nodo Aprobación Humana** — el flujo queda en `waiting_approval`,
-      notifica al aprobador por email, y reanuda cuando él aprueba/rechaza desde UI
-- [ ] **Panel de Aprobaciones pendientes** — en Dashboard: lista de flujos esperando acción
-- [ ] **Nodo RiskGuard completo** — leer siniestros, riesgos, KRIs en tiempo real
-- [ ] **Nodo BCV con alertas** — si tasa cambia > X% desde última consulta → alertar
+### 2. Indicadores de Gestión
+- [ ] Analizar viabilidad de conectar sistema Indicadores
+- [ ] Nodos candidatos:
+  - `processor:indicadores_dashboard` — leer KPIs actuales desde Supabase
+  - `processor:semaforo` — evaluar si indicador está en rojo/amarillo/verde
+  - `output:alerta_kpi` — notificar responsable cuando indicador entra en zona roja
+- [ ] Plantilla "Monitor Semanal de Indicadores"
 
-### Edge Functions a agregar
-
-- [ ] `resume-workflow` — reanudar flujo después de aprobación humana
-- [ ] `node-bcv` — consulta y cachea tasa BCV en Supabase
-
-### Configuración de nodos (NodeConfigPanel)
-
-- [ ] El panel de configuración actual es genérico — mejorar para mostrar
-      campos específicos según el tipo de nodo:
-      - Email: to, subject, body (con variables {{node_id.campo}})
-      - Decisión: campo izquierdo, operador, valor derecho
-      - Cron: expresión cron con preview próxima ejecución
-      - BCV: umbral de alerta, moneda
-
----
-
-## 🟠 Sprint S3 — Plantillas de Proceso por Industria
-
-- [ ] **Plantilla Seguros: Proceso de Siniestro** (17 pasos)
-  - Ingreso → Verificar póliza → Score fraude → Si válido: calcular reserva →
-    Si monto > XL: escalar reaseguro → Notificar ajustador → Reporte SUDEASEG
-- [ ] **Plantilla Banca: Alerta AML** 
-  - Score AML → Si alto: verificar OFAC → Si en lista: congelar op → Notificar oficial
-- [ ] **Plantilla Manufactura: Reposición de Stock**
-  - Stock bajo → Generar OC → Solicitar aprobación → Si aprobado: enviar a proveedor
+### 3. Verificar flujos existentes end-to-end
+- [ ] Probar flujo BCV completo con ramificación SI/NO
+  - Crear: Cron → BCV → Decisión (bcv_rate > 40) → SI: Email ALERTA → NO: Email Normal
+  - Verificar que el nodo Decisión realmente bifurca la ejecución
+- [ ] Probar las flechas de conexión y confirmar que el UX es claro
+- [ ] Documentar flujos de demostración para presentar el sistema
 
 ---
 
-## 🟡 Sprint S4 — Agente IA y Reportes Automáticos
+## 🟡 Sprint S4 — Plantillas de Proceso por Industria
 
-- [ ] Edge Function `node-ai-report` con Claude Opus 4.7 + adaptive thinking
-- [ ] Plantillas de informe:
-  - Resumen ejecutivo KPIs semanales
-  - Análisis de siniestralidad mensual
-  - Reporte AML/CFT para SUDEASEG/SUDEBAN
-- [ ] Streaming de respuesta al frontend (Server-Sent Events o Realtime)
+- [ ] **Seguros: Proceso de Siniestro completo** (trigger → score fraude → reaseguro → notificación)
+- [ ] **Banca: Alerta AML** (score → OFAC → congelar → notificar SUDEBAN)
+- [ ] **Manufactura: Reposición de Stock** (stock bajo → OC → aprobación → proveedor)
+- [ ] **EE.FF.: Cierre Mensual** (trigger → calcular KPIs → informe → email dirección)
+
+---
+
+## 🟡 Sprint S5 — Agente IA + Reportes Automáticos
+
+- [ ] Edge Function `node-ai-analysis` con Claude Opus 4.7 + adaptive thinking
+- [ ] Nodo IA que analiza datos del contexto y genera resumen ejecutivo
+- [ ] Streaming de respuesta IA al frontend
 
 ---
 
@@ -90,9 +91,10 @@
 
 | Pregunta | Urgencia |
 |---|---|
-| ¿Resend domain propio o subdomain Resend para emails? | S1 (deploy) |
-| ¿Cron jobs via pg_cron en Supabase o Supabase Scheduled Functions? | S2 |
-| ¿Aprobación humana por email (link) o solo desde la app? | S2 |
+| ¿Sub-agentes Claude para análisis complejos en flujos? | S5 — evaluar con usuario |
+| ¿Resend domain propio o subdomain Resend? | Antes de go-live |
+| ¿Cron jobs via pg_cron en Supabase o Scheduled Functions? | S3 |
+| ¿Aprobación humana por email (link) o solo desde la app? | S3 |
 
 ---
 
@@ -100,5 +102,5 @@
 
 - GitHub: https://github.com/hermeshs34/Hermesai-flow
 - Supabase: https://kbscaxcokxwdbnrltkup.supabase.co
-- Edge Function deployada: `execute-workflow`
-- Modelo IA: claude-opus-4-7 (para S4)
+- Edge Functions desplegadas: `execute-workflow`, `get-bcv-rate`
+- Modelo IA planificado: `claude-opus-4-7` (Sprint S5)
