@@ -162,7 +162,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         const rect     = canvasRef.current.getBoundingClientRect();
         const position = { x: e.clientX - rect.left - 96, y: e.clientY - rect.top - 50 };
         const newNode: WorkflowNodeData = {
-            id:          `node-${Date.now()}`,
+            id:          crypto.randomUUID(),
             type:        draggedNodeType.type,
             category:    draggedNodeType.category,
             title:       draggedNodeType.title,
@@ -195,7 +195,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             const tgt = nodes.find(n => n.id === nodeId);
             if (src && tgt && src.type !== 'output' && tgt.type !== 'trigger') {
                 setConnections(prev => [...prev, {
-                    id:       `conn-${Date.now()}`,
+                    id:       crypto.randomUUID(),
                     sourceId: connectingFrom,
                     targetId: nodeId,
                 }]);
