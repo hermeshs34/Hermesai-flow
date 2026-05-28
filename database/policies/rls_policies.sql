@@ -13,13 +13,16 @@ ALTER TABLE public.execution_logs     ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.integrations       ENABLE ROW LEVEL SECURITY;
 
 -- ── Helper: organization_id del usuario autenticado ───────────────────────
+-- SECURITY DEFINER evita recursión infinita: las políticas RLS en profiles
+-- llaman a estas funciones, que a su vez consultan profiles — sin SECURITY
+-- DEFINER eso causa error 54001 (stack depth limit exceeded).
 CREATE OR REPLACE FUNCTION public.my_organization_id()
-RETURNS uuid LANGUAGE sql STABLE AS $$
+RETURNS uuid LANGUAGE sql STABLE SECURITY DEFINER AS $$
     SELECT organization_id FROM public.profiles WHERE id = auth.uid()
 $$;
 
 CREATE OR REPLACE FUNCTION public.my_role()
-RETURNS text LANGUAGE sql STABLE AS $$
+RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS $$
     SELECT role FROM public.profiles WHERE id = auth.uid()
 $$;
 
