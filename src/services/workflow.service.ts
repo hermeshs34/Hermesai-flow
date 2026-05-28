@@ -166,7 +166,9 @@ export class WorkflowService {
             target_node_id: c.targetId,
         }));
 
-        const { error } = await supabase.from('workflow_connections').insert(rows);
+        const { error } = await supabase
+            .from('workflow_connections')
+            .upsert(rows, { onConflict: 'source_node_id,target_node_id' });
         if (error) throw new Error(error.message);
     }
 }
