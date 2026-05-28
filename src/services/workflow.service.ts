@@ -141,8 +141,8 @@ export class WorkflowService {
             type:            n.type,
             category:        n.category,
             title:           n.title,
-            position_x:      n.position.x,
-            position_y:      n.position.y,
+            position_x:      Math.round(n.position.x),
+            position_y:      Math.round(n.position.y),
             config_json:     n.config,
             status:          n.status ?? 'idle',
         }));
