@@ -53,20 +53,16 @@ export function Settings() {
         setTestingBcv(true);
         setBcvResult(null);
         try {
-            const r = await fetch('https://pydolarve.org/api/v1/dollar?page=bcv');
-            if (r.ok) {
-                const d = await r.json();
-                const rate = d?.monitors?.usd?.price ?? d?.price;
-                if (rate) {
-                    setBcvResult(`✅ API BCV activa — Tasa: ${Number(rate).toFixed(2)} Bs/USD`);
-                } else {
-                    setBcvResult('⚠️ API respondió pero sin datos de tasa');
-                }
+            // Llamar via Edge Function para evitar CORS (el servidor sí puede consultar APIs externas)
+            const { data, error } = await supabase.functions.invoke('get-bcv-rate');
+            if (error) throw error;
+            if (data?.bcv_rate) {
+                setBcvResult(`✅ API BCV activa — Tasa: ${data.bcv_rate} Bs/USD (${data.source})`);
             } else {
-                setBcvResult('❌ API BCV no disponible en este momento');
+                setBcvResult('⚠️ APIs BCV no disponibles en este momento');
             }
         } catch {
-            setBcvResult('❌ No se pudo conectar con la API BCV');
+            setBcvResult('❌ No se pudo conectar. Verifica que la Edge Function esté desplegada.');
         }
         setTestingBcv(false);
     };
