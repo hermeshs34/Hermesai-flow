@@ -194,11 +194,12 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             const src = nodes.find(n => n.id === connectingFrom);
             const tgt = nodes.find(n => n.id === nodeId);
             if (src && tgt && src.type !== 'output' && tgt.type !== 'trigger') {
-                setConnections(prev => [...prev, {
-                    id:       crypto.randomUUID(),
-                    sourceId: connectingFrom,
-                    targetId: nodeId,
-                }]);
+                setConnections(prev => {
+                    // Evitar duplicados source→target
+                    const exists = prev.some(c => c.sourceId === connectingFrom && c.targetId === nodeId);
+                    if (exists) return prev;
+                    return [...prev, { id: crypto.randomUUID(), sourceId: connectingFrom, targetId: nodeId }];
+                });
             }
         }
         setConnectingFrom(null);

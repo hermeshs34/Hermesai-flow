@@ -159,16 +159,25 @@ export class WorkflowService {
 
         if (connections.length === 0) return;
 
-        const rows = connections.map(c => ({
-            id:             c.id,
-            workflow_id:    workflowId,
-            source_node_id: c.sourceId,
-            target_node_id: c.targetId,
-        }));
+        // Deduplicar por source+target antes de enviar
+        const seen  = new Set<string>();
+        const rows  = connections
+            .filter(c => {
+                const key = `${c.sourceId}→${c.targetId}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            })
+            .map(c => ({
+                id:             c.id,
+                workflow_id:    workflowId,
+                source_node_id: c.sourceId,
+                target_node_id: c.targetId,
+            }));
 
         const { error } = await supabase
             .from('workflow_connections')
-            .upsert(rows, { onConflict: 'source_node_id,target_node_id' });
+            .insert(rows);
         if (error) throw new Error(error.message);
     }
 }
