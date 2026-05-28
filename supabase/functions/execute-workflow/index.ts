@@ -160,14 +160,41 @@ async function executeNode(
 
         // ── Tasa BCV ─────────────────────────────────────────────────────
         case 'processor:bcv': {
+            const ts = new Date().toISOString();
+
+            // Fuente 1: pydolarve (API pública Venezuela)
             try {
-                const res  = await fetch('https://s3.amazonaws.com/dolartoday/data.json');
-                const data = await res.json();
-                const bcv  = data?.USD?.bcv ?? null;
-                return { bcv_rate: bcv, source: 'dolartoday', timestamp: new Date().toISOString() };
-            } catch {
-                return { bcv_rate: null, source: 'unavailable', timestamp: new Date().toISOString() };
-            }
+                const r1 = await fetch('https://pydolarve.org/api/v1/dollar?page=bcv', {
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (r1.ok) {
+                    const d1 = await r1.json();
+                    const rate = d1?.monitors?.usd?.price ?? d1?.price ?? null;
+                    if (rate) return { bcv_rate: Number(rate).toFixed(2), source: 'pydolarve.org (BCV)', timestamp: ts };
+                }
+            } catch { /* intentar siguiente */ }
+
+            // Fuente 2: dolarapi.com
+            try {
+                const r2 = await fetch('https://ve.dolarapi.com/v1/dolares/oficial');
+                if (r2.ok) {
+                    const d2 = await r2.json();
+                    const rate = d2?.promedio ?? d2?.price ?? null;
+                    if (rate) return { bcv_rate: Number(rate).toFixed(2), source: 'dolarapi.com (BCV)', timestamp: ts };
+                }
+            } catch { /* intentar siguiente */ }
+
+            // Fuente 3: dolartoday S3 (fallback original)
+            try {
+                const r3 = await fetch('https://s3.amazonaws.com/dolartoday/data.json');
+                if (r3.ok) {
+                    const d3 = await r3.json();
+                    const rate = d3?.USD?.bcv ?? null;
+                    if (rate) return { bcv_rate: Number(rate).toFixed(2), source: 'dolartoday.com (BCV)', timestamp: ts };
+                }
+            } catch { /* todas fallaron */ }
+
+            return { bcv_rate: null, source: 'unavailable — todas las fuentes fallaron', timestamp: ts };
         }
 
         // ── Decisión (branching) ──────────────────────────────────────────
