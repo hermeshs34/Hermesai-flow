@@ -2,105 +2,103 @@
 > Backlog activo del proyecto. Actualizar al inicio y fin de cada sesión.
 
 **Última actualización:** 28 Mayo 2026  
-**Fase actual:** F0 completado ✅ — próximo: deploy Netlify + validar flujo completo
+**Fase actual:** Sprint S1 completado ✅ — Próximo: S2 (Gateway + Aprobación humana + Conectores)
 
 ---
 
-## 🔴 AGENDA PRÓXIMA SESIÓN (28 Mayo 2026)
+## ✅ Completado esta sesión (28 Mayo 2026)
 
-### PASO 1 — 🐛 Debug error de login (BLOQUEANTE) ✅ RESUELTO
-- [x] Error 54001 stack depth limit exceeded — RLS recursión infinita
-- [x] Fix: SECURITY DEFINER en my_organization_id() y my_role() — commit 6121ce6
-- [x] Login funcionando correctamente
-- [ ] Si es error 406/PGRST: verificar que `.single()` encuentra exactamente 1 fila
-- [ ] Fix y validar login exitoso
-
-### PASO 2 — Deploy Netlify
-- [ ] Crear sitio en Netlify → conectar repo `hermeshs34/Hermesai-flow`
-- [ ] Agregar variables de entorno en Netlify Dashboard:
-  - `VITE_SUPABASE_URL` = `https://kbscaxcokxwdbnrltkup.supabase.co`
-  - `VITE_SUPABASE_ANON_KEY` = (la anon key)
-  - `VITE_APP_ENV` = `production`
-- [ ] Verificar build exitoso y URL pública funcionando
-
-### PASO 3 — Validar flujo completo post-login
-- [ ] Login → Dashboard carga sin errores
-- [ ] Crear flujo de prueba → se guarda en Supabase (no localStorage)
-- [ ] Cerrar sesión → vuelve al login
-- [ ] Refrescar página autenticado → syncSession() mantiene sesión
+- [x] Fix error 54001 — SECURITY DEFINER en helpers RLS (commit 6121ce6)
+- [x] Login funciona correctamente
+- [x] Motor de ejecución — Edge Function `execute-workflow` completa
+- [x] WorkflowCanvas migrado a Supabase (fuera localStorage)
+- [x] Selector de flujos + auto-guardado debounced 1.5s
+- [x] Botón Ejecutar → llama Edge Function → muestra resultado
+- [x] NodePalette: 27 nodos de industria (Seguros/Reaseguros, Banca, Manufactura, Universal)
+- [x] Dashboard: datos reales desde Supabase + Realtime
+- [x] Monitoring: execution_runs + logs por ejecución + Realtime
+- [x] Migración DB: tabla `execution_runs` + RLS
+- [x] Push a GitHub (commit 966c391)
 
 ---
 
-## 🟠 F1 — Motor de Ejecución (Siguiente sprint)
+## 🔴 PENDIENTE INMEDIATO — Antes de probar
 
-### Edge Functions a construir
-- [ ] `supabase/functions/execute-node/index.ts` — ejecutor genérico, valida JWT + org_id
-- [ ] `supabase/functions/node-email/index.ts` — envía email vía Resend API
-- [ ] `supabase/functions/node-bcv/index.ts` — consulta tasa BCV y notifica
-
-### Nodos del canvas
-- [ ] Nodo Trigger: `cron` — configurar expresión cron
-- [ ] Nodo Trigger: `webhook` — genera URL de webhook por flujo
-- [ ] Nodo Output: `email` — configurar destinatario, asunto, plantilla
-
----
-
-## 🟠 F2 — Conectores 4 Sistemas (Sprint posterior)
-
-### Por cada sistema: leer datos vía service_role key (solo Edge Functions)
-- [ ] `node-riskguard` — siniestros, riesgos, KRIs, alertas AML, tasa BCV
-- [ ] `node-eeff` — balances, indicadores financieros, alertas Benford
-- [ ] `node-indicadores` — KPIs, OKRs, tableros BSC
-- [ ] `node-legaltech` — expedientes, vencimientos, honorarios, alertas RGPD
-
-### Prerequisito para F2
-- [ ] Recopilar URLs y Service Role Keys de los 4 proyectos Supabase existentes
-- [ ] Guardarlas como Supabase Secrets en hermesai-flow (nunca en código)
+- [ ] Deploy Edge Function en Supabase:
+  ```
+  npx supabase functions deploy execute-workflow --project-ref kbscaxcokxwdbnrltkup
+  ```
+- [ ] Agregar secret RESEND_API_KEY en Supabase → Settings → Edge Functions Secrets
+- [ ] Configurar Netlify (cuando el usuario lo decida):
+  - Site → Add new → Import from Git → hermeshs34/Hermesai-flow
+  - Env vars: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_APP_ENV=production
 
 ---
 
-## 🟡 F3 — Agente IA (Sprint futuro)
+## 🟠 Sprint S2 — Gateway + Aprobación Humana + Conectores RiskGuard
 
-- [ ] `node-ai-report` — Edge Function con Claude Opus 4.7 + adaptive thinking
-- [ ] Plantilla: Resumen ejecutivo KPIs
-- [ ] Plantilla: Análisis EE.FF. bajo NIIF
-- [ ] Plantilla: Informe de Riesgos y Cumplimiento (RiskGuard)
-- [ ] Plantilla: Análisis de Siniestralidad
-- [ ] Plantilla: Reporte AML/CFT
-- [ ] Streaming de respuesta al frontend (Server-Sent Events)
+### Nodos nuevos a implementar
+
+- [ ] **Gateway de Decisión visual** — cuando el nodo `decision` evalúa true/false,
+      el canvas debe mostrar 2 ramas distintas (la conexión se bifurca visualmente)
+- [ ] **Nodo Aprobación Humana** — el flujo queda en `waiting_approval`,
+      notifica al aprobador por email, y reanuda cuando él aprueba/rechaza desde UI
+- [ ] **Panel de Aprobaciones pendientes** — en Dashboard: lista de flujos esperando acción
+- [ ] **Nodo RiskGuard completo** — leer siniestros, riesgos, KRIs en tiempo real
+- [ ] **Nodo BCV con alertas** — si tasa cambia > X% desde última consulta → alertar
+
+### Edge Functions a agregar
+
+- [ ] `resume-workflow` — reanudar flujo después de aprobación humana
+- [ ] `node-bcv` — consulta y cachea tasa BCV en Supabase
+
+### Configuración de nodos (NodeConfigPanel)
+
+- [ ] El panel de configuración actual es genérico — mejorar para mostrar
+      campos específicos según el tipo de nodo:
+      - Email: to, subject, body (con variables {{node_id.campo}})
+      - Decisión: campo izquierdo, operador, valor derecho
+      - Cron: expresión cron con preview próxima ejecución
+      - BCV: umbral de alerta, moneda
 
 ---
 
-## 🟡 F4 — Alertas Inteligentes (Sprint futuro)
+## 🟠 Sprint S3 — Plantillas de Proceso por Industria
 
-- [ ] Reglas de umbral configurables por flujo (ej: tasa BCV sin actualizar > 24h)
-- [ ] Escalamiento: email → WhatsApp Business API
-- [ ] Panel de alertas enviadas con historial
-- [ ] Integración con sistemas: recibir webhooks de RiskGuard/LegalTech ante eventos críticos
+- [ ] **Plantilla Seguros: Proceso de Siniestro** (17 pasos)
+  - Ingreso → Verificar póliza → Score fraude → Si válido: calcular reserva →
+    Si monto > XL: escalar reaseguro → Notificar ajustador → Reporte SUDEASEG
+- [ ] **Plantilla Banca: Alerta AML** 
+  - Score AML → Si alto: verificar OFAC → Si en lista: congelar op → Notificar oficial
+- [ ] **Plantilla Manufactura: Reposición de Stock**
+  - Stock bajo → Generar OC → Solicitar aprobación → Si aprobado: enviar a proveedor
+
+---
+
+## 🟡 Sprint S4 — Agente IA y Reportes Automáticos
+
+- [ ] Edge Function `node-ai-report` con Claude Opus 4.7 + adaptive thinking
+- [ ] Plantillas de informe:
+  - Resumen ejecutivo KPIs semanales
+  - Análisis de siniestralidad mensual
+  - Reporte AML/CFT para SUDEASEG/SUDEBAN
+- [ ] Streaming de respuesta al frontend (Server-Sent Events o Realtime)
 
 ---
 
 ## 📋 Decisiones técnicas pendientes
 
-| Pregunta | Contexto | Urgencia |
-|---|---|---|
-| ¿Resend domain propio o subdomain Resend? | Para emails de HermesAI Flow | F1 |
-| ¿GitHub repo nuevo o usar el existente del proyecto? | Necesario para Netlify CI/CD | Próxima sesión |
-| ¿WhatsApp via Twilio, Meta API directa u otro? | Para alertas F4 | F4 |
+| Pregunta | Urgencia |
+|---|---|
+| ¿Resend domain propio o subdomain Resend para emails? | S1 (deploy) |
+| ¿Cron jobs via pg_cron en Supabase o Supabase Scheduled Functions? | S2 |
+| ¿Aprobación humana por email (link) o solo desde la app? | S2 |
 
 ---
 
-## ✅ Completado en sesión 26/05/2026 (F0)
+## 🔗 Referencias
 
-- [x] Evaluación de viabilidad del proyecto
-- [x] Definición de arquitectura (hub central ecosistema HermesAI)
-- [x] CLAUDE.md completo con estándar HermesAI
-- [x] Limpieza proyecto Bolt.new (eliminados imap, nodemailer, docs innecesarios)
-- [x] Estructura de carpetas estándar
-- [x] package.json renombrado a hermesai-flow
-- [x] Schema SQL: 6 tablas multi-tenant + índices + triggers updated_at
-- [x] Políticas RLS: aislamiento total por organization_id, 4 roles
-- [x] .gitignore y .env.example correctos
-- [x] Hook pre-commit seguridad
-- [x] Git inicializado correctamente en la carpeta del proyecto
-- [x] Primer commit F0: `8aef472`
+- GitHub: https://github.com/hermeshs34/Hermesai-flow
+- Supabase: https://kbscaxcokxwdbnrltkup.supabase.co
+- Edge Function deployada: `execute-workflow`
+- Modelo IA: claude-opus-4-7 (para S4)
