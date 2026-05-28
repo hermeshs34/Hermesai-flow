@@ -1,353 +1,431 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { WorkflowNode } from './WorkflowNode';
-import { NodePalette } from './NodePalette';
-import { ConnectionLine } from './ConnectionLine';
-import NodeConfigPanel from './NodeConfigPanel';
-import { WorkflowNodeData, WorkflowConnection } from '../types/workflow';
-import { WorkflowService } from '../services/workflowService';
-import { Save, Play, Settings, CheckCircle, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { WorkflowNode }    from './WorkflowNode';
+import { NodePalette }     from './NodePalette';
+import { ConnectionLine }  from './ConnectionLine';
+import NodeConfigPanel     from './NodeConfigPanel';
+import { WorkflowService } from '../services/workflow.service';
+import { supabase }        from '../core/supabase';
+import type { WorkflowNodeData, WorkflowConnection, Workflow } from '../types/workflow';
+import type { NodeType }   from './NodePalette';
+import type { User }       from '../core/user.types';
+import {
+    Play, Trash2, Plus, ChevronDown,
+    CheckCircle, Loader2, PanelLeftOpen,
+} from 'lucide-react';
 
-export function WorkflowCanvas() {
-  // Cargar flujos guardados al iniciar
-  const [nodes, setNodes] = useState<WorkflowNodeData[]>(() => {
-    const saved = localStorage.getItem('flowmaster-workflow-nodes');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (error) {
-        console.error('Error cargando nodos:', error);
-      }
-    }
-    return [];
-  });
-  
-  const [connections, setConnections] = useState<WorkflowConnection[]>(() => {
-    const saved = localStorage.getItem('flowmaster-workflow-connections');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (error) {
-        console.error('Error cargando conexiones:', error);
-      }
-    }
-    return [];
-  });
-  
-  const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [draggedNodeType, setDraggedNodeType] = useState<any>(null);
-  const [showPalette, setShowPalette] = useState(true);
-  const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
-  const [configPanelOpen, setConfigPanelOpen] = useState(false);
-  const [nodeToConfig, setNodeToConfig] = useState<WorkflowNodeData | null>(null);
-  const [saveStatus, setSaveStatus] = useState<string>('');
-  const canvasRef = useRef<HTMLDivElement>(null);
+interface WorkflowCanvasProps {
+    currentUser: User;
+}
 
-  // Guardar automáticamente cuando cambien los nodos o conexiones
-  useEffect(() => {
-    if (nodes.length > 0) {
-      localStorage.setItem('flowmaster-workflow-nodes', JSON.stringify(nodes));
-      setSaveStatus('Flujo guardado automáticamente');
-      setTimeout(() => setSaveStatus(''), 2000);
-    }
-  }, [nodes]);
+export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
 
-  useEffect(() => {
-    if (connections.length > 0) {
-      localStorage.setItem('flowmaster-workflow-connections', JSON.stringify(connections));
-    }
-  }, [connections]);
+    // ── Workflows ──────────────────────────────────────────────────────────
+    const [workflows,          setWorkflows]         = useState<Workflow[]>([]);
+    const [activeWorkflowId,   setActiveWorkflowId]  = useState<string | null>(null);
+    const [workflowName,       setWorkflowName]      = useState('');
+    const [loadingWorkflows,   setLoadingWorkflows]  = useState(true);
+    const [showWfDropdown,     setShowWfDropdown]    = useState(false);
+    const [creatingWorkflow,   setCreatingWorkflow]  = useState(false);
+    const [newWfName,          setNewWfName]         = useState('');
 
-  const handleNodeDragStart = useCallback((nodeType: any) => {
-    setDraggedNodeType(nodeType);
-  }, []);
+    // ── Canvas ─────────────────────────────────────────────────────────────
+    const [nodes,              setNodes]             = useState<WorkflowNodeData[]>([]);
+    const [connections,        setConnections]       = useState<WorkflowConnection[]>([]);
+    const [selectedNode,       setSelectedNode]      = useState<string | null>(null);
+    const [draggedNodeType,    setDraggedNodeType]   = useState<NodeType | null>(null);
+    const [showPalette,        setShowPalette]       = useState(true);
+    const [connectingFrom,     setConnectingFrom]    = useState<string | null>(null);
+    const [configPanelOpen,    setConfigPanelOpen]   = useState(false);
+    const [nodeToConfig,       setNodeToConfig]      = useState<WorkflowNodeData | null>(null);
 
-  const handleCanvasDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-  }, []);
+    // ── Estado de operaciones ──────────────────────────────────────────────
+    const [saving,   setSaving]   = useState(false);
+    const [executing,setExecuting]= useState(false);
+    const canvasRef               = useRef<HTMLDivElement>(null);
+    const saveTimer               = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleCanvasDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    
-    if (!draggedNodeType || !canvasRef.current) return;
+    // ── Cargar lista de workflows ──────────────────────────────────────────
+    useEffect(() => {
+        WorkflowService.getWorkflows(currentUser.organizationId)
+            .then(wfs => {
+                setWorkflows(wfs);
+                if (wfs.length > 0) selectWorkflow(wfs[0]);
+            })
+            .catch(() => toast.error('No se pudo cargar los flujos'))
+            .finally(() => setLoadingWorkflows(false));
+    }, []);
 
-    const rect = canvasRef.current.getBoundingClientRect();
-    const position = {
-      x: e.clientX - rect.left - 96, // Centrar el nodo (ancho/2)
-      y: e.clientY - rect.top - 50   // Centrar el nodo (alto/2)
+    // ── Seleccionar flujo y cargar sus nodos ───────────────────────────────
+    const selectWorkflow = useCallback(async (wf: Workflow) => {
+        setActiveWorkflowId(wf.id);
+        setWorkflowName(wf.name);
+        setShowWfDropdown(false);
+        try {
+            const full = await WorkflowService.getWorkflow(wf.id, currentUser.organizationId);
+            setNodes(full?.nodes ?? []);
+            setConnections(full?.connections ?? []);
+        } catch {
+            toast.error('Error cargando el flujo');
+        }
+    }, [currentUser.organizationId]);
+
+    // ── Auto-guardar con debounce (1.5s) ──────────────────────────────────
+    useEffect(() => {
+        if (!activeWorkflowId) return;
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(async () => {
+            setSaving(true);
+            try {
+                await WorkflowService.saveNodes(activeWorkflowId, currentUser.organizationId, nodes);
+                await WorkflowService.saveConnections(activeWorkflowId, connections);
+            } catch {
+                toast.error('Error guardando flujo');
+            } finally {
+                setSaving(false);
+            }
+        }, 1500);
+        return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+    }, [nodes, connections, activeWorkflowId]);
+
+    // ── Crear nuevo workflow ───────────────────────────────────────────────
+    const handleCreateWorkflow = async () => {
+        const name = newWfName.trim() || `Flujo ${new Date().toLocaleDateString('es-VE')}`;
+        setCreatingWorkflow(true);
+        try {
+            const wf = await WorkflowService.createWorkflow(
+                currentUser.organizationId,
+                currentUser.id,
+                { name, description: '' }
+            );
+            setWorkflows(prev => [wf, ...prev]);
+            setNodes([]);
+            setConnections([]);
+            setActiveWorkflowId(wf.id);
+            setWorkflowName(wf.name);
+            setNewWfName('');
+            setShowWfDropdown(false);
+            toast.success(`Flujo "${wf.name}" creado`);
+        } catch (err: any) {
+            toast.error(`No se pudo crear el flujo: ${err.message}`);
+        } finally {
+            setCreatingWorkflow(false);
+        }
     };
 
-    const newNode: WorkflowNodeData = {
-      id: `node-${Date.now()}`,
-      type: draggedNodeType.type,
-      category: draggedNodeType.category,
-      title: draggedNodeType.title,
-      position,
-      config: {},
-      connections: [],
-      status: 'idle'
+    // ── Ejecutar flujo via Edge Function ──────────────────────────────────
+    const handleExecute = async () => {
+        if (!activeWorkflowId) { toast.error('Selecciona un flujo primero'); return; }
+        if (nodes.length === 0) { toast.error('Agrega al menos un nodo al flujo'); return; }
+
+        setExecuting(true);
+        const toastId = toast.loading('Ejecutando flujo...');
+        try {
+            const { data, error } = await supabase.functions.invoke('execute-workflow', {
+                body: {
+                    workflowId:     activeWorkflowId,
+                    organizationId: currentUser.organizationId,
+                    triggeredBy:    'manual',
+                },
+            });
+            if (error) throw error;
+            if (data?.success) {
+                toast.success(
+                    `Flujo completado — ${data.logs} pasos en ${data.duration}ms`,
+                    { id: toastId }
+                );
+            } else {
+                toast.error(`Error: ${data?.error ?? 'fallo desconocido'}`, { id: toastId });
+            }
+        } catch (err: any) {
+            toast.error(`No se pudo ejecutar: ${err.message}`, { id: toastId });
+        } finally {
+            setExecuting(false);
+        }
     };
 
-    setNodes(prev => [...prev, newNode]);
-    setDraggedNodeType(null);
-  }, [draggedNodeType]);
+    // ── Limpiar canvas ─────────────────────────────────────────────────────
+    const handleClearCanvas = async () => {
+        if (!activeWorkflowId) return;
+        if (!confirm('¿Limpiar todos los nodos del canvas? Esta acción no se puede deshacer.')) return;
+        setNodes([]);
+        setConnections([]);
+    };
 
-  const handleNodeMove = useCallback((nodeId: string, newPosition: { x: number; y: number }) => {
-    setNodes(prev => prev.map(node => 
-      node.id === nodeId ? { ...node, position: newPosition } : node
-    ));
-  }, []);
+    // ── Drag & drop desde paleta ───────────────────────────────────────────
+    const handleNodeDragStart  = useCallback((nodeType: NodeType) => setDraggedNodeType(nodeType), []);
+    const handleCanvasDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }, []);
 
-  const handleNodeSelect = useCallback((nodeId: string) => {
-    setSelectedNode(nodeId);
-  }, []);
-
-  const handleNodeDelete = useCallback((nodeId: string) => {
-    setNodes(prev => prev.filter(node => node.id !== nodeId));
-    setConnections(prev => prev.filter(conn => 
-      conn.sourceId !== nodeId && conn.targetId !== nodeId
-    ));
-    if (selectedNode === nodeId) {
-      setSelectedNode(null);
-    }
-  }, [selectedNode]);
-
-  const handleConnectionStart = useCallback((nodeId: string) => {
-    setConnectingFrom(nodeId);
-  }, []);
-
-  const handleConnectionEnd = useCallback((nodeId: string) => {
-    if (connectingFrom && connectingFrom !== nodeId) {
-      const sourceNode = nodes.find(n => n.id === connectingFrom);
-      const targetNode = nodes.find(n => n.id === nodeId);
-      
-      // Validar que la conexión sea válida (no conectar output a trigger, etc.)
-      if (sourceNode && targetNode && sourceNode.type !== 'output' && targetNode.type !== 'trigger') {
-        const newConnection: WorkflowConnection = {
-          id: `connection-${Date.now()}`,
-          sourceId: connectingFrom,
-          targetId: nodeId
+    const handleCanvasDrop = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        if (!draggedNodeType || !canvasRef.current) return;
+        const rect     = canvasRef.current.getBoundingClientRect();
+        const position = { x: e.clientX - rect.left - 96, y: e.clientY - rect.top - 50 };
+        const newNode: WorkflowNodeData = {
+            id:          `node-${Date.now()}`,
+            type:        draggedNodeType.type,
+            category:    draggedNodeType.category,
+            title:       draggedNodeType.title,
+            position,
+            config:      {},
+            connections: [],
+            status:      'idle',
         };
-        
-        setConnections(prev => [...prev, newConnection]);
-      }
-    }
-    setConnectingFrom(null);
-  }, [connectingFrom, nodes]);
+        setNodes(prev => [...prev, newNode]);
+        setDraggedNodeType(null);
+    }, [draggedNodeType]);
 
-  const handleConfigureNode = useCallback((nodeId: string) => {
-    const node = nodes.find(n => n.id === nodeId);
-    if (node) {
-      setNodeToConfig(node);
-      setConfigPanelOpen(true);
-    }
-  }, [nodes]);
+    // ── Acciones de nodos ─────────────────────────────────────────────────
+    const handleNodeMove   = useCallback((nodeId: string, pos: { x: number; y: number }) =>
+        setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, position: pos } : n)), []);
 
-  const handleSaveNodeConfig = useCallback((nodeId: string, config: any) => {
-    setNodes(prev => {
-      const updatedNodes = prev.map(node => 
-        node.id === nodeId ? { ...node, config } : node
-      );
-      // Guardar inmediatamente en localStorage
-      localStorage.setItem('flowmaster-workflow-nodes', JSON.stringify(updatedNodes));
-      return updatedNodes;
-    });
-    setConfigPanelOpen(false);
-    setNodeToConfig(null);
-    setSaveStatus('Configuración de nodo guardada');
-    setTimeout(() => setSaveStatus(''), 2000);
-  }, []);
+    const handleNodeSelect = useCallback((nodeId: string) => setSelectedNode(nodeId), []);
 
-  const handleSaveWorkflow = async () => {
-    if (nodes.length === 0) {
-      alert('No hay nodos para guardar. Agrega al menos un nodo al flujo.');
-      return;
-    }
+    const handleNodeDelete = useCallback((nodeId: string) => {
+        setNodes(prev => prev.filter(n => n.id !== nodeId));
+        setConnections(prev => prev.filter(c => c.sourceId !== nodeId && c.targetId !== nodeId));
+        if (selectedNode === nodeId) setSelectedNode(null);
+    }, [selectedNode]);
 
-    const workflow = {
-      name: `Flujo ${new Date().toLocaleDateString()}`,
-      description: `Flujo creado con ${nodes.length} nodos y ${connections.length} conexiones`,
-      nodes,
-      connections,
-      isActive: false,
-      status: 'paused' as const
-    };
+    const handleConnectionStart = useCallback((nodeId: string) => setConnectingFrom(nodeId), []);
 
-    try {
-      const savedWorkflow = await WorkflowService.createWorkflow(workflow);
-      alert(`Flujo de trabajo "${savedWorkflow.name}" guardado exitosamente`);
-    } catch (error) {
-      alert('Error al guardar el flujo de trabajo');
-      console.error(error);
-    }
-  };
+    const handleConnectionEnd = useCallback((nodeId: string) => {
+        if (connectingFrom && connectingFrom !== nodeId) {
+            const src = nodes.find(n => n.id === connectingFrom);
+            const tgt = nodes.find(n => n.id === nodeId);
+            if (src && tgt && src.type !== 'output' && tgt.type !== 'trigger') {
+                setConnections(prev => [...prev, {
+                    id:       `conn-${Date.now()}`,
+                    sourceId: connectingFrom,
+                    targetId: nodeId,
+                }]);
+            }
+        }
+        setConnectingFrom(null);
+    }, [connectingFrom, nodes]);
 
-  const handleExecuteWorkflow = async () => {
-    if (nodes.length === 0) {
-      alert('No hay nodos para ejecutar. Agrega al menos un nodo al flujo.');
-      return;
-    }
+    const handleConfigureNode = useCallback((nodeId: string) => {
+        const node = nodes.find(n => n.id === nodeId);
+        if (node) { setNodeToConfig(node); setConfigPanelOpen(true); }
+    }, [nodes]);
 
-    // Crear un workflow temporal para ejecutar
-    const tempWorkflow = {
-      name: 'Flujo Temporal',
-      description: 'Ejecución temporal desde el canvas',
-      nodes,
-      connections,
-      isActive: true,
-      status: 'active' as const
-    };
+    const handleSaveNodeConfig = useCallback((nodeId: string, config: any) => {
+        setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config } : n));
+        setConfigPanelOpen(false);
+        setNodeToConfig(null);
+    }, []);
 
-    try {
-      const savedWorkflow = await WorkflowService.createWorkflow(tempWorkflow);
-      const result = await WorkflowService.executeWorkflow(savedWorkflow.id);
-      
-      if (result.success) {
-        alert(`Ejecución completada exitosamente. Logs: ${result.logs.length} eventos`);
-      } else {
-        alert(`Ejecución completada con errores: ${result.message}`);
-      }
-      
-      // Limpiar el workflow temporal
-      await WorkflowService.deleteWorkflow(savedWorkflow.id);
-    } catch (error) {
-      alert('Error al ejecutar el flujo de trabajo');
-      console.error(error);
-    }
-  };
+    // ── Render ─────────────────────────────────────────────────────────────
+    return (
+        <div className="h-full flex">
 
-  return (
-    <div className="h-full flex">
-      {/* Node Palette */}
-      {showPalette && (
-        <div className="w-80 border-r border-gray-200 bg-gray-50">
-          <NodePalette 
-            onDragStart={handleNodeDragStart}
-            onClose={() => setShowPalette(false)}
-          />
-        </div>
-      )}
-
-      {/* Main Canvas Area */}
-      <div className="flex-1 flex flex-col">
-        {/* Toolbar */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
-          <div className="flex items-center space-x-2">
-            {!showPalette && (
-              <button
-                onClick={() => setShowPalette(true)}
-                className="px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                Mostrar Paleta
-              </button>
-            )}
-            <h2 className="text-lg font-semibold text-gray-900">Constructor de Flujos</h2>
-          </div>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              {saveStatus && (
-                <div className="flex items-center space-x-1 text-green-600">
-                  <CheckCircle className="w-4 h-4" />
-                  <span className="text-sm">{saveStatus}</span>
+            {/* Paleta de nodos */}
+            {showPalette && (
+                <div className="w-72 border-r border-gray-200 bg-gray-50 flex-shrink-0">
+                    <NodePalette onDragStart={handleNodeDragStart} onClose={() => setShowPalette(false)} />
                 </div>
-              )}
-            </div>
-            
-            <div className="flex items-center space-x-2">
-              <button
-                onClick={() => {
-                  localStorage.removeItem('flowmaster-workflow-nodes');
-                  localStorage.removeItem('flowmaster-workflow-connections');
-                  setNodes([]);
-                  setConnections([]);
-                  setSaveStatus('Flujo limpiado');
-                  setTimeout(() => setSaveStatus(''), 2000);
-                }}
-                className="flex items-center space-x-2 px-3 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>Limpiar</span>
-              </button>
-              
-              <button
-                onClick={handleSaveWorkflow}
-                className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-              >
-                <Save className="w-4 h-4" />
-                <span>Guardar</span>
-              </button>
-              <button 
-                onClick={handleExecuteWorkflow}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                <Play className="w-4 h-4" />
-                <span>Ejecutar</span>
-              </button>
-              <button className="flex items-center space-x-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors">
-                <Settings className="w-4 h-4" />
-                <span>Configurar</span>
-              </button>
-            </div>
-          </div>
-        </div>
+            )}
 
-        {/* Canvas */}
-        <div 
-          ref={canvasRef}
-          className="flex-1 relative overflow-hidden bg-gray-100"
-          onDragOver={handleCanvasDragOver}
-          onDrop={handleCanvasDrop}
-          style={{
-            backgroundImage: 'radial-gradient(circle, #d1d5db 1px, transparent 1px)',
-            backgroundSize: '20px 20px'
-          }}
-        >
-          {/* Render connections */}
-          {connections.map(connection => (
-            <ConnectionLine
-              key={connection.id}
-              connection={connection}
-              nodes={nodes}
+            <div className="flex-1 flex flex-col min-w-0">
+
+                {/* ── Toolbar ─────────────────────────────────────────── */}
+                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white gap-3">
+
+                    <div className="flex items-center gap-2">
+                        {!showPalette && (
+                            <button
+                                onClick={() => setShowPalette(true)}
+                                className="p-2 rounded-lg hover:bg-gray-100 text-gray-500"
+                                title="Mostrar paleta"
+                            >
+                                <PanelLeftOpen className="w-4 h-4" />
+                            </button>
+                        )}
+
+                        {/* Selector de workflow */}
+                        <div className="relative">
+                            <button
+                                onClick={() => setShowWfDropdown(v => !v)}
+                                className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg hover:border-gray-300 bg-white text-sm font-medium text-gray-700 min-w-[200px] max-w-[280px]"
+                            >
+                                {loadingWorkflows ? (
+                                    <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                                ) : (
+                                    <>
+                                        <span className="truncate flex-1 text-left">
+                                            {workflowName || 'Seleccionar flujo...'}
+                                        </span>
+                                        <ChevronDown className="w-4 h-4 flex-shrink-0 text-gray-400" />
+                                    </>
+                                )}
+                            </button>
+
+                            {showWfDropdown && (
+                                <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-xl shadow-lg z-50">
+                                    {/* Crear nuevo */}
+                                    <div className="p-2 border-b border-gray-100">
+                                        <div className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                placeholder="Nombre del flujo..."
+                                                value={newWfName}
+                                                onChange={e => setNewWfName(e.target.value)}
+                                                onKeyDown={e => e.key === 'Enter' && handleCreateWorkflow()}
+                                                className="flex-1 text-sm px-2 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                                                autoFocus
+                                            />
+                                            <button
+                                                onClick={handleCreateWorkflow}
+                                                disabled={creatingWorkflow}
+                                                className="flex items-center gap-1 px-2.5 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                                            >
+                                                {creatingWorkflow
+                                                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                    : <Plus className="w-3.5 h-3.5" />}
+                                                Nuevo
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Lista */}
+                                    <div className="max-h-60 overflow-y-auto">
+                                        {workflows.length === 0 ? (
+                                            <p className="text-sm text-gray-400 text-center py-4">
+                                                Sin flujos — crea el primero
+                                            </p>
+                                        ) : (
+                                            workflows.map(wf => (
+                                                <button
+                                                    key={wf.id}
+                                                    onClick={() => selectWorkflow(wf)}
+                                                    className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-50 transition-colors ${
+                                                        wf.id === activeWorkflowId ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-gray-700'
+                                                    }`}
+                                                >
+                                                    <div className="font-medium truncate">{wf.name}</div>
+                                                    <div className="text-xs text-gray-400 mt-0.5">
+                                                        {wf.executionCount ?? 0} ejecuciones ·{' '}
+                                                        {new Date(wf.createdAt).toLocaleDateString('es-VE')}
+                                                    </div>
+                                                </button>
+                                            ))
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Acciones */}
+                    <div className="flex items-center gap-2">
+                        {saving && (
+                            <span className="flex items-center gap-1 text-xs text-gray-400">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Guardando...
+                            </span>
+                        )}
+                        {!saving && activeWorkflowId && nodes.length > 0 && (
+                            <span className="flex items-center gap-1 text-xs text-green-600">
+                                <CheckCircle className="w-3.5 h-3.5" /> Guardado
+                            </span>
+                        )}
+
+                        <button
+                            onClick={handleClearCanvas}
+                            disabled={!activeWorkflowId}
+                            className="flex items-center gap-1.5 px-3 py-2 text-sm bg-red-50 text-red-600 rounded-lg hover:bg-red-100 disabled:opacity-40 transition-colors"
+                        >
+                            <Trash2 className="w-4 h-4" />
+                            <span>Limpiar</span>
+                        </button>
+
+                        <button
+                            onClick={handleExecute}
+                            disabled={!activeWorkflowId || executing}
+                            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-40 transition-colors font-semibold"
+                        >
+                            {executing
+                                ? <Loader2 className="w-4 h-4 animate-spin" />
+                                : <Play className="w-4 h-4" />}
+                            {executing ? 'Ejecutando...' : 'Ejecutar'}
+                        </button>
+                    </div>
+                </div>
+
+                {/* ── Canvas ──────────────────────────────────────────── */}
+                {!activeWorkflowId && !loadingWorkflows ? (
+                    <div className="flex-1 flex items-center justify-center bg-gray-50">
+                        <div className="text-center">
+                            <div className="text-5xl mb-4">⚡</div>
+                            <h3 className="text-lg font-semibold text-gray-700 mb-2">Sin flujo seleccionado</h3>
+                            <p className="text-sm text-gray-400 mb-4">
+                                Crea un nuevo flujo o selecciona uno existente desde el selector de arriba
+                            </p>
+                            <button
+                                onClick={() => setShowWfDropdown(true)}
+                                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-semibold mx-auto"
+                            >
+                                <Plus className="w-4 h-4" /> Crear primer flujo
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    <div
+                        ref={canvasRef}
+                        className="flex-1 relative overflow-hidden"
+                        style={{
+                            backgroundColor: '#f8fafc',
+                            backgroundImage: 'radial-gradient(circle, #cbd5e1 1px, transparent 1px)',
+                            backgroundSize: '24px 24px',
+                        }}
+                        onDragOver={handleCanvasDragOver}
+                        onDrop={handleCanvasDrop}
+                        onClick={() => { setSelectedNode(null); setShowWfDropdown(false); }}
+                    >
+                        {connections.map(conn => (
+                            <ConnectionLine key={conn.id} connection={conn} nodes={nodes} />
+                        ))}
+
+                        {nodes.map(node => (
+                            <WorkflowNode
+                                key={node.id}
+                                node={node}
+                                isSelected={selectedNode === node.id}
+                                onSelect={()   => handleNodeSelect(node.id)}
+                                onMove={handleNodeMove}
+                                onDelete={handleNodeDelete}
+                                onConnectionStart={handleConnectionStart}
+                                onConnectionEnd={handleConnectionEnd}
+                                onConfigure={handleConfigureNode}
+                            />
+                        ))}
+
+                        {nodes.length === 0 && (
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                <div className="text-center text-gray-400">
+                                    <div className="text-5xl mb-3">🔧</div>
+                                    <p className="text-base font-medium">Arrastra nodos desde la paleta izquierda</p>
+                                    <p className="text-sm mt-1">Empieza con un nodo <strong>Trigger</strong> para activar el flujo</p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Indicador de conexión activa */}
+                        {connectingFrom && (
+                            <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-xs px-3 py-1.5 rounded-full shadow-lg pointer-events-none">
+                                Haz clic en el nodo destino para conectar
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+
+            {/* Panel de configuración */}
+            <NodeConfigPanel
+                node={nodeToConfig}
+                isOpen={configPanelOpen}
+                onClose={() => { setConfigPanelOpen(false); setNodeToConfig(null); }}
+                onSave={handleSaveNodeConfig}
             />
-          ))}
-
-          {/* Render nodes */}
-          {nodes.map(node => (
-            <WorkflowNode
-              key={node.id}
-              node={node}
-              isSelected={selectedNode === node.id}
-              onSelect={() => handleNodeSelect(node.id)}
-              onMove={handleNodeMove}
-              onDelete={handleNodeDelete}
-              onConnectionStart={handleConnectionStart}
-              onConnectionEnd={handleConnectionEnd}
-              onConfigure={handleConfigureNode}
-            />
-          ))}
-
-          {nodes.length === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="text-center text-gray-500">
-                <div className="text-6xl mb-4">🔧</div>
-                <h3 className="text-xl font-semibold mb-2">Comienza a crear tu flujo</h3>
-                <p>Arrastra componentes desde la paleta de la izquierda para empezar</p>
-              </div>
-            </div>
-          )}
         </div>
-      </div>
-
-      {/* Node Configuration Panel */}
-      <NodeConfigPanel
-        node={nodeToConfig}
-        isOpen={configPanelOpen}
-        onClose={() => {
-          setConfigPanelOpen(false);
-          setNodeToConfig(null);
-        }}
-        onSave={handleSaveNodeConfig}
-      />
-    </div>
-  );
+    );
 }

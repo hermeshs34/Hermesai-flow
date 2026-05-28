@@ -1,235 +1,304 @@
-import { useState } from 'react';
-import { 
-  Activity, 
-  AlertCircle, 
-  CheckCircle, 
-  Clock, 
-  RefreshCw,
-  Filter,
-  Download
+import { useState, useEffect, useCallback } from 'react';
+import {
+    Activity, AlertCircle, CheckCircle, Clock,
+    RefreshCw, Filter, Loader2,
 } from 'lucide-react';
+import { supabase } from '../core/supabase';
 
-interface LogEntry {
-  id: string;
-  timestamp: string;
-  workflow: string;
-  status: 'success' | 'error' | 'running' | 'warning';
-  message: string;
-  duration?: number;
-  details?: string;
+interface RunRow {
+    id:           string;
+    workflow_id:  string;
+    workflow_name?: string;
+    triggered_by: string;
+    status:       'running' | 'success' | 'error' | 'cancelled';
+    started_at:   string;
+    finished_at:  string | null;
+    duration_ms:  number | null;
+    logs_count:   number;
+    error_message:string | null;
+}
+
+interface LogRow {
+    id:           string;
+    workflow_id:  string;
+    node_id:      string | null;
+    status:       string;
+    message:      string;
+    timestamp:    string;
+    details:      string | null;
+}
+
+const STATUS_ICON: Record<string, React.ReactNode> = {
+    success:   <CheckCircle  className="w-4 h-4 text-green-500" />,
+    error:     <AlertCircle  className="w-4 h-4 text-red-500"   />,
+    running:   <RefreshCw    className="w-4 h-4 text-blue-500 animate-spin" />,
+    cancelled: <Clock        className="w-4 h-4 text-gray-400"  />,
+    info:      <Activity     className="w-4 h-4 text-blue-400"  />,
+    warning:   <Clock        className="w-4 h-4 text-yellow-500"/>,
+};
+
+const STATUS_BADGE: Record<string, string> = {
+    success:   'bg-green-100 text-green-700',
+    error:     'bg-red-100 text-red-700',
+    running:   'bg-blue-100 text-blue-700',
+    cancelled: 'bg-gray-100 text-gray-500',
+};
+
+function fmt(ms: number | null): string {
+    if (!ms) return '—';
+    if (ms < 1000) return `${ms}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function fmtDate(iso: string): string {
+    return new Date(iso).toLocaleString('es-VE', {
+        day: '2-digit', month: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
 }
 
 export function Monitoring() {
-  const [selectedFilter, setSelectedFilter] = useState<string>('all');
-  
-  // En producción, estos logs vendrían de una API real
-  const logs: LogEntry[] = [];
+    const [runs,         setRuns]         = useState<RunRow[]>([]);
+    const [logs,         setLogs]         = useState<LogRow[]>([]);
+    const [selectedRun,  setSelectedRun]  = useState<RunRow | null>(null);
+    const [filterStatus, setFilterStatus] = useState('all');
+    const [loading,      setLoading]      = useState(true);
+    const [logsLoading,  setLogsLoading]  = useState(false);
 
-  const getStatusIcon = (status: LogEntry['status']) => {
-    switch (status) {
-      case 'success':
-        return <CheckCircle className="w-5 h-5 text-green-500" />;
-      case 'error':
-        return <AlertCircle className="w-5 h-5 text-red-500" />;
-      case 'running':
-        return <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />;
-      case 'warning':
-        return <Clock className="w-5 h-5 text-yellow-500" />;
-      default:
-        return <Activity className="w-5 h-5 text-gray-500" />;
-    }
-  };
+    const loadRuns = useCallback(async () => {
+        setLoading(true);
+        try {
+            const { data, error } = await supabase
+                .from('execution_runs')
+                .select(`
+                    id, workflow_id, triggered_by, status,
+                    started_at, finished_at, duration_ms, logs_count, error_message,
+                    workflows(name)
+                `)
+                .order('started_at', { ascending: false })
+                .limit(100);
 
-  const getStatusColor = (status: LogEntry['status']) => {
-    switch (status) {
-      case 'success':
-        return 'bg-green-50 border-green-200';
-      case 'error':
-        return 'bg-red-50 border-red-200';
-      case 'running':
-        return 'bg-blue-50 border-blue-200';
-      case 'warning':
-        return 'bg-yellow-50 border-yellow-200';
-      default:
-        return 'bg-gray-50 border-gray-200';
-    }
-  };
+            if (error) throw error;
 
-  const filteredLogs = selectedFilter === 'all' 
-    ? logs 
-    : logs.filter(log => log.status === selectedFilter);
+            const mapped: RunRow[] = (data ?? []).map((r: any) => ({
+                ...r,
+                workflow_name: r.workflows?.name ?? r.workflow_id,
+            }));
+            setRuns(mapped);
+        } finally {
+            setLoading(false);
+        }
+    }, []);
 
-  const statusCounts = {
-    all: logs.length,
-    success: logs.filter(l => l.status === 'success').length,
-    error: logs.filter(l => l.status === 'error').length,
-    running: logs.filter(l => l.status === 'running').length,
-    warning: logs.filter(l => l.status === 'warning').length,
-  };
+    useEffect(() => { loadRuns(); }, [loadRuns]);
 
-  return (
-    <div className="p-6 space-y-6">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Monitoreo en Tiempo Real</h1>
-          <p className="text-gray-600">Supervisa la ejecución y el rendimiento de tus flujos de trabajo</p>
-        </div>
-        <div className="flex items-center space-x-2">
-          <button className="flex items-center space-x-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-            <RefreshCw className="w-4 h-4" />
-            <span>Actualizar</span>
-          </button>
-          <button className="flex items-center space-x-2 px-3 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors">
-            <Download className="w-4 h-4" />
-            <span>Exportar</span>
-          </button>
-        </div>
-      </header>
+    // Supabase Realtime — escuchar nuevas ejecuciones
+    useEffect(() => {
+        const channel = supabase
+            .channel('execution_runs_changes')
+            .on('postgres_changes', {
+                event:  '*',
+                schema: 'public',
+                table:  'execution_runs',
+            }, () => { loadRuns(); })
+            .subscribe();
 
-      {/* Status Summary */}
-      <div className="grid grid-cols-5 gap-4">
-        {Object.entries(statusCounts).map(([status, count]) => (
-          <button
-            key={status}
-            onClick={() => setSelectedFilter(status)}
-            className={`p-4 rounded-lg border-2 text-left transition-all ${
-              selectedFilter === status 
-                ? 'border-blue-500 bg-blue-50' 
-                : 'border-gray-200 bg-white hover:border-gray-300'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-gray-600 capitalize">
-                {status === 'all' ? 'Total' : status}
-              </span>
-              {status !== 'all' && getStatusIcon(status as LogEntry['status'])}
-            </div>
-            <p className="text-2xl font-bold text-gray-900">{count}</p>
-          </button>
-        ))}
-      </div>
+        return () => { supabase.removeChannel(channel); };
+    }, [loadRuns]);
 
-      {/* Logs Table */}
-      <div className="bg-white rounded-lg border border-gray-200">
-        <div className="p-4 border-b border-gray-200">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-gray-900">Registro de Actividad</h2>
-            <div className="flex items-center space-x-2">
-              <Filter className="w-4 h-4 text-gray-400" />
-              <span className="text-sm text-gray-600">
-                Mostrando {filteredLogs.length} de {logs.length} entradas
-              </span>
-            </div>
-          </div>
-        </div>
+    const loadLogs = async (run: RunRow) => {
+        setSelectedRun(run);
+        setLogsLoading(true);
+        try {
+            const { data } = await supabase
+                .from('execution_logs')
+                .select('id, workflow_id, node_id, status, message, timestamp, details')
+                .eq('execution_run_id', run.id)
+                .order('timestamp', { ascending: true });
 
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Estado
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Flujo de Trabajo
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Mensaje
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Timestamp
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Duración
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {filteredLogs.map((log) => (
-                <tr key={log.id} className={`${getStatusColor(log.status)} hover:bg-gray-50 transition-colors`}>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <div className="flex items-center space-x-2">
-                      {getStatusIcon(log.status)}
-                      <span className="text-sm font-medium text-gray-900 capitalize">
-                        {log.status}
-                      </span>
+            setLogs(data ?? []);
+        } finally {
+            setLogsLoading(false);
+        }
+    };
+
+    const filtered = filterStatus === 'all'
+        ? runs
+        : runs.filter(r => r.status === filterStatus);
+
+    const counts = {
+        all:       runs.length,
+        success:   runs.filter(r => r.status === 'success').length,
+        error:     runs.filter(r => r.status === 'error').length,
+        running:   runs.filter(r => r.status === 'running').length,
+    };
+
+    const successRate = runs.length
+        ? Math.round((counts.success / runs.length) * 100)
+        : 0;
+
+    const avgDuration = runs.filter(r => r.duration_ms).length
+        ? Math.round(runs.reduce((s, r) => s + (r.duration_ms ?? 0), 0) / runs.filter(r => r.duration_ms).length)
+        : 0;
+
+    return (
+        <div className="h-full flex overflow-hidden bg-gray-50">
+
+            {/* Panel izquierdo — lista de runs */}
+            <div className="w-96 flex flex-col border-r border-gray-200 bg-white flex-shrink-0">
+
+                <div className="p-4 border-b border-gray-200">
+                    <div className="flex items-center justify-between mb-3">
+                        <h1 className="font-bold text-gray-900">Monitoreo</h1>
+                        <button
+                            onClick={loadRuns}
+                            disabled={loading}
+                            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 disabled:opacity-40"
+                        >
+                            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                        </button>
                     </div>
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <div className="text-sm font-medium text-gray-900">{log.workflow}</div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="text-sm text-gray-900">{log.message}</div>
-                    {log.details && (
-                      <div className="text-xs text-gray-500 mt-1">{log.details}</div>
+
+                    {/* Stats mini */}
+                    <div className="grid grid-cols-3 gap-2 mb-3">
+                        <div className="text-center p-2 bg-gray-50 rounded-lg">
+                            <div className="text-lg font-bold text-gray-900">{counts.all}</div>
+                            <div className="text-[10px] text-gray-500">Total</div>
+                        </div>
+                        <div className="text-center p-2 bg-green-50 rounded-lg">
+                            <div className="text-lg font-bold text-green-600">{successRate}%</div>
+                            <div className="text-[10px] text-gray-500">Éxito</div>
+                        </div>
+                        <div className="text-center p-2 bg-blue-50 rounded-lg">
+                            <div className="text-lg font-bold text-blue-600">{fmt(avgDuration)}</div>
+                            <div className="text-[10px] text-gray-500">Prom.</div>
+                        </div>
+                    </div>
+
+                    {/* Filtro */}
+                    <div className="flex gap-1.5">
+                        {(['all', 'success', 'error', 'running'] as const).map(s => (
+                            <button
+                                key={s}
+                                onClick={() => setFilterStatus(s)}
+                                className={`flex-1 text-xs py-1 rounded-lg font-medium transition-colors ${
+                                    filterStatus === s
+                                        ? 'bg-indigo-600 text-white'
+                                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                }`}
+                            >
+                                {s === 'all' ? 'Todos' : s.charAt(0).toUpperCase() + s.slice(1)}
+                                {s !== 'all' && <span className="ml-1 opacity-70">({counts[s]})</span>}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Lista de runs */}
+                <div className="flex-1 overflow-y-auto">
+                    {loading ? (
+                        <div className="flex items-center justify-center h-32">
+                            <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                        </div>
+                    ) : filtered.length === 0 ? (
+                        <div className="text-center py-12 text-gray-400">
+                            <Activity className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                            <p className="text-sm">Sin ejecuciones aún</p>
+                            <p className="text-xs mt-1">Ejecuta un flujo desde el Constructor</p>
+                        </div>
+                    ) : (
+                        filtered.map(run => (
+                            <button
+                                key={run.id}
+                                onClick={() => loadLogs(run)}
+                                className={`w-full text-left p-3 border-b border-gray-100 hover:bg-gray-50 transition-colors ${
+                                    selectedRun?.id === run.id ? 'bg-indigo-50 border-l-2 border-l-indigo-500' : ''
+                                }`}
+                            >
+                                <div className="flex items-center justify-between mb-1">
+                                    <div className="flex items-center gap-2">
+                                        {STATUS_ICON[run.status] ?? STATUS_ICON.info}
+                                        <span className="text-sm font-medium text-gray-900 truncate max-w-[140px]">
+                                            {run.workflow_name}
+                                        </span>
+                                    </div>
+                                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${STATUS_BADGE[run.status] ?? 'bg-gray-100 text-gray-500'}`}>
+                                        {run.status}
+                                    </span>
+                                </div>
+                                <div className="flex items-center justify-between text-xs text-gray-400">
+                                    <span>{fmtDate(run.started_at)}</span>
+                                    <span>{fmt(run.duration_ms)} · {run.logs_count} pasos</span>
+                                </div>
+                                {run.error_message && (
+                                    <p className="text-xs text-red-500 mt-1 truncate">{run.error_message}</p>
+                                )}
+                            </button>
+                        ))
                     )}
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                    {log.timestamp}
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                    {log.duration ? `${log.duration}s` : '-'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                </div>
+            </div>
 
-      {/* Real-time Stats */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <h3 className="font-semibold text-gray-900 mb-4">Rendimiento Promedio</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-600">Tiempo de ejecución</span>
-              <span className="font-medium">0s</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-600">Tasa de éxito</span>
-              <span className="font-medium text-green-600">0%</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-600">Flujos por hora</span>
-              <span className="font-medium">0</span>
-            </div>
-          </div>
-        </div>
+            {/* Panel derecho — detalle de logs */}
+            <div className="flex-1 flex flex-col overflow-hidden">
+                {!selectedRun ? (
+                    <div className="flex-1 flex items-center justify-center text-gray-400">
+                        <div className="text-center">
+                            <Filter className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                            <p className="text-sm">Selecciona una ejecución para ver el detalle</p>
+                        </div>
+                    </div>
+                ) : (
+                    <>
+                        {/* Header del run seleccionado */}
+                        <div className="p-4 bg-white border-b border-gray-200">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <h2 className="font-bold text-gray-900">{selectedRun.workflow_name}</h2>
+                                    <p className="text-xs text-gray-500 mt-0.5">
+                                        {fmtDate(selectedRun.started_at)}
+                                        {selectedRun.finished_at && ` → ${fmtDate(selectedRun.finished_at)}`}
+                                        {' · '}{fmt(selectedRun.duration_ms)}
+                                        {' · Disparado por: '}{selectedRun.triggered_by}
+                                    </p>
+                                </div>
+                                <span className={`text-xs font-bold px-3 py-1 rounded-full ${STATUS_BADGE[selectedRun.status]}`}>
+                                    {selectedRun.status.toUpperCase()}
+                                </span>
+                            </div>
+                        </div>
 
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <h3 className="font-semibold text-gray-900 mb-4">Recursos del Sistema</h3>
-          <div className="space-y-3">
-            <div>
-              <div className="flex justify-between mb-1">
-                <span className="text-gray-600 text-sm">CPU</span>
-                <span className="text-sm font-medium">0%</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div className="bg-blue-600 h-2 rounded-full" style={{ width: '0%' }}></div>
-              </div>
+                        {/* Logs */}
+                        <div className="flex-1 overflow-y-auto p-4 space-y-1.5 font-mono text-xs">
+                            {logsLoading ? (
+                                <div className="flex items-center justify-center h-20">
+                                    <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                                </div>
+                            ) : logs.length === 0 ? (
+                                <p className="text-gray-400 text-center py-8">Sin logs registrados</p>
+                            ) : (
+                                logs.map(log => (
+                                    <div
+                                        key={log.id}
+                                        className={`flex gap-3 p-2.5 rounded-lg border ${
+                                            log.status === 'error'   ? 'bg-red-50 border-red-100 text-red-800' :
+                                            log.status === 'success' ? 'bg-green-50 border-green-100 text-green-800' :
+                                            log.status === 'warning' ? 'bg-yellow-50 border-yellow-100 text-yellow-800' :
+                                            'bg-gray-50 border-gray-100 text-gray-700'
+                                        }`}
+                                    >
+                                        <span className="flex-shrink-0 text-gray-400 text-[10px] mt-0.5 w-16 text-right">
+                                            {new Date(log.timestamp).toLocaleTimeString('es-VE')}
+                                        </span>
+                                        <span className="flex-shrink-0">{STATUS_ICON[log.status] ?? STATUS_ICON.info}</span>
+                                        <span className="flex-1 break-all">{log.message}</span>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </>
+                )}
             </div>
-            <div>
-              <div className="flex justify-between mb-1">
-                <span className="text-gray-600 text-sm">Memoria</span>
-                <span className="text-sm font-medium">0%</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div className="bg-orange-500 h-2 rounded-full" style={{ width: '0%' }}></div>
-              </div>
-            </div>
-          </div>
         </div>
-
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <h3 className="font-semibold text-gray-900 mb-4">Alertas Activas</h3>
-          <div className="space-y-2">
-            <div className="text-sm text-gray-500 text-center py-4">
-              No hay alertas activas
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+    );
 }

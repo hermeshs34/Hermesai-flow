@@ -1,219 +1,263 @@
-import { useEffect } from 'react';
-import { useWorkflows, useWorkflowExecution } from '../hooks/useWorkflow';
-import { useWorkflowStore } from '../store/workflowStore';
-import { 
-  TrendingUp, 
-  Mail, 
-  Globe, 
-  Database,
-  AlertCircle,
-  CheckCircle,
-  Clock,
-  Zap,
-  Play,
-  Pause
+import { useEffect, useState, useCallback } from 'react';
+import {
+    Zap, CheckCircle, AlertCircle, Clock,
+    Play, Pause, RefreshCw, TrendingUp, Activity,
 } from 'lucide-react';
-import { showInfo } from '../utils/toast';
+import { supabase } from '../core/supabase';
+import type { Workflow } from '../types/workflow';
+import { WorkflowService } from '../services/workflow.service';
+import { toast } from 'sonner';
+
+interface Stats {
+    totalRuns:    number;
+    successRuns:  number;
+    errorRuns:    number;
+    activeFlows:  number;
+    avgDurationMs: number;
+}
+
+interface RecentRun {
+    id:            string;
+    workflow_name: string;
+    status:        string;
+    started_at:    string;
+    duration_ms:   number | null;
+    logs_count:    number;
+}
+
+function fmt(ms: number | null): string {
+    if (!ms) return '—';
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function fmtDate(iso: string): string {
+    return new Date(iso).toLocaleString('es-VE', {
+        day: '2-digit', month: '2-digit',
+        hour: '2-digit', minute: '2-digit',
+    });
+}
 
 export function Dashboard() {
-  const { workflows, loadWorkflows } = useWorkflows();
-  const executionLogs = useWorkflowStore(state => state.executionLogs);
-  const { executeWorkflow } = useWorkflowExecution();
+    const [stats,     setStats]     = useState<Stats | null>(null);
+    const [recent,    setRecent]    = useState<RecentRun[]>([]);
+    const [workflows, setWorkflows] = useState<Workflow[]>([]);
+    const [loading,   setLoading]   = useState(true);
 
-  const recentLogs = executionLogs.slice(0, 10);
+    const load = useCallback(async () => {
+        setLoading(true);
+        try {
+            const [runsRes, wfsRes] = await Promise.all([
+                supabase
+                    .from('execution_runs')
+                    .select(`
+                        id, status, started_at, duration_ms, logs_count,
+                        workflows(name)
+                    `)
+                    .order('started_at', { ascending: false })
+                    .limit(200),
+                supabase
+                    .from('workflows')
+                    .select('id, name, status, is_active, execution_count, last_run_at, created_at')
+                    .order('created_at', { ascending: false })
+                    .limit(50),
+            ]);
 
-  const stats = [
-    { label: 'Flujos Ejecutados Hoy', value: '0', icon: Zap, color: 'blue', trend: '0%' },
-    { label: 'Emails Procesados', value: '0', icon: Mail, color: 'green', trend: '0%' },
-    { label: 'Web Scrapings', value: '0', icon: Globe, color: 'purple', trend: '0%' },
-    { label: 'Registros CRM', value: '0', icon: Database, color: 'orange', trend: '0%' },
-  ];
+            const runs: any[] = runsRes.data ?? [];
+            const wfs:  any[] = wfsRes.data  ?? [];
 
-  useEffect(() => {
-    loadWorkflows();
-  }, [loadWorkflows]);
+            const successCount  = runs.filter(r => r.status === 'success').length;
+            const errorCount    = runs.filter(r => r.status === 'error').length;
+            const withDuration  = runs.filter(r => r.duration_ms);
+            const avgDur        = withDuration.length
+                ? Math.round(withDuration.reduce((s, r) => s + r.duration_ms, 0) / withDuration.length)
+                : 0;
 
-  const handleToggleWorkflow = async (_workflowId: string) => {
-    try {
-      // Agregar await para operación async
-      await loadWorkflows();
-      showInfo('Estado del flujo actualizado');
-    } catch (error) {
-      console.error('Error actualizando flujo:', error);
-    }
-  };
+            setStats({
+                totalRuns:     runs.length,
+                successRuns:   successCount,
+                errorRuns:     errorCount,
+                activeFlows:   wfs.filter(w => w.is_active).length,
+                avgDurationMs: avgDur,
+            });
 
-  const handleExecuteWorkflow = async (workflowId: string) => {
-    try {
-      await executeWorkflow(workflowId);
-    } catch (error) {
-      console.error('Error ejecutando flujo:', error);
-    }
-  };
+            setRecent(
+                runs.slice(0, 8).map(r => ({
+                    id:            r.id,
+                    workflow_name: r.workflows?.name ?? '—',
+                    status:        r.status,
+                    started_at:    r.started_at,
+                    duration_ms:   r.duration_ms,
+                    logs_count:    r.logs_count,
+                }))
+            );
 
-  return (
-    <div className="p-6 space-y-6">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-600">Monitorea tus flujos de automatización en tiempo real</p>
-        </div>
-        <div className="flex items-center space-x-2 bg-green-50 px-3 py-2 rounded-lg border border-green-200">
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-          <span className="text-green-700 font-medium">Sistema Operativo</span>
-        </div>
-      </header>
+            setWorkflows(wfs.map(w => ({
+                id:             w.id,
+                name:           w.name,
+                description:    '',
+                nodes:          [],
+                connections:    [],
+                isActive:       w.is_active,
+                createdAt:      w.created_at,
+                lastRun:        w.last_run_at,
+                executionCount: w.execution_count ?? 0,
+                status:         w.status ?? 'paused',
+            })));
+        } catch (err: any) {
+            toast.error('Error cargando dashboard');
+        } finally {
+            setLoading(false);
+        }
+    }, []);
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {stats.map((stat, index) => {
-          const Icon = stat.icon;
-          return (
-            <div key={index} className="bg-white rounded-lg border border-gray-200 p-6 hover:shadow-md transition-shadow">
-              <div className="flex items-center justify-between">
+    useEffect(() => { load(); }, [load]);
+
+    // Realtime — refrescar cuando haya nuevas ejecuciones
+    useEffect(() => {
+        const ch = supabase
+            .channel('dashboard_runs')
+            .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'execution_runs' }, load)
+            .subscribe();
+        return () => { supabase.removeChannel(ch); };
+    }, [load]);
+
+    const toggleActive = async (wf: Workflow) => {
+        try {
+            await WorkflowService.updateWorkflow(wf.id, wf.id, { isActive: !wf.isActive });
+            setWorkflows(prev => prev.map(w => w.id === wf.id ? { ...w, isActive: !w.isActive } : w));
+        } catch {
+            toast.error('No se pudo actualizar el flujo');
+        }
+    };
+
+    const STATUS_ICON: Record<string, React.ReactNode> = {
+        success:  <CheckCircle className="w-4 h-4 text-green-500" />,
+        error:    <AlertCircle className="w-4 h-4 text-red-500"   />,
+        running:  <RefreshCw   className="w-4 h-4 text-blue-500 animate-spin" />,
+        default:  <Clock       className="w-4 h-4 text-gray-400"  />,
+    };
+
+    const successRate = stats && stats.totalRuns
+        ? Math.round((stats.successRuns / stats.totalRuns) * 100)
+        : 0;
+
+    const STAT_CARDS = stats ? [
+        { label: 'Total Ejecuciones',   value: stats.totalRuns,    icon: Zap,          color: 'indigo', sub: 'histórico' },
+        { label: 'Exitosas',            value: stats.successRuns,  icon: CheckCircle,  color: 'green',  sub: `${successRate}% tasa éxito` },
+        { label: 'Con Error',           value: stats.errorRuns,    icon: AlertCircle,  color: 'red',    sub: 'requieren revisión' },
+        { label: 'Tiempo Promedio',     value: fmt(stats.avgDurationMs), icon: TrendingUp, color: 'blue', sub: 'por ejecución' },
+    ] : [];
+
+    return (
+        <div className="p-6 space-y-6 overflow-y-auto h-full bg-gray-50">
+            <header className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-600">{stat.label}</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">{stat.value}</p>
-                  <div className="flex items-center mt-2">
-                    <TrendingUp className="w-4 h-4 text-green-500 mr-1" />
-                    <span className="text-sm text-green-600 font-medium">{stat.trend}</span>
-                  </div>
+                    <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+                    <p className="text-sm text-gray-500 mt-0.5">Vista general de flujos y ejecuciones</p>
                 </div>
-                <div className={`w-12 h-12 bg-${stat.color}-100 rounded-lg flex items-center justify-center`}>
-                  <Icon className={`w-6 h-6 text-${stat.color}-600`} />
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+                <button
+                    onClick={load}
+                    disabled={loading}
+                    className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 text-sm rounded-lg hover:bg-gray-50 disabled:opacity-40"
+                >
+                    <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                    Actualizar
+                </button>
+            </header>
 
-      {/* Recent Workflows */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">Flujos de Trabajo</h2>
-            <span className="text-sm text-gray-500">{workflows.length} activos</span>
-          </div>
-          <div className="space-y-4">
-            {workflows.map((workflow) => (
-              <div key={workflow.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-                <div className="flex items-center space-x-3">
-                  <div className={`w-3 h-3 rounded-full ${
-                    workflow.status === 'active' ? 'bg-green-500' :
-                    workflow.status === 'paused' ? 'bg-yellow-500' : 'bg-red-500'
-                  }`}></div>
-                  <div>
-                    <p className="font-medium text-gray-900">{workflow.name}</p>
-                    <p className="text-sm text-gray-600">
-                      {workflow.lastRun ? `Última ejecución: ${new Date(workflow.lastRun).toLocaleString()}` : 'Nunca ejecutado'}
-                    </p>
-                  </div>
+            {/* KPI Cards */}
+            {loading ? (
+                <div className="grid grid-cols-4 gap-4">
+                    {[0,1,2,3].map(i => (
+                        <div key={i} className="bg-white rounded-xl border border-gray-200 p-5 animate-pulse h-24" />
+                    ))}
                 </div>
-                <div className="flex items-center space-x-2">
-                  <div className="text-right mr-2">
-                    <p className="text-sm font-medium text-gray-900">{workflow.executionCount}</p>
-                    <p className="text-xs text-gray-500">ejecuciones</p>
-                  </div>
-                  <button
-                    onClick={() => handleExecuteWorkflow(workflow.id)}
-                    className="p-1 text-green-600 hover:bg-green-100 rounded transition-colors"
-                    title="Ejecutar ahora"
-                  >
-                    <Play className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleToggleWorkflow(workflow.id)}
-                    className={`p-1 rounded transition-colors ${
-                      workflow.status === 'active' 
-                        ? 'text-yellow-600 hover:bg-yellow-100' 
-                        : 'text-green-600 hover:bg-green-100'
-                    }`}
-                    title={workflow.status === 'active' ? 'Pausar' : 'Activar'}
-                  >
-                    {workflow.status === 'active' ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                  </button>
+            ) : (
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    {STAT_CARDS.map(({ label, value, icon: Icon, color, sub }) => (
+                        <div key={label} className="bg-white rounded-xl border border-gray-200 p-5">
+                            <div className="flex items-center justify-between mb-3">
+                                <span className="text-sm text-gray-500">{label}</span>
+                                <div className={`p-2 rounded-lg bg-${color}-50`}>
+                                    <Icon className={`w-4 h-4 text-${color}-500`} />
+                                </div>
+                            </div>
+                            <p className="text-2xl font-bold text-gray-900">{value}</p>
+                            <p className="text-xs text-gray-400 mt-1">{sub}</p>
+                        </div>
+                    ))}
                 </div>
-              </div>
-            ))}
-            {workflows.length === 0 && (
-              <div className="text-center py-8 text-gray-500">
-                <p>No hay flujos de trabajo creados</p>
-                <p className="text-sm mt-1">Ve al Constructor de Flujos para crear uno</p>
-              </div>
             )}
-          </div>
-        </div>
 
-        {/* System Health */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">Actividad Reciente</h2>
-            <span className="text-sm text-gray-500">{recentLogs.length} eventos</span>
-          </div>
-          <div className="space-y-3 max-h-80 overflow-y-auto">
-            {recentLogs.map((log) => (
-              <div key={log.id} className="flex items-start space-x-3 p-2 rounded-lg hover:bg-gray-50">
-                <div className={`w-2 h-2 rounded-full mt-2 flex-shrink-0 ${
-                  log.status === 'success' ? 'bg-green-500' :
-                  log.status === 'error' ? 'bg-red-500' :
-                  log.status === 'warning' ? 'bg-yellow-500' : 'bg-blue-500'
-                }`}></div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-gray-900 truncate">{log.message}</p>
-                  <p className="text-xs text-gray-500">{new Date(log.timestamp).toLocaleString()}</p>
-                  {log.duration && (
-                    <p className="text-xs text-gray-400">Duración: {log.duration}ms</p>
-                  )}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+                {/* Ejecuciones recientes */}
+                <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200">
+                    <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+                        <h2 className="font-semibold text-gray-900 text-sm">Últimas Ejecuciones</h2>
+                        <Activity className="w-4 h-4 text-gray-400" />
+                    </div>
+                    <div className="divide-y divide-gray-50">
+                        {recent.length === 0 ? (
+                            <p className="text-sm text-gray-400 text-center py-8">
+                                Sin ejecuciones — ejecuta tu primer flujo desde el Constructor
+                            </p>
+                        ) : (
+                            recent.map(r => (
+                                <div key={r.id} className="flex items-center gap-3 px-4 py-3">
+                                    {STATUS_ICON[r.status] ?? STATUS_ICON.default}
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium text-gray-900 truncate">{r.workflow_name}</p>
+                                        <p className="text-xs text-gray-400">{fmtDate(r.started_at)}</p>
+                                    </div>
+                                    <div className="text-right flex-shrink-0">
+                                        <p className="text-xs text-gray-500">{fmt(r.duration_ms)}</p>
+                                        <p className="text-xs text-gray-400">{r.logs_count} pasos</p>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
                 </div>
-              </div>
-            ))}
-            {recentLogs.length === 0 && (
-              <div className="text-center py-8 text-gray-500">
-                <p>No hay actividad reciente</p>
-                <p className="text-sm mt-1">Los logs aparecerán aquí cuando ejecutes flujos</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
 
-      {/* System Status */}
-      <div className="bg-white rounded-lg border border-gray-200 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Estado del Sistema</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <CheckCircle className="w-5 h-5 text-green-500" />
-                <span className="text-gray-700">API de Email</span>
-              </div>
-              <span className="text-green-600 text-sm font-medium">Operativo</span>
+                {/* Mis flujos */}
+                <div className="bg-white rounded-xl border border-gray-200">
+                    <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+                        <h2 className="font-semibold text-gray-900 text-sm">Mis Flujos</h2>
+                        <span className="text-xs text-gray-400">{workflows.length} total</span>
+                    </div>
+                    <div className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
+                        {workflows.length === 0 ? (
+                            <p className="text-sm text-gray-400 text-center py-8">
+                                Sin flujos — crea el primero en el Constructor
+                            </p>
+                        ) : (
+                            workflows.map(wf => (
+                                <div key={wf.id} className="flex items-center gap-3 px-4 py-3">
+                                    <button
+                                        onClick={() => toggleActive(wf)}
+                                        className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                                            wf.isActive
+                                                ? 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200'
+                                                : 'bg-gray-100 text-gray-400 hover:bg-gray-200'
+                                        }`}
+                                        title={wf.isActive ? 'Pausar' : 'Activar'}
+                                    >
+                                        {wf.isActive ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                                    </button>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium text-gray-900 truncate">{wf.name}</p>
+                                        <p className="text-xs text-gray-400">
+                                            {wf.executionCount} ejecuciones
+                                            {wf.lastRun && ` · ${fmtDate(wf.lastRun)}`}
+                                        </p>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
             </div>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <CheckCircle className="w-5 h-5 text-green-500" />
-                <span className="text-gray-700">Web Scraping Engine</span>
-              </div>
-              <span className="text-green-600 text-sm font-medium">Operativo</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <Clock className="w-5 h-5 text-yellow-500" />
-                <span className="text-gray-700">Procesador IA</span>
-              </div>
-              <span className="text-yellow-600 text-sm font-medium">Carga Alta</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <AlertCircle className="w-5 h-5 text-red-500" />
-                <span className="text-gray-700">Conexión CRM</span>
-              </div>
-              <span className="text-red-600 text-sm font-medium">Error</span>
-            </div>
-          </div>
         </div>
-      </div>
-    </div>
-  );
+    );
 }

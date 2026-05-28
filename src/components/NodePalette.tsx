@@ -1,177 +1,211 @@
-import React from 'react';
-import { X, Mail, Globe, Brain, FileText, Database, Filter } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+    X, Play, Clock, Zap, Mail, GitBranch, FileText,
+    Shield, Search, TrendingUp, Lock, Bell, Package,
+    ShoppingCart, UserCheck, Database, ArrowUpRight,
+    AlertTriangle, Timer, ChevronDown, ChevronRight,
+} from 'lucide-react';
 
-interface NodeType {
-  id: string;
-  type: 'trigger' | 'processor' | 'output';
-  category: string;
-  title: string;
-  description: string;
-  icon: React.ComponentType<any>;
+export interface NodeType {
+    id:          string;
+    type:        'trigger' | 'processor' | 'output';
+    category:    string;
+    title:       string;
+    description: string;
+    icon:        React.ComponentType<any>;
+    color:       string;
 }
 
 interface NodePaletteProps {
-  onDragStart: (nodeType: NodeType) => void;
-  onClose: () => void;
+    onDragStart: (nodeType: NodeType) => void;
+    onClose:     () => void;
 }
 
+// ── Catálogo de nodos por industria ─────────────────────────────────────────
+
+const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
+    {
+        label: 'Universal',
+        color: '#6366f1',
+        nodes: [
+            { id: 'manual-trigger',  type: 'trigger',   category: 'manual',   title: 'Inicio Manual',      description: 'Ejecutar flujo manualmente con un clic',  icon: Play,         color: '#22c55e' },
+            { id: 'cron-trigger',    type: 'trigger',   category: 'cron',     title: 'Programado (Cron)',  description: 'Ejecutar en horario fijo (ej: 0 9 * * 1)', icon: Clock,        color: '#3b82f6' },
+            { id: 'webhook-trigger', type: 'trigger',   category: 'webhook',  title: 'Webhook Entrante',   description: 'Recibir llamadas HTTP de sistemas externos',icon: Zap,          color: '#f59e0b' },
+            { id: 'email-output',    type: 'output',    category: 'email',    title: 'Enviar Email',       description: 'Enviar correo vía Resend API',             icon: Mail,         color: '#ec4899' },
+            { id: 'decision',        type: 'processor', category: 'decision', title: 'Decisión (Si/No)',   description: 'Bifurcar flujo según condición evaluada',  icon: GitBranch,    color: '#8b5cf6' },
+            { id: 'delay',           type: 'processor', category: 'delay',    title: 'Espera',             description: 'Pausar N segundos antes del siguiente nodo',icon: Timer,        color: '#64748b' },
+            { id: 'log-message',     type: 'output',    category: 'log',      title: 'Registrar Log',      description: 'Guardar mensaje en historial de ejecución',icon: FileText,     color: '#94a3b8' },
+        ],
+    },
+    {
+        label: 'Seguros & Reaseguros',
+        color: '#0ea5e9',
+        nodes: [
+            { id: 'riskguard-siniestro',    type: 'trigger',   category: 'riskguard',   title: 'Alerta Siniestro',        description: 'Disparar cuando ingresa siniestro en RiskGuard',    icon: AlertTriangle, color: '#ef4444' },
+            { id: 'verificar-poliza',        type: 'processor', category: 'riskguard',   title: 'Verificar Póliza',        description: 'Consultar cobertura vigente en SIRWeb',              icon: Search,        color: '#3b82f6' },
+            { id: 'calcular-reserva',        type: 'processor', category: 'actuarial',   title: 'Calcular Reserva IBNR',   description: 'Calcular reserva técnica con método Chain Ladder',   icon: TrendingUp,    color: '#10b981' },
+            { id: 'escalar-reaseguro',       type: 'processor', category: 'reaseguro',   title: 'Escalar Reaseguro',       description: 'Si monto > XL → notificar reasegurador',            icon: ArrowUpRight,  color: '#f59e0b' },
+            { id: 'notificar-ajustador',     type: 'output',    category: 'notificacion', title: 'Notificar Ajustador',    description: 'Email + WhatsApp al ajustador asignado',             icon: Bell,          color: '#6366f1' },
+            { id: 'reporte-sudeaseg',        type: 'output',    category: 'regulatorio',  title: 'Reporte SUDEASEG',       description: 'Generar informe regulatorio en formato SUDEASEG',    icon: FileText,      color: '#8b5cf6' },
+            { id: 'score-fraude',            type: 'processor', category: 'fraude',       title: 'Score Fraude',           description: 'Calcular score de fraude con motor determinístico',  icon: Shield,        color: '#ef4444' },
+        ],
+    },
+    {
+        label: 'Banca & Finanzas',
+        color: '#10b981',
+        nodes: [
+            { id: 'bcv-query',        type: 'processor', category: 'bcv',        title: 'Tasa BCV',              description: 'Obtener tasa de cambio oficial BCV del día',          icon: TrendingUp, color: '#f59e0b' },
+            { id: 'aml-score',        type: 'processor', category: 'aml',        title: 'Score AML',             description: 'Calcular riesgo AML del cliente (PEP, OFAC, ONU)',    icon: Shield,     color: '#ef4444' },
+            { id: 'verificar-ofac',   type: 'processor', category: 'aml',        title: 'Verificar OFAC/ONU',    description: 'Consultar listas restrictivas internacionales',        icon: Search,     color: '#dc2626' },
+            { id: 'congelar-op',      type: 'output',    category: 'operacion',  title: 'Congelar Operación',    description: 'Bloquear transacción sospechosa y notificar',         icon: Lock,       color: '#7c3aed' },
+            { id: 'reporte-sudeban',  type: 'output',    category: 'regulatorio',title: 'Reporte SUDEBAN',       description: 'Generar reporte regulatorio bancario mensual',        icon: FileText,   color: '#0ea5e9' },
+            { id: 'alerta-umbral',    type: 'trigger',   category: 'umbral',     title: 'Alerta por Umbral',     description: 'Disparar cuando valor supera umbral configurado',     icon: AlertTriangle, color: '#f59e0b' },
+        ],
+    },
+    {
+        label: 'Manufactura & Textil',
+        color: '#f59e0b',
+        nodes: [
+            { id: 'check-stock',        type: 'trigger',   category: 'inventario',  title: 'Alerta de Stock',       description: 'Cuando stock < umbral mínimo configurado',           icon: Package,     color: '#ef4444' },
+            { id: 'generar-oc',         type: 'output',    category: 'compras',     title: 'Orden de Compra',       description: 'Generar OC automática al proveedor aprobado',        icon: ShoppingCart,color: '#10b981' },
+            { id: 'solicitar-aprob',    type: 'processor', category: 'aprobacion',  title: 'Solicitar Aprobación',  description: 'Pausar flujo hasta que gerencia apruebe/rechace',    icon: UserCheck,   color: '#3b82f6' },
+            { id: 'actualizar-erp',     type: 'output',    category: 'erp',         title: 'Actualizar ERP/WMS',    description: 'Sincronizar datos con sistema ERP o WMS',            icon: Database,    color: '#8b5cf6' },
+            { id: 'notif-produccion',   type: 'output',    category: 'notificacion',title: 'Notificar Producción',  description: 'Alerta al jefe de planta con detalle de acción',     icon: Bell,        color: '#f59e0b' },
+            { id: 'control-calidad',    type: 'processor', category: 'calidad',     title: 'Control de Calidad',    description: 'Verificar parámetros de calidad contra estándar',   icon: Shield,      color: '#22c55e' },
+        ],
+    },
+];
+
+const TYPE_LABEL: Record<string, string> = {
+    trigger:   'Trigger',
+    processor: 'Proceso',
+    output:    'Salida',
+};
+
+const TYPE_BG: Record<string, string> = {
+    trigger:   'bg-green-100 text-green-700',
+    processor: 'bg-blue-100 text-blue-700',
+    output:    'bg-purple-100 text-purple-700',
+};
+
 export function NodePalette({ onDragStart, onClose }: NodePaletteProps) {
-  const nodeTypes: NodeType[] = [
-    // Triggers
-    {
-      id: 'email-trigger',
-      type: 'trigger',
-      category: 'email',
-      title: 'Monitor Email',
-      description: 'Monitorea una bandeja de entrada específica',
-      icon: Mail
-    },
-    {
-      id: 'web-trigger',
-      type: 'trigger',
-      category: 'web',
-      title: 'Web Scraper',
-      description: 'Extrae datos de sitios web automáticamente',
-      icon: Globe
-    },
-    
-    // Processors
-    {
-      id: 'ai-classifier',
-      type: 'processor',
-      category: 'ai',
-      title: 'Clasificador IA',
-      description: 'Clasifica y analiza contenido usando IA',
-      icon: Brain
-    },
-    {
-      id: 'ai-responder',
-      type: 'processor',
-      category: 'ai',
-      title: 'Responder IA',
-      description: 'Genera respuestas automáticas usando IA',
-      icon: Brain
-    },
-    {
-      id: 'filter',
-      type: 'processor',
-      category: 'logic',
-      title: 'Filtro Lógico',
-      description: 'Aplica reglas condicionales',
-      icon: Filter
-    },
-    
-    // Outputs
-    {
-      id: 'excel-output',
-      type: 'output',
-      category: 'excel',
-      title: 'Exportar Excel',
-      description: 'Guarda datos en archivos Excel/CSV',
-      icon: FileText
-    },
-    {
-      id: 'crm-output',
-      type: 'output',
-      category: 'crm',
-      title: 'Enviar a CRM',
-      description: 'Integra con sistemas CRM/ERP',
-      icon: Database
-    }
-  ];
+    const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+        Universal: true,
+        'Seguros & Reaseguros': false,
+        'Banca & Finanzas': false,
+        'Manufactura & Textil': false,
+    });
+    const [search, setSearch] = useState('');
 
-  const handleDragStart = (_e: React.DragEvent, nodeType: NodeType) => {
-    onDragStart(nodeType);
-  };
+    const toggle = (label: string) =>
+        setOpenSections(prev => ({ ...prev, [label]: !prev[label] }));
 
-  const groupedNodes = nodeTypes.reduce((acc, node) => {
-    const group = node.type;
-    if (!acc[group]) acc[group] = [];
-    acc[group].push(node);
-    return acc;
-  }, {} as Record<string, NodeType[]>);
+    const filtered = CATALOG.map(section => ({
+        ...section,
+        nodes: search
+            ? section.nodes.filter(n =>
+                  n.title.toLowerCase().includes(search.toLowerCase()) ||
+                  n.description.toLowerCase().includes(search.toLowerCase())
+              )
+            : section.nodes,
+    })).filter(s => s.nodes.length > 0);
 
-  const getGroupTitle = (type: string) => {
-    switch (type) {
-      case 'trigger': return 'Disparadores (Entrada)';
-      case 'processor': return 'Procesadores (IA & Lógica)';
-      case 'output': return 'Salidas (Destinos)';
-      default: return type;
-    }
-  };
-
-  const getGroupColor = (type: string) => {
-    switch (type) {
-      case 'trigger': return 'text-green-700';
-      case 'processor': return 'text-blue-700';
-      case 'output': return 'text-orange-700';
-      default: return 'text-gray-700';
-    }
-  };
-
-  return (
-    <div className="h-full flex flex-col">
-      <header className="flex items-center justify-between p-4 border-b border-gray-200">
-        <h2 className="font-semibold text-gray-900">Paleta de Módulos</h2>
-        <button
-          onClick={onClose}
-          className="text-gray-400 hover:text-gray-600 transition-colors"
-        >
-          <X className="w-5 h-5" />
-        </button>
-      </header>
-
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        {Object.entries(groupedNodes).map(([type, nodes]) => (
-          <div key={type}>
-            <h3 className={`font-medium mb-3 ${getGroupColor(type)}`}>
-              {getGroupTitle(type)}
-            </h3>
-            <div className="space-y-2">
-              {nodes.map((nodeType) => {
-                const Icon = nodeType.icon;
-                return (
-                  <div
-                    key={nodeType.id}
-                    draggable
-                    onDragStart={(e) => handleDragStart(e, nodeType)}
-                    className="p-3 bg-white border border-gray-200 rounded-lg cursor-move hover:border-gray-300 hover:shadow-sm transition-all"
-                  >
-                    <div className="flex items-start space-x-3">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                        nodeType.type === 'trigger' ? 'bg-green-100' :
-                        nodeType.type === 'processor' ? 'bg-blue-100' : 'bg-orange-100'
-                      }`}>
-                        <Icon className={`w-4 h-4 ${
-                          nodeType.type === 'trigger' ? 'text-green-600' :
-                          nodeType.type === 'processor' ? 'text-blue-600' : 'text-orange-600'
-                        }`} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-gray-900 text-sm">
-                          {nodeType.title}
-                        </p>
-                        <p className="text-xs text-gray-600 mt-1">
-                          {nodeType.description}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+    return (
+        <div className="h-full flex flex-col bg-white">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-200">
+                <h2 className="font-semibold text-gray-900 text-sm">Biblioteca de Nodos</h2>
+                <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                    <X className="w-4 h-4" />
+                </button>
             </div>
-          </div>
-        ))}
-      </div>
 
-      <div className="p-4 border-t border-gray-200 bg-gray-50">
-        <div className="text-xs text-gray-600">
-          <p className="font-medium mb-1">Instrucciones:</p>
-          <p>• Arrastra módulos al canvas para crear tu flujo</p>
-          <p>• Conecta módulos arrastrando desde los puntos de conexión</p>
-          <p>• Haz clic en un módulo para configurar sus propiedades</p>
+            {/* Search */}
+            <div className="p-3 border-b border-gray-100">
+                <input
+                    type="text"
+                    placeholder="Buscar nodo..."
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                />
+            </div>
+
+            {/* Catalog */}
+            <div className="flex-1 overflow-y-auto">
+                {filtered.map(section => (
+                    <div key={section.label}>
+                        {/* Section header */}
+                        <button
+                            onClick={() => toggle(section.label)}
+                            className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-50 hover:bg-gray-100 border-b border-gray-200 transition-colors"
+                        >
+                            <div className="flex items-center gap-2">
+                                <div
+                                    className="w-2 h-2 rounded-full"
+                                    style={{ backgroundColor: section.color }}
+                                />
+                                <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
+                                    {section.label}
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <span className="text-xs text-gray-400">{section.nodes.length}</span>
+                                {(openSections[section.label] || !!search)
+                                    ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+                                    : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />}
+                            </div>
+                        </button>
+
+                        {/* Nodes */}
+                        {(openSections[section.label] || !!search) && (
+                            <div className="p-2 space-y-1.5">
+                                {section.nodes.map(node => {
+                                    const Icon = node.icon;
+                                    return (
+                                        <div
+                                            key={node.id}
+                                            draggable
+                                            onDragStart={() => onDragStart(node)}
+                                            className="flex items-start gap-3 p-2.5 rounded-lg border border-gray-100 bg-white hover:border-indigo-200 hover:bg-indigo-50 cursor-grab active:cursor-grabbing transition-all group"
+                                        >
+                                            <div
+                                                className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center"
+                                                style={{ backgroundColor: `${node.color}18` }}
+                                            >
+                                                <Icon
+                                                    className="w-4 h-4"
+                                                    style={{ color: node.color }}
+                                                />
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center gap-1.5 mb-0.5">
+                                                    <span className="text-xs font-semibold text-gray-800 truncate">
+                                                        {node.title}
+                                                    </span>
+                                                    <span className={`flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${TYPE_BG[node.type]}`}>
+                                                        {TYPE_LABEL[node.type]}
+                                                    </span>
+                                                </div>
+                                                <p className="text-[11px] text-gray-500 leading-tight line-clamp-2">
+                                                    {node.description}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                ))}
+            </div>
+
+            {/* Footer hint */}
+            <div className="p-3 border-t border-gray-100 bg-gray-50">
+                <p className="text-[11px] text-gray-400 text-center">
+                    Arrastra un nodo al canvas para agregarlo al flujo
+                </p>
+            </div>
         </div>
-      </div>
-    </div>
-  );
+    );
 }

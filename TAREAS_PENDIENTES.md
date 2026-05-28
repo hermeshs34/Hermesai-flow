@@ -1,18 +1,17 @@
 # TAREAS_PENDIENTES.md — HermesAI Flow
 > Backlog activo del proyecto. Actualizar al inicio y fin de cada sesión.
 
-**Última actualización:** 27 Mayo 2026  
-**Fase actual:** F0 completado — pendiente debug login + deploy Netlify
+**Última actualización:** 28 Mayo 2026  
+**Fase actual:** F0 completado ✅ — próximo: deploy Netlify + validar flujo completo
 
 ---
 
-## 🔴 AGENDA PRÓXIMA SESIÓN (27 Mayo 2026)
+## 🔴 AGENDA PRÓXIMA SESIÓN (28 Mayo 2026)
 
-### PASO 1 — 🐛 Debug error de login (BLOQUEANTE)
-- [ ] Identificar el error exacto (copiar mensaje completo de consola del navegador)
-- [ ] Verificar que el perfil en `public.profiles` tiene el `id` correcto (debe coincidir con `auth.users.id`)
-- [ ] Verificar que `organization_id` en el perfil no es null
-- [ ] Verificar que la política RLS `profiles_read_own_org` permite SELECT al usuario
+### PASO 1 — 🐛 Debug error de login (BLOQUEANTE) ✅ RESUELTO
+- [x] Error 54001 stack depth limit exceeded — RLS recursión infinita
+- [x] Fix: SECURITY DEFINER en my_organization_id() y my_role() — commit 6121ce6
+- [x] Login funcionando correctamente
 - [ ] Si es error 406/PGRST: verificar que `.single()` encuentra exactamente 1 fila
 - [ ] Fix y validar login exitoso
 

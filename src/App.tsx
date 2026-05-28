@@ -33,7 +33,7 @@ function App() {
 
   const renderContent = () => {
     switch (currentView) {
-      case 'canvas':     return <WorkflowCanvas />;
+      case 'canvas':     return <WorkflowCanvas currentUser={currentUser!} />;
       case 'monitoring': return <Monitoring />;
       case 'settings':   return <Settings />;
       default:           return <Dashboard />;
