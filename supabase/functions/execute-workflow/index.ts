@@ -265,55 +265,65 @@ async function executeNode(
         }
 
         // ── Indicadores de Gestión ────────────────────────────────────────
+        // Schema real: indicadores_definicion + indicadores_valores + alertas
         case 'trigger:indicadores':
         case 'processor:indicadores': {
             const IND_URL = Deno.env.get('INDICADORES_SUPABASE_URL');
             const IND_KEY = Deno.env.get('INDICADORES_SERVICE_ROLE_KEY');
             if (!IND_URL || !IND_KEY) {
-                return { skipped: true, reason: 'INDICADORES_SUPABASE_URL o INDICADORES_SERVICE_ROLE_KEY no configurados en Supabase Secrets' };
+                return { skipped: true, reason: 'INDICADORES_SUPABASE_URL o INDICADORES_SERVICE_ROLE_KEY no configurados' };
             }
             const ind = createClient(IND_URL, IND_KEY);
 
-            // Construir filtro de status
-            const statusFilter: string[] = (cfg.status ?? 'all') === 'all'
-                ? []
-                : (cfg.status as string).split(',').map((s: string) => s.trim());
+            // Leer valores más recientes con datos del indicador
+            let valQuery = ind
+                .from('indicadores_valores')
+                .select('id,valor_real,valor_meta,porcentaje_cumplimiento,estado,desviacion,indicador_id,indicadores_definicion(nombre,umbral_rojo,umbral_amarillo,activo)')
+                .order('created_at', { ascending: false })
+                .limit(Number(cfg.limit ?? 50));
 
-            let query = ind.from('indicators')
-                .select('id,name,area,target,actual,status,responsible,observations,measurement_date');
-            if (cfg.area) query = query.ilike('area', `%${cfg.area}%`);
-            if (statusFilter.length === 1) query = query.eq('status', statusFilter[0]);
-            query = query.limit(Number(cfg.limit ?? 20));
+            const { data: valores, error: valErr } = await valQuery;
+            if (valErr) throw new Error(`Indicadores: ${valErr.message}`);
 
-            const { data: indicators, error } = await query;
-            if (error) throw new Error(`Indicadores: ${error.message}`);
+            const list = valores ?? [];
 
-            const list           = indicators ?? [];
-            const critical_count = list.filter((i: any) => i.status === 'critical').length;
-            const at_risk_count  = list.filter((i: any) => i.status === 'at_risk').length;
-            const achieved_count = list.filter((i: any) => i.status === 'achieved').length;
+            // Contar por estado (el campo estado en indicadores_valores puede ser: critico, en_riesgo, logrado, en_progreso u otros)
+            const critical_count = list.filter((v: any) => ['critico','critical','rojo'].includes(String(v.estado).toLowerCase())).length;
+            const at_risk_count  = list.filter((v: any) => ['en_riesgo','at_risk','amarillo'].includes(String(v.estado).toLowerCase())).length;
+            const achieved_count = list.filter((v: any) => ['logrado','achieved','verde','cumplido'].includes(String(v.estado).toLowerCase())).length;
+
+            // Alertas no reconocidas
+            const { data: alertas } = await ind
+                .from('alertas')
+                .select('titulo,severidad,mensaje,created_at')
+                .eq('reconocida', false)
+                .order('created_at', { ascending: false })
+                .limit(10);
+
+            const alertas_criticas = (alertas ?? []).filter((a: any) => ['critica','critical','alta'].includes(String(a.severidad).toLowerCase())).length;
 
             // Si es trigger, evaluar condición de disparo
             if (node.type === 'trigger') {
                 const triggerOn = (cfg.trigger_on ?? 'critical') as string;
                 const shouldFire =
-                    triggerOn === 'any'           ? true :
-                    triggerOn === 'critical'      ? critical_count > 0 :
-                    triggerOn === 'at_risk'       ? at_risk_count > 0 :
-                    triggerOn.includes('critical') || triggerOn.includes('at_risk')
-                        ? (critical_count + at_risk_count) > 0 : true;
+                    triggerOn === 'any'     ? true :
+                    triggerOn === 'critical' ? (critical_count + alertas_criticas) > 0 :
+                    triggerOn === 'at_risk'  ? at_risk_count > 0 :
+                    (critical_count + at_risk_count + alertas_criticas) > 0;
                 if (!shouldFire) {
-                    return { skipped: true, reason: `Sin indicadores en estado "${triggerOn}" — flujo no disparado` };
+                    return { skipped: true, reason: `Sin indicadores críticos — flujo no disparado` };
                 }
             }
 
             return {
-                indicators:    list,
-                count:         list.length,
+                indicadores:      list,
+                count:            list.length,
                 critical_count,
                 at_risk_count,
                 achieved_count,
-                timestamp:     new Date().toISOString(),
+                alertas_activas:  alertas ?? [],
+                alertas_criticas,
+                timestamp:        new Date().toISOString(),
             };
         }
 
