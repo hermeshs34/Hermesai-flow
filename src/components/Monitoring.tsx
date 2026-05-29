@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
     Activity, AlertCircle, CheckCircle, Clock,
-    RefreshCw, Filter, Loader2,
+    RefreshCw, Filter, Loader2, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
 
@@ -55,6 +55,65 @@ function fmtDate(iso: string): string {
         day: '2-digit', month: '2-digit',
         hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
+}
+
+// ── Entrada de log expandible ─────────────────────────────────────────────────
+function LogEntry({ log }: { log: LogRow }) {
+    const [open, setOpen] = useState(false);
+
+    const details = log.details
+        ? (typeof log.details === 'string' ? (() => { try { return JSON.parse(log.details); } catch { return null; } })() : log.details)
+        : null;
+
+    const hasDetails = details && typeof details === 'object' && Object.keys(details).length > 0;
+
+    const colorClass =
+        log.status === 'error'   ? 'bg-red-50 border-red-100 text-red-800' :
+        log.status === 'success' ? 'bg-green-50 border-green-100 text-green-800' :
+        log.status === 'warning' ? 'bg-yellow-50 border-yellow-100 text-yellow-800' :
+        'bg-gray-50 border-gray-100 text-gray-700';
+
+    return (
+        <div className={`rounded-lg border ${colorClass}`}>
+            <div
+                className={`flex gap-3 p-2.5 ${hasDetails ? 'cursor-pointer select-none' : ''}`}
+                onClick={() => hasDetails && setOpen(o => !o)}
+            >
+                <span className="flex-shrink-0 text-gray-400 text-[10px] mt-0.5 w-16 text-right">
+                    {new Date(log.timestamp).toLocaleTimeString('es-VE')}
+                </span>
+                <span className="flex-shrink-0">{STATUS_ICON[log.status] ?? STATUS_ICON.info}</span>
+                <span className="flex-1 break-all">{log.message}</span>
+                {hasDetails && (
+                    open
+                        ? <ChevronDown className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 opacity-50" />
+                        : <ChevronRight className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 opacity-50" />
+                )}
+            </div>
+
+            {open && hasDetails && (
+                <div className="px-3 pb-3 pt-0 border-t border-current border-opacity-10">
+                    <table className="w-full text-[11px] mt-2">
+                        <tbody>
+                            {Object.entries(details).map(([k, v]) => {
+                                if (['skipped','triggered','branch','evaluated','indicadores','alertas_activas','siniestros'].includes(k)) return null;
+                                const label = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                                const val   = Array.isArray(v) ? `${(v as any[]).length} registros`
+                                            : typeof v === 'object' ? JSON.stringify(v)
+                                            : String(v ?? '—');
+                                return (
+                                    <tr key={k} className="border-b border-current border-opacity-10 last:border-0">
+                                        <td className="py-1 pr-3 opacity-60 w-40 font-medium">{label}</td>
+                                        <td className="py-1 font-semibold break-all">{val}</td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </div>
+    );
 }
 
 export function Monitoring() {
@@ -283,23 +342,7 @@ export function Monitoring() {
                             ) : logs.length === 0 ? (
                                 <p className="text-gray-400 text-center py-8">Sin logs registrados</p>
                             ) : (
-                                logs.map(log => (
-                                    <div
-                                        key={log.id}
-                                        className={`flex gap-3 p-2.5 rounded-lg border ${
-                                            log.status === 'error'   ? 'bg-red-50 border-red-100 text-red-800' :
-                                            log.status === 'success' ? 'bg-green-50 border-green-100 text-green-800' :
-                                            log.status === 'warning' ? 'bg-yellow-50 border-yellow-100 text-yellow-800' :
-                                            'bg-gray-50 border-gray-100 text-gray-700'
-                                        }`}
-                                    >
-                                        <span className="flex-shrink-0 text-gray-400 text-[10px] mt-0.5 w-16 text-right">
-                                            {new Date(log.timestamp).toLocaleTimeString('es-VE')}
-                                        </span>
-                                        <span className="flex-shrink-0">{STATUS_ICON[log.status] ?? STATUS_ICON.info}</span>
-                                        <span className="flex-1 break-all">{log.message}</span>
-                                    </div>
-                                ))
+                                logs.map(log => <LogEntry key={log.id} log={log} />)
                             )}
                         </div>
                     </>
