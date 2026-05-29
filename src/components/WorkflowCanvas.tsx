@@ -187,6 +187,9 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         if (selectedNode === nodeId) setSelectedNode(null);
     }, [selectedNode]);
 
+    const handleDeleteConnection = useCallback((connId: string) =>
+        setConnections(prev => prev.filter(c => c.id !== connId)), []);
+
     const handleConnectionStart = useCallback((nodeId: string) => setConnectingFrom(nodeId), []);
 
     const handleConnectionEnd = useCallback((nodeId: string) => {
@@ -395,7 +398,12 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                         onClick={() => { setSelectedNode(null); setShowWfDropdown(false); }}
                     >
                         {connections.map(conn => (
-                            <ConnectionLine key={conn.id} connection={conn} nodes={nodes} />
+                            <ConnectionLine
+                                key={conn.id}
+                                connection={conn}
+                                nodes={nodes}
+                                onDelete={handleDeleteConnection}
+                            />
                         ))}
 
                         {nodes.map(node => (
