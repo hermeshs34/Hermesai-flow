@@ -78,23 +78,64 @@ function resolveValue(expr: string, context: Record<string, any>): any {
     return expr;
 }
 
+// ── Formatea un valor para mostrar en HTML ───────────────────────────────────
+function formatValue(val: any): string {
+    if (val === null || val === undefined) return '—';
+    if (Array.isArray(val)) {
+        if (val.length === 0) return '—';
+        // Array de objetos → mostrar solo el conteo
+        if (typeof val[0] === 'object') return `${val.length} registros`;
+        return val.join(', ');
+    }
+    if (typeof val === 'object') return JSON.stringify(val);
+    if (typeof val === 'boolean') return val ? 'Sí' : 'No';
+    // Formatear timestamps ISO
+    if (typeof val === 'string' && val.match(/^\d{4}-\d{2}-\d{2}T/)) {
+        return new Date(val).toLocaleString('es-VE');
+    }
+    return String(val);
+}
+
+// Campos a omitir en el resumen (demasiado verbose o internos)
+const SKIP_FIELDS = new Set([
+    'skipped','triggered','branch','evaluated','left','right','operator',
+    'indicadores','alertas_activas','siniestros',
+]);
+
 // ── Resumen HTML del contexto para emails ────────────────────────────────────
 function buildContextSummary(context: Record<string, any>): string {
-    const rows = Object.entries(context)
-        .filter(([k]) => k !== '__lastNodeId')
-        .map(([, v]) => {
-            if (typeof v !== 'object' || v === null) return '';
-            return Object.entries(v)
-                .filter(([k]) => !['skipped', 'triggered'].includes(k))
-                .map(([k, val]) => {
-                    const label = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-                    return `<tr><td style="padding:6px 12px;color:#6b7280;font-size:13px">${label}</td><td style="padding:6px 12px;font-weight:600;font-size:13px">${val}</td></tr>`;
-                }).join('');
-        }).join('');
+    let rows = '';
+    let bg = false;
+
+    for (const [, nodeData] of Object.entries(context)) {
+        if (typeof nodeData !== 'object' || nodeData === null) continue;
+
+        for (const [k, val] of Object.entries(nodeData)) {
+            if (SKIP_FIELDS.has(k)) continue;
+
+            const label = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const display = formatValue(val);
+
+            // Colorear filas de semáforo
+            let valueStyle = 'font-weight:600;font-size:13px;color:#111827';
+            if (k === 'color') {
+                const colors: Record<string,string> = { rojo:'#dc2626', amarillo:'#d97706', verde:'#16a34a' };
+                valueStyle += `;color:${colors[String(val)] ?? '#111827'}`;
+            }
+            if (k === 'label') valueStyle += ';font-size:14px';
+
+            const rowBg = bg ? '#f9fafb' : '#ffffff';
+            rows += `<tr style="background:${rowBg}">
+                <td style="padding:8px 16px;color:#6b7280;font-size:12px;width:40%">${label}</td>
+                <td style="padding:8px 16px;${valueStyle}">${display}</td>
+            </tr>`;
+            bg = !bg;
+        }
+    }
 
     return rows
-        ? `<table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:8px;overflow:hidden">${rows}</table>`
-        : '<p style="color:#9ca3af">Sin datos disponibles</p>';
+        ? `<table style="width:100%;border-collapse:collapse;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb">${rows}</table>`
+        : '<p style="color:#9ca3af;font-size:13px">Sin datos disponibles</p>';
 }
 
 // ── Ejecutor de nodo individual ──────────────────────────────────────────────
