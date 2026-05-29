@@ -209,9 +209,9 @@ async function executeNode(
                 case '<':  result = Number(left) < Number(right);  break;
                 case '>=': result = Number(left) >= Number(right); break;
                 case '<=': result = Number(left) <= Number(right); break;
-                case '==': result = String(left)  === String(right); break;
-                case '!=': result = String(left)  !== String(right); break;
-                case 'contains': result = String(left).includes(String(right)); break;
+                case '==': result = String(left).toLowerCase().trim() === String(right).toLowerCase().trim(); break;
+                case '!=': result = String(left).toLowerCase().trim() !== String(right).toLowerCase().trim(); break;
+                case 'contains': result = String(left).toLowerCase().includes(String(right).toLowerCase()); break;
             }
             return { branch: result ? 'true' : 'false', evaluated: result, left, right, operator };
         }
