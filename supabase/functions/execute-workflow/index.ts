@@ -472,17 +472,22 @@ async function executeNode(
                 Object.assign(period ?? {}, anyPeriod);
             }
 
-            // ── Buscar documentos del período via financial_documents ─────
-            // financial_documents.period es TEXT (ej: "Enero 2025"), no UUID
+            // ── Buscar documentos por company_id (sin filtro de período) ──
+            // financial_documents.period es TEXT libre, no FK a financial_periods
             const periodName = (period as any)?.period_name ?? '';
             const { data: docs } = await eeff
                 .from('financial_documents')
                 .select('id, document_type, period, status, record_count')
                 .eq('company_id', company.id)
-                .ilike('period', `%${periodName.slice(0, 15)}%`) // match parcial del nombre
-                .limit(20);
+                .limit(50);
 
-            const docIds = (docs ?? []).map((d: any) => d.id);
+            // Intentar filtrar por período si hay match textual parcial
+            const periodYear = periodName.match(/\d{4}/)?.[0] ?? '';
+            const docsFiltered = periodYear
+                ? (docs ?? []).filter((d: any) => String(d.period ?? '').includes(periodYear))
+                : (docs ?? []);
+
+            const docIds = (docsFiltered.length > 0 ? docsFiltered : (docs ?? [])).map((d: any) => d.id);
 
             // ── Estado de resultados vinculado a los documentos ───────────
             let income: any[] = [];
