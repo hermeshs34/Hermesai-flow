@@ -410,17 +410,27 @@ async function executeNode(
                     .select('id, name, currency')
                     .eq('is_active', true);
 
-                const resumen = [];
+                const lineas: string[] = [];
                 for (const co of companies ?? []) {
                     const { data: periodos } = await eeff
                         .from('financial_periods')
-                        .select('id, period_name, start_date, end_date, is_closed')
+                        .select('period_name, is_closed')
                         .eq('company_id', co.id)
                         .order('start_date', { ascending: false })
-                        .limit(3);
-                    resumen.push({ empresa: co.name, moneda: co.currency, periodos: periodos ?? [] });
+                        .limit(5);
+                    const pList = (periodos ?? [])
+                        .map((p: any) => `${p.period_name} (${p.is_closed ? 'cerrado' : 'abierto'})`)
+                        .join(' | ');
+                    lineas.push(`${co.name} [${co.currency}]: ${pList || 'sin períodos'}`);
                 }
-                return { empresas: resumen, total_empresas: resumen.length, timestamp: ts };
+                return {
+                    total_empresas: (companies ?? []).length,
+                    resumen:        lineas.join(' ── '),
+                    detalle_linea1: lineas[0] ?? '—',
+                    detalle_linea2: lineas[1] ?? '—',
+                    detalle_linea3: lineas[2] ?? '—',
+                    timestamp:      ts,
+                };
             }
 
             // ── Buscar empresa por nombre (parcial) ───────────────────────
@@ -462,18 +472,49 @@ async function executeNode(
                 Object.assign(period ?? {}, anyPeriod);
             }
 
-            // ── Estado de resultados del período ──────────────────────────
-            const { data: income } = await eeff
-                .from('income_statement_entries')
-                .select('account_name, amount, entry_type, is_summary')
+            // ── Buscar documentos del período via financial_documents ─────
+            // financial_documents.period es TEXT (ej: "Enero 2025"), no UUID
+            const periodName = (period as any)?.period_name ?? '';
+            const { data: docs } = await eeff
+                .from('financial_documents')
+                .select('id, document_type, period, status, record_count')
                 .eq('company_id', company.id)
-                .limit(200);
+                .ilike('period', `%${periodName.slice(0, 15)}%`) // match parcial del nombre
+                .limit(20);
 
-            const ingresos = (income ?? [])
-                .filter((e: any) => String(e.entry_type).toLowerCase().includes('income') || String(e.entry_type).toLowerCase().includes('ingreso'))
+            const docIds = (docs ?? []).map((d: any) => d.id);
+
+            // ── Estado de resultados vinculado a los documentos ───────────
+            let income: any[] = [];
+            if (docIds.length > 0) {
+                const { data: inc } = await eeff
+                    .from('income_statement_entries')
+                    .select('account_name, amount, entry_type, is_summary')
+                    .in('financial_document_id', docIds)
+                    .limit(300);
+                income = inc ?? [];
+            } else {
+                // Fallback: buscar por company_id directamente
+                const { data: inc } = await eeff
+                    .from('income_statement_entries')
+                    .select('account_name, amount, entry_type, is_summary')
+                    .eq('company_id', company.id)
+                    .limit(300);
+                income = inc ?? [];
+            }
+
+            // Calcular totales — detectar entry_type automáticamente
+            const ingresos = income
+                .filter((e: any) => {
+                    const t = String(e.entry_type ?? '').toLowerCase();
+                    return t.includes('income') || t.includes('ingreso') || t.includes('revenue') || t.includes('credit') || Number(e.amount) > 0;
+                })
                 .reduce((s: number, e: any) => s + Math.abs(Number(e.amount ?? 0)), 0);
-            const egresos = (income ?? [])
-                .filter((e: any) => String(e.entry_type).toLowerCase().includes('expense') || String(e.entry_type).toLowerCase().includes('gasto'))
+            const egresos = income
+                .filter((e: any) => {
+                    const t = String(e.entry_type ?? '').toLowerCase();
+                    return t.includes('expense') || t.includes('gasto') || t.includes('egreso') || t.includes('debit') || Number(e.amount) < 0;
+                })
                 .reduce((s: number, e: any) => s + Math.abs(Number(e.amount ?? 0)), 0);
             const utilidad = ingresos - egresos;
 
@@ -496,16 +537,20 @@ async function executeNode(
                 };
             }
 
+            const entryTypes = [...new Set(income.map((e: any) => e.entry_type))].join(', ') || 'sin asientos';
+
             return {
                 empresa:        company.name,
                 moneda:         company.currency,
                 periodo:        (period as any)?.period_name ?? '—',
                 periodo_estado: (period as any)?.is_closed ? 'Cerrado' : 'Abierto',
+                documentos:     `${(docs ?? []).length} documentos encontrados`,
+                asientos_count: income.length,
+                tipos_entry:    entryTypes,
                 ingresos_total: ingresos.toFixed(2),
                 egresos_total:  egresos.toFixed(2),
                 utilidad_neta:  utilidad.toFixed(2),
                 margen_pct:     ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
-                asientos_count: (income ?? []).length,
                 timestamp:      ts,
             };
         }
