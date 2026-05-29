@@ -472,55 +472,72 @@ async function executeNode(
                 Object.assign(period ?? {}, anyPeriod);
             }
 
-            // ── Buscar documentos por company_id (sin filtro de período) ──
-            // financial_documents.period es TEXT libre, no FK a financial_periods
+            // ── Buscar documentos por company_id ─────────────────────────
+            // Columnas reales: id, company_id, document_type, file_name,
+            //                  file_size, period, processed_at, record_count,
+            //                  confidence, metadata, created_at, updated_at
+            // NO existe columna 'status'
             const periodName = (period as any)?.period_name ?? '';
-            const { data: docs } = await eeff
+            const periodYear = periodName.match(/\d{4}/)?.[0] ?? '';
+
+            const { data: docs, error: docsErr } = await eeff
                 .from('financial_documents')
-                .select('id, document_type, period, status, record_count')
+                .select('id, document_type, period, record_count, metadata, file_name')
                 .eq('company_id', company.id)
                 .limit(50);
 
-            // Intentar filtrar por período si hay match textual parcial
-            const periodYear = periodName.match(/\d{4}/)?.[0] ?? '';
+            if (docsErr) throw new Error(`EE.FF. documentos: ${docsErr.message}`);
+
+            // Filtrar por año si está disponible
             const docsFiltered = periodYear
                 ? (docs ?? []).filter((d: any) => String(d.period ?? '').includes(periodYear))
                 : (docs ?? []);
+            const docsToUse = docsFiltered.length > 0 ? docsFiltered : (docs ?? []);
 
-            const docIds = (docsFiltered.length > 0 ? docsFiltered : (docs ?? [])).map((d: any) => d.id);
+            // ── Extraer totales desde metadata JSONB ──────────────────────
+            // metadata contiene total_amount para presupuesto, y sampleValues para balance
+            let totalPresupuestado = 0;
+            let totalReal          = 0;
+            let totalDebitos       = 0;
+            let totalCreditos      = 0;
+            let tiposDoc: string[] = [];
 
-            // ── Estado de resultados vinculado a los documentos ───────────
-            let income: any[] = [];
-            if (docIds.length > 0) {
-                const { data: inc } = await eeff
-                    .from('income_statement_entries')
-                    .select('account_name, amount, entry_type, is_summary')
-                    .in('financial_document_id', docIds)
-                    .limit(300);
-                income = inc ?? [];
-            } else {
-                // Fallback: buscar por company_id directamente
-                const { data: inc } = await eeff
-                    .from('income_statement_entries')
-                    .select('account_name, amount, entry_type, is_summary')
-                    .eq('company_id', company.id)
-                    .limit(300);
-                income = inc ?? [];
+            for (const doc of docsToUse) {
+                const meta = typeof doc.metadata === 'string'
+                    ? JSON.parse(doc.metadata) : (doc.metadata ?? {});
+                tiposDoc.push(doc.document_type);
+
+                if (doc.document_type === 'presupuesto') {
+                    totalPresupuestado += Number(meta.total_amount ?? 0);
+                    totalReal          += Number(meta.total_amount ?? 0); // real ≈ presupuestado si no hay variación
+                }
+                if (doc.document_type === 'balance_comprobacion') {
+                    // Extraer de sampleValues de columnas Debe/Haber/SaldoActual
+                    const cols: any[] = meta.columns ?? [];
+                    const debeCol   = cols.find((c: any) => ['debe','debitos','debits'].includes(String(c.name).toLowerCase().replace(/\s/g,'')));
+                    const haberCol  = cols.find((c: any) => ['haber','creditos','credits'].includes(String(c.name).toLowerCase().replace(/\s/g,'')));
+                    const saldoCol  = cols.find((c: any) => String(c.name).toLowerCase().includes('saldo') && String(c.name).toLowerCase().includes('actual'));
+
+                    const parseNum = (v: string) => Number(String(v ?? '0').replace(/\./g,'').replace(',','.')) || 0;
+
+                    if (debeCol?.sampleValues?.[0])  totalDebitos  += parseNum(debeCol.sampleValues[0]);
+                    if (haberCol?.sampleValues?.[0]) totalCreditos += parseNum(haberCol.sampleValues[0]);
+                    if (saldoCol?.sampleValues?.[0]) totalReal     += parseNum(saldoCol.sampleValues[0]);
+                }
             }
 
-            // Calcular totales — detectar entry_type automáticamente
-            const ingresos = income
-                .filter((e: any) => {
-                    const t = String(e.entry_type ?? '').toLowerCase();
-                    return t.includes('income') || t.includes('ingreso') || t.includes('revenue') || t.includes('credit') || Number(e.amount) > 0;
-                })
-                .reduce((s: number, e: any) => s + Math.abs(Number(e.amount ?? 0)), 0);
-            const egresos = income
-                .filter((e: any) => {
-                    const t = String(e.entry_type ?? '').toLowerCase();
-                    return t.includes('expense') || t.includes('gasto') || t.includes('egreso') || t.includes('debit') || Number(e.amount) < 0;
-                })
-                .reduce((s: number, e: any) => s + Math.abs(Number(e.amount ?? 0)), 0);
+            // También intentar budget_entries para datos más precisos
+            const { data: budgetEntries } = await eeff
+                .from('budget_entries')
+                .select('amount, category, entry_type')
+                .eq('company_id', company.id)
+                .limit(200);
+
+            const presupuestadoReal = (budgetEntries ?? []).reduce((s: number, e: any) => s + Math.abs(Number(e.amount ?? 0)), 0);
+            if (presupuestadoReal > 0) totalPresupuestado = presupuestadoReal;
+
+            const ingresos = totalDebitos || totalPresupuestado;
+            const egresos  = totalCreditos;
             const utilidad = ingresos - egresos;
 
             if (queryType === 'variacion') {
@@ -542,21 +559,20 @@ async function executeNode(
                 };
             }
 
-            const entryTypes = [...new Set(income.map((e: any) => e.entry_type))].join(', ') || 'sin asientos';
-
             return {
-                empresa:        company.name,
-                moneda:         company.currency,
-                periodo:        (period as any)?.period_name ?? '—',
-                periodo_estado: (period as any)?.is_closed ? 'Cerrado' : 'Abierto',
-                documentos:     `${(docs ?? []).length} documentos encontrados`,
-                asientos_count: income.length,
-                tipos_entry:    entryTypes,
-                ingresos_total: ingresos.toFixed(2),
-                egresos_total:  egresos.toFixed(2),
-                utilidad_neta:  utilidad.toFixed(2),
-                margen_pct:     ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
-                timestamp:      ts,
+                empresa:           company.name,
+                moneda:            company.currency,
+                periodo:           (period as any)?.period_name ?? '—',
+                periodo_estado:    (period as any)?.is_closed ? 'Cerrado' : 'Abierto',
+                documentos:        `${docsToUse.length} de ${(docs ?? []).length} documentos`,
+                tipos_documentos:  [...new Set(tiposDoc)].join(', ') || '—',
+                debitos_total:     totalDebitos.toFixed(2),
+                creditos_total:    totalCreditos.toFixed(2),
+                presupuesto_total: totalPresupuestado.toFixed(2),
+                saldo_total:       totalReal.toFixed(2),
+                utilidad_neta:     utilidad.toFixed(2),
+                margen_pct:        ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
+                timestamp:         ts,
             };
         }
 
