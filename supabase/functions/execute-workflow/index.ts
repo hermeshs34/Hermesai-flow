@@ -472,73 +472,33 @@ async function executeNode(
                 Object.assign(period ?? {}, anyPeriod);
             }
 
-            // ── Buscar documentos por company_id ─────────────────────────
-            // Columnas reales: id, company_id, document_type, file_name,
-            //                  file_size, period, processed_at, record_count,
-            //                  confidence, metadata, created_at, updated_at
-            // NO existe columna 'status'
-            const periodName = (period as any)?.period_name ?? '';
-            const periodYear = periodName.match(/\d{4}/)?.[0] ?? '';
-
-            const { data: docs, error: docsErr } = await eeff
-                .from('financial_documents')
-                .select('id, document_type, period, record_count, metadata, file_name')
+            // ── Leer financial_entries por company_id + period_id ────────
+            // Columnas: company_id, period_id, account_code, account_name,
+            //           debit_amount, credit_amount, balance_amount,
+            //           entry_type, category
+            const { data: entries, error: entErr } = await eeff
+                .from('financial_entries')
+                .select('category, entry_type, balance_amount, debit_amount, credit_amount')
                 .eq('company_id', company.id)
-                .limit(50);
+                .eq('period_id', (period as any)?.id ?? '')
+                .limit(5000);
 
-            if (docsErr) throw new Error(`EE.FF. documentos: ${docsErr.message}`);
+            if (entErr) throw new Error(`EE.FF. entries: ${entErr.message}`);
 
-            // Filtrar por año si está disponible
-            const docsFiltered = periodYear
-                ? (docs ?? []).filter((d: any) => String(d.period ?? '').includes(periodYear))
-                : (docs ?? []);
-            const docsToUse = docsFiltered.length > 0 ? docsFiltered : (docs ?? []);
-
-            // ── Extraer totales desde metadata JSONB ──────────────────────
-            // metadata contiene total_amount para presupuesto, y sampleValues para balance
-            let totalPresupuestado = 0;
-            let totalReal          = 0;
-            let totalDebitos       = 0;
-            let totalCreditos      = 0;
-            let tiposDoc: string[] = [];
-
-            for (const doc of docsToUse) {
-                const meta = typeof doc.metadata === 'string'
-                    ? JSON.parse(doc.metadata) : (doc.metadata ?? {});
-                tiposDoc.push(doc.document_type);
-
-                if (doc.document_type === 'presupuesto') {
-                    totalPresupuestado += Number(meta.total_amount ?? 0);
-                    totalReal          += Number(meta.total_amount ?? 0); // real ≈ presupuestado si no hay variación
-                }
-                if (doc.document_type === 'balance_comprobacion') {
-                    // Extraer de sampleValues de columnas Debe/Haber/SaldoActual
-                    const cols: any[] = meta.columns ?? [];
-                    const debeCol   = cols.find((c: any) => ['debe','debitos','debits'].includes(String(c.name).toLowerCase().replace(/\s/g,'')));
-                    const haberCol  = cols.find((c: any) => ['haber','creditos','credits'].includes(String(c.name).toLowerCase().replace(/\s/g,'')));
-                    const saldoCol  = cols.find((c: any) => String(c.name).toLowerCase().includes('saldo') && String(c.name).toLowerCase().includes('actual'));
-
-                    const parseNum = (v: string) => Number(String(v ?? '0').replace(/\./g,'').replace(',','.')) || 0;
-
-                    if (debeCol?.sampleValues?.[0])  totalDebitos  += parseNum(debeCol.sampleValues[0]);
-                    if (haberCol?.sampleValues?.[0]) totalCreditos += parseNum(haberCol.sampleValues[0]);
-                    if (saldoCol?.sampleValues?.[0]) totalReal     += parseNum(saldoCol.sampleValues[0]);
-                }
+            // Agrupar por categoría y sumar valores absolutos
+            const sums: Record<string, number> = {};
+            for (const e of entries ?? []) {
+                const cat = String(e.category || e.entry_type || 'otros').toLowerCase();
+                const val = Math.abs(Number(e.balance_amount ?? 0));
+                sums[cat] = (sums[cat] ?? 0) + val;
             }
 
-            // También intentar budget_entries para datos más precisos
-            const { data: budgetEntries } = await eeff
-                .from('budget_entries')
-                .select('amount, category, entry_type')
-                .eq('company_id', company.id)
-                .limit(200);
-
-            const presupuestadoReal = (budgetEntries ?? []).reduce((s: number, e: any) => s + Math.abs(Number(e.amount ?? 0)), 0);
-            if (presupuestadoReal > 0) totalPresupuestado = presupuestadoReal;
-
-            const ingresos = totalDebitos || totalPresupuestado;
-            const egresos  = totalCreditos;
-            const utilidad = ingresos - egresos;
+            const ingresos  = sums['ingresos']   ?? 0;
+            const gastos    = (sums['gastos']    ?? 0) + (sums['egresos'] ?? 0);
+            const pasivos   = sums['pasivos']    ?? 0;
+            const patrimonio= sums['patrimonio'] ?? 0;
+            const activos   = sums['activos']    ?? 0;
+            const utilidad  = ingresos - gastos;
 
             if (queryType === 'variacion') {
                 const { data: prevPeriods } = await eeff
@@ -553,26 +513,28 @@ async function executeNode(
                     periodo_actual:   prevPeriods?.[0]?.period_name ?? '—',
                     periodo_anterior: prevPeriods?.[1]?.period_name ?? '—',
                     ingresos_total:   ingresos.toFixed(2),
-                    egresos_total:    egresos.toFixed(2),
+                    gastos_total:     gastos.toFixed(2),
                     utilidad_neta:    utilidad.toFixed(2),
                     timestamp:        ts,
                 };
             }
 
+            const fmt = (n: number) => n.toLocaleString('es-VE', { minimumFractionDigits: 2 });
+
             return {
-                empresa:           company.name,
-                moneda:            company.currency,
-                periodo:           (period as any)?.period_name ?? '—',
-                periodo_estado:    (period as any)?.is_closed ? 'Cerrado' : 'Abierto',
-                documentos:        `${docsToUse.length} de ${(docs ?? []).length} documentos`,
-                tipos_documentos:  [...new Set(tiposDoc)].join(', ') || '—',
-                debitos_total:     totalDebitos.toFixed(2),
-                creditos_total:    totalCreditos.toFixed(2),
-                presupuesto_total: totalPresupuestado.toFixed(2),
-                saldo_total:       totalReal.toFixed(2),
-                utilidad_neta:     utilidad.toFixed(2),
-                margen_pct:        ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
-                timestamp:         ts,
+                empresa:        company.name,
+                moneda:         company.currency,
+                periodo:        (period as any)?.period_name ?? '—',
+                periodo_estado: (period as any)?.is_closed ? 'Cerrado' : 'Abierto',
+                entradas:       `${(entries ?? []).length} registros`,
+                activos:        fmt(activos),
+                pasivos:        fmt(pasivos),
+                patrimonio:     fmt(patrimonio),
+                ingresos:       fmt(ingresos),
+                gastos:         fmt(gastos),
+                utilidad_neta:  fmt(utilidad),
+                margen_pct:     ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
+                timestamp:      ts,
             };
         }
 
