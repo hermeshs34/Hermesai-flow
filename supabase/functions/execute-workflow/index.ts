@@ -391,22 +391,80 @@ async function executeNode(
         }
 
         // ── Estados Financieros ───────────────────────────────────────────
+        // Schema real: financial_periods, income_statement_entries,
+        //              cash_flow_entries, budget_entries, exchange_rates
         case 'processor:eeff': {
             const EEFF_URL = Deno.env.get('EEFF_SUPABASE_URL');
             const EEFF_KEY = Deno.env.get('EEFF_SERVICE_ROLE_KEY');
             if (!EEFF_URL || !EEFF_KEY) {
-                return { skipped: true, reason: 'EEFF_SUPABASE_URL o EEFF_SERVICE_ROLE_KEY no configurados — agrega los secrets en Supabase Edge Functions' };
+                return { skipped: true, reason: 'EEFF_SUPABASE_URL o EEFF_SERVICE_ROLE_KEY no configurados' };
             }
-            const eeff = createClient(EEFF_URL, EEFF_KEY);
-            // Consulta genérica — adaptar según el schema real del sistema EE.FF.
-            const { data, error } = await eeff
-                .from('financial_records')
-                .select('*')
-                .order('created_at', { ascending: false })
+            const eeff       = createClient(EEFF_URL, EEFF_KEY);
+            const queryType  = cfg.query_type ?? 'summary';
+            const ts         = new Date().toISOString();
+
+            // Período activo más reciente
+            const { data: period } = await eeff
+                .from('financial_periods')
+                .select('id, name, start_date, end_date, status, year, period_number')
+                .eq('status', 'active')
+                .order('start_date', { ascending: false })
                 .limit(1)
-                .single();
-            if (error) throw new Error(`EE.FF.: ${error.message}`);
-            return { record: data, timestamp: new Date().toISOString() };
+                .maybeSingle();
+
+            if (queryType === 'kpis' || queryType === 'summary') {
+                // Estado de resultados del período activo
+                const { data: income } = await eeff
+                    .from('income_statement_entries')
+                    .select('account_name, amount, entry_type, currency')
+                    .eq('period_id', period?.id ?? '')
+                    .limit(50);
+
+                // Flujo de caja
+                const { data: cashflow } = await eeff
+                    .from('cash_flow_entries')
+                    .select('description, amount, flow_type, currency')
+                    .eq('period_id', period?.id ?? '')
+                    .limit(20);
+
+                // Calcular totales básicos
+                const ingresos = (income ?? [])
+                    .filter((e: any) => e.entry_type === 'income')
+                    .reduce((s: number, e: any) => s + Number(e.amount ?? 0), 0);
+                const egresos = (income ?? [])
+                    .filter((e: any) => e.entry_type === 'expense')
+                    .reduce((s: number, e: any) => s + Number(e.amount ?? 0), 0);
+                const utilidad = ingresos - egresos;
+
+                return {
+                    periodo:         period?.name ?? 'Sin período activo',
+                    periodo_estado:  period?.status ?? '—',
+                    ingresos_total:  ingresos.toFixed(2),
+                    egresos_total:   egresos.toFixed(2),
+                    utilidad_neta:   utilidad.toFixed(2),
+                    margen_pct:      ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
+                    entradas_cashflow: (cashflow ?? []).length,
+                    timestamp: ts,
+                };
+            }
+
+            if (queryType === 'variacion') {
+                // Comparar con período anterior
+                const { data: periodos } = await eeff
+                    .from('financial_periods')
+                    .select('id, name, start_date')
+                    .order('start_date', { ascending: false })
+                    .limit(2);
+
+                return {
+                    periodo_actual:   periodos?.[0]?.name ?? '—',
+                    periodo_anterior: periodos?.[1]?.name ?? '—',
+                    comparacion:      'Disponible cuando ambos períodos tengan asientos',
+                    timestamp:        ts,
+                };
+            }
+
+            return { periodo: period?.name ?? 'Sin período activo', timestamp: ts };
         }
 
         // ── Reporte Gerencial (email formateado) ──────────────────────────
