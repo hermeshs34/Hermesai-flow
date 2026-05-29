@@ -485,11 +485,12 @@ serve(async (req) => {
                 node_id:          nodeId,
                 status,
                 message,
-                details:          details ? JSON.stringify(details) : null,
-                timestamp:        new Date().toISOString(),
+                details_json:     details ?? null,   // columna real en schema
+                executed_at:      new Date().toISOString(), // columna real en schema
             };
-            logBuffer.push(entry);
-            await supabase.from('execution_logs').insert(entry);
+            logBuffer.push({ ...entry, timestamp: entry.executed_at }); // buffer interno conserva 'timestamp' para Monitoring
+            const { error: logErr } = await supabase.from('execution_logs').insert(entry);
+            if (logErr) console.error('addLog error:', logErr.message);
         };
 
         // 4. Ordenar nodos topológicamente

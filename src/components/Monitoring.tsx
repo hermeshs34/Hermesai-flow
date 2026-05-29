@@ -112,11 +112,17 @@ export function Monitoring() {
         try {
             const { data } = await supabase
                 .from('execution_logs')
-                .select('id, workflow_id, node_id, status, message, timestamp, details')
+                .select('id, workflow_id, node_id, status, message, executed_at, details_json')
                 .eq('execution_run_id', run.id)
-                .order('timestamp', { ascending: true });
+                .order('executed_at', { ascending: true });
 
-            setLogs(data ?? []);
+            // Normalizar nombres de columna para el componente
+            const normalized = (data ?? []).map((r: any) => ({
+                ...r,
+                timestamp: r.executed_at,
+                details:   r.details_json,
+            }));
+            setLogs(normalized);
         } finally {
             setLogsLoading(false);
         }
