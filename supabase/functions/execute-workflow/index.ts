@@ -391,80 +391,123 @@ async function executeNode(
         }
 
         // ── Estados Financieros ───────────────────────────────────────────
-        // Schema real: financial_periods, income_statement_entries,
-        //              cash_flow_entries, budget_entries, exchange_rates
+        // Schema real: companies, financial_periods (company_id, period_name, is_closed)
+        //              income_statement_entries (company_id, amount, entry_type)
         case 'processor:eeff': {
             const EEFF_URL = Deno.env.get('EEFF_SUPABASE_URL');
             const EEFF_KEY = Deno.env.get('EEFF_SERVICE_ROLE_KEY');
             if (!EEFF_URL || !EEFF_KEY) {
                 return { skipped: true, reason: 'EEFF_SUPABASE_URL o EEFF_SERVICE_ROLE_KEY no configurados' };
             }
-            const eeff       = createClient(EEFF_URL, EEFF_KEY);
-            const queryType  = cfg.query_type ?? 'summary';
-            const ts         = new Date().toISOString();
+            const eeff      = createClient(EEFF_URL, EEFF_KEY);
+            const queryType = cfg.query_type ?? 'summary';
+            const ts        = new Date().toISOString();
 
-            // Período activo más reciente
-            const { data: period } = await eeff
-                .from('financial_periods')
-                .select('id, name, start_date, end_date, status, year, period_number')
-                .eq('status', 'active')
-                .order('start_date', { ascending: false })
-                .limit(1)
-                .maybeSingle();
+            // ── Modo "all": resumen de todas las empresas y períodos ──────
+            if (queryType === 'all') {
+                const { data: companies } = await eeff
+                    .from('companies')
+                    .select('id, name, currency')
+                    .eq('is_active', true);
 
-            if (queryType === 'kpis' || queryType === 'summary') {
-                // Estado de resultados del período activo
-                const { data: income } = await eeff
-                    .from('income_statement_entries')
-                    .select('account_name, amount, entry_type, currency')
-                    .eq('period_id', period?.id ?? '')
-                    .limit(50);
-
-                // Flujo de caja
-                const { data: cashflow } = await eeff
-                    .from('cash_flow_entries')
-                    .select('description, amount, flow_type, currency')
-                    .eq('period_id', period?.id ?? '')
-                    .limit(20);
-
-                // Calcular totales básicos
-                const ingresos = (income ?? [])
-                    .filter((e: any) => e.entry_type === 'income')
-                    .reduce((s: number, e: any) => s + Number(e.amount ?? 0), 0);
-                const egresos = (income ?? [])
-                    .filter((e: any) => e.entry_type === 'expense')
-                    .reduce((s: number, e: any) => s + Number(e.amount ?? 0), 0);
-                const utilidad = ingresos - egresos;
-
-                return {
-                    periodo:         period?.name ?? 'Sin período activo',
-                    periodo_estado:  period?.status ?? '—',
-                    ingresos_total:  ingresos.toFixed(2),
-                    egresos_total:   egresos.toFixed(2),
-                    utilidad_neta:   utilidad.toFixed(2),
-                    margen_pct:      ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
-                    entradas_cashflow: (cashflow ?? []).length,
-                    timestamp: ts,
-                };
+                const resumen = [];
+                for (const co of companies ?? []) {
+                    const { data: periodos } = await eeff
+                        .from('financial_periods')
+                        .select('id, period_name, start_date, end_date, is_closed')
+                        .eq('company_id', co.id)
+                        .order('start_date', { ascending: false })
+                        .limit(3);
+                    resumen.push({ empresa: co.name, moneda: co.currency, periodos: periodos ?? [] });
+                }
+                return { empresas: resumen, total_empresas: resumen.length, timestamp: ts };
             }
 
-            if (queryType === 'variacion') {
-                // Comparar con período anterior
-                const { data: periodos } = await eeff
+            // ── Buscar empresa por nombre (parcial) ───────────────────────
+            let companyQuery = eeff.from('companies').select('id, name, currency').eq('is_active', true);
+            if (cfg.company?.trim()) {
+                companyQuery = companyQuery.ilike('name', `%${cfg.company.trim()}%`);
+            }
+            const { data: companies } = await companyQuery.limit(1);
+            const company = companies?.[0];
+            if (!company) {
+                return { skipped: true, reason: `Empresa "${cfg.company}" no encontrada en EE.FF.` };
+            }
+
+            // ── Obtener período ───────────────────────────────────────────
+            let periodQuery = eeff
+                .from('financial_periods')
+                .select('id, period_name, start_date, end_date, is_closed')
+                .eq('company_id', company.id)
+                .order('start_date', { ascending: false });
+
+            if (cfg.periodo?.trim()) {
+                periodQuery = periodQuery.ilike('period_name', `%${cfg.periodo.trim()}%`);
+            } else {
+                periodQuery = periodQuery.eq('is_closed', false);
+            }
+            const { data: periods } = await periodQuery.limit(1);
+            const period = periods?.[0];
+
+            if (!period) {
+                // Intentar con el período más reciente sin importar estado
+                const { data: anyPeriod } = await eeff
                     .from('financial_periods')
-                    .select('id, name, start_date')
+                    .select('id, period_name, start_date, end_date, is_closed')
+                    .eq('company_id', company.id)
+                    .order('start_date', { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+                if (!anyPeriod) return { empresa: company.name, periodo: 'Sin períodos cargados', timestamp: ts };
+                Object.assign(period ?? {}, anyPeriod);
+            }
+
+            // ── Estado de resultados del período ──────────────────────────
+            const { data: income } = await eeff
+                .from('income_statement_entries')
+                .select('account_name, amount, entry_type, is_summary')
+                .eq('company_id', company.id)
+                .limit(200);
+
+            const ingresos = (income ?? [])
+                .filter((e: any) => String(e.entry_type).toLowerCase().includes('income') || String(e.entry_type).toLowerCase().includes('ingreso'))
+                .reduce((s: number, e: any) => s + Math.abs(Number(e.amount ?? 0)), 0);
+            const egresos = (income ?? [])
+                .filter((e: any) => String(e.entry_type).toLowerCase().includes('expense') || String(e.entry_type).toLowerCase().includes('gasto'))
+                .reduce((s: number, e: any) => s + Math.abs(Number(e.amount ?? 0)), 0);
+            const utilidad = ingresos - egresos;
+
+            if (queryType === 'variacion') {
+                const { data: prevPeriods } = await eeff
+                    .from('financial_periods')
+                    .select('id, period_name, start_date')
+                    .eq('company_id', company.id)
                     .order('start_date', { ascending: false })
                     .limit(2);
-
                 return {
-                    periodo_actual:   periodos?.[0]?.name ?? '—',
-                    periodo_anterior: periodos?.[1]?.name ?? '—',
-                    comparacion:      'Disponible cuando ambos períodos tengan asientos',
+                    empresa:          company.name,
+                    moneda:           company.currency,
+                    periodo_actual:   prevPeriods?.[0]?.period_name ?? '—',
+                    periodo_anterior: prevPeriods?.[1]?.period_name ?? '—',
+                    ingresos_total:   ingresos.toFixed(2),
+                    egresos_total:    egresos.toFixed(2),
+                    utilidad_neta:    utilidad.toFixed(2),
                     timestamp:        ts,
                 };
             }
 
-            return { periodo: period?.name ?? 'Sin período activo', timestamp: ts };
+            return {
+                empresa:        company.name,
+                moneda:         company.currency,
+                periodo:        (period as any)?.period_name ?? '—',
+                periodo_estado: (period as any)?.is_closed ? 'Cerrado' : 'Abierto',
+                ingresos_total: ingresos.toFixed(2),
+                egresos_total:  egresos.toFixed(2),
+                utilidad_neta:  utilidad.toFixed(2),
+                margen_pct:     ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
+                asientos_count: (income ?? []).length,
+                timestamp:      ts,
+            };
         }
 
         // ── Reporte Gerencial (email formateado) ──────────────────────────

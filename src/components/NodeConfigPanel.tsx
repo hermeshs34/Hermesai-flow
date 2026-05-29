@@ -364,20 +364,24 @@ function EeffForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) 
         <div className="space-y-4">
             <div className="p-3 bg-green-50 border border-green-100 rounded-lg text-sm text-green-800">
                 <Info className="w-4 h-4 inline mr-1.5" />
-                Consulta el sistema de Estados Financieros. Configura las variables de entorno en Supabase para activar la conexión.
+                Conecta con el sistema de Estados Financieros (3 empresas con períodos cargados).
             </div>
+            <Field label="Empresa" hint="Nombre exacto o parcial. Vacío = primera empresa encontrada">
+                <Input value={cfg.company ?? ''} onChange={v => set('company', v)}
+                    placeholder="Ej: Seguros, Inversiones... (o vacío para la primera)" />
+            </Field>
             <Field label="Tipo de consulta">
                 <Select value={cfg.query_type ?? 'summary'} onChange={v => set('query_type', v)} options={[
-                    { value: 'summary',   label: 'Resumen del período actual'    },
-                    { value: 'kpis',      label: 'KPIs financieros (ROE, ROA…)'  },
-                    { value: 'variacion', label: 'Variación vs período anterior' },
+                    { value: 'summary',   label: 'Resumen del último período'        },
+                    { value: 'variacion', label: 'Comparar períodos (actual vs ant.)' },
+                    { value: 'all',       label: 'Todas las empresas y períodos'     },
                 ]} />
             </Field>
-            <Field label="Período (opcional)" hint="Dejar vacío = período más reciente">
-                <Input value={cfg.periodo ?? ''} onChange={v => set('periodo', v)} placeholder="2026-05 (YYYY-MM)" />
+            <Field label="Nombre del período (opcional)" hint="Ej: Enero 2025. Vacío = último período no cerrado">
+                <Input value={cfg.periodo ?? ''} onChange={v => set('periodo', v)} placeholder="Enero 2025" />
             </Field>
             <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500">
-                <strong>Requiere secrets:</strong> <code>EEFF_SUPABASE_URL</code> + <code>EEFF_SERVICE_ROLE_KEY</code> en Supabase → Edge Functions.
+                <strong>Retorna:</strong> <code>empresa</code>, <code>periodo</code>, <code>ingresos_total</code>, <code>egresos_total</code>, <code>utilidad_neta</code>, <code>margen_pct</code>
             </div>
         </div>
     );
