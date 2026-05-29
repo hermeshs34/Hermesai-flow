@@ -280,6 +280,152 @@ function DelayForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void })
     );
 }
 
+function IndicadoresForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-indigo-800">
+                <Info className="w-4 h-4 inline mr-1.5" />
+                Consulta el Sistema de Indicadores de Gestión y retorna los KPIs según el filtro.
+            </div>
+            <Field label="Filtrar por estado" hint="Qué indicadores traer">
+                <Select value={cfg.status ?? 'all'} onChange={v => set('status', v)} options={[
+                    { value: 'all',         label: 'Todos los indicadores'       },
+                    { value: 'critical',    label: 'Solo críticos 🔴'            },
+                    { value: 'at_risk',     label: 'Solo en riesgo 🟡'           },
+                    { value: 'critical,at_risk', label: 'Críticos + En riesgo'  },
+                    { value: 'achieved',    label: 'Solo logrados ✅'            },
+                ]} />
+            </Field>
+            <Field label="Filtrar por área (opcional)" hint="Dejar vacío = todas las áreas">
+                <Input value={cfg.area ?? ''} onChange={v => set('area', v)} placeholder="Finanzas, Operaciones, Ventas..." />
+            </Field>
+            <Field label="Límite de resultados">
+                <Input value={String(cfg.limit ?? '20')} onChange={v => set('limit', v)} type="number" placeholder="20" />
+            </Field>
+            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500">
+                <strong>Retorna:</strong> <code>indicators[]</code>, <code>count</code>, <code>critical_count</code>, <code>at_risk_count</code>
+            </div>
+        </div>
+    );
+}
+
+function IndicadorCriticoForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-sm text-red-800">
+                <Info className="w-4 h-4 inline mr-1.5" />
+                Este trigger activa el flujo si encuentra indicadores en estado crítico o en riesgo.
+            </div>
+            <Field label="Activar cuando haya" hint="Condición para disparar el flujo">
+                <Select value={cfg.trigger_on ?? 'critical'} onChange={v => set('trigger_on', v)} options={[
+                    { value: 'critical',         label: 'Al menos 1 crítico 🔴'        },
+                    { value: 'at_risk',          label: 'Al menos 1 en riesgo 🟡'      },
+                    { value: 'critical,at_risk', label: 'Crítico O en riesgo'           },
+                    { value: 'any',              label: 'Siempre (cualquier estado)'    },
+                ]} />
+            </Field>
+            <Field label="Área a monitorear (opcional)">
+                <Input value={cfg.area ?? ''} onChange={v => set('area', v)} placeholder="Finanzas (vacío = todas)" />
+            </Field>
+        </div>
+    );
+}
+
+function SemaforoForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-yellow-50 border border-yellow-100 rounded-lg text-sm text-yellow-800">
+                <Info className="w-4 h-4 inline mr-1.5" />
+                Evalúa un valor numérico contra umbrales y devuelve color (verde/amarillo/rojo) y etiqueta.
+            </div>
+            <Field label="Valor a evaluar" hint="Usa {{previous.campo}} para referenciar nodo anterior">
+                <Input value={cfg.value ?? ''} onChange={v => set('value', v)} placeholder="{{previous.critical_count}}" />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+                <Field label="Umbral rojo (≥)" hint="Valor que activa alerta crítica">
+                    <Input value={String(cfg.umbral_rojo ?? '3')} onChange={v => set('umbral_rojo', v)} type="number" />
+                </Field>
+                <Field label="Umbral amarillo (≥)" hint="Valor que activa advertencia">
+                    <Input value={String(cfg.umbral_amarillo ?? '1')} onChange={v => set('umbral_amarillo', v)} type="number" />
+                </Field>
+            </div>
+            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500 space-y-1">
+                <div>🔴 <strong>Rojo</strong>: valor ≥ umbral_rojo</div>
+                <div>🟡 <strong>Amarillo</strong>: valor ≥ umbral_amarillo</div>
+                <div>🟢 <strong>Verde</strong>: valor por debajo de ambos umbrales</div>
+                <div className="pt-1"><strong>Retorna:</strong> <code>color</code>, <code>label</code>, <code>value</code></div>
+            </div>
+        </div>
+    );
+}
+
+function EeffForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-green-50 border border-green-100 rounded-lg text-sm text-green-800">
+                <Info className="w-4 h-4 inline mr-1.5" />
+                Consulta el sistema de Estados Financieros. Configura las variables de entorno en Supabase para activar la conexión.
+            </div>
+            <Field label="Tipo de consulta">
+                <Select value={cfg.query_type ?? 'summary'} onChange={v => set('query_type', v)} options={[
+                    { value: 'summary',   label: 'Resumen del período actual'    },
+                    { value: 'kpis',      label: 'KPIs financieros (ROE, ROA…)'  },
+                    { value: 'variacion', label: 'Variación vs período anterior' },
+                ]} />
+            </Field>
+            <Field label="Período (opcional)" hint="Dejar vacío = período más reciente">
+                <Input value={cfg.periodo ?? ''} onChange={v => set('periodo', v)} placeholder="2026-05 (YYYY-MM)" />
+            </Field>
+            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500">
+                <strong>Requiere secrets:</strong> <code>EEFF_SUPABASE_URL</code> + <code>EEFF_SERVICE_ROLE_KEY</code> en Supabase → Edge Functions.
+            </div>
+        </div>
+    );
+}
+
+const REPORTE_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;background:#fff">
+  <div style="background:linear-gradient(135deg,#1e1b4b,#4f46e5);padding:32px 24px;border-radius:12px 12px 0 0;text-align:center">
+    <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700">📊 Reporte de Gestión</h1>
+    <p style="color:#a5b4fc;margin:8px 0 0;font-size:14px">Informe ejecutivo generado automáticamente</p>
+  </div>
+  <div style="padding:28px 24px;background:#f8fafc">
+    <h2 style="color:#1e1b4b;font-size:16px;margin:0 0 16px">Estado de Indicadores</h2>
+    {{summary}}
+    <p style="color:#9ca3af;font-size:11px;margin-top:24px;text-align:center">HermesAI Flow · Automatización Inteligente de Procesos</p>
+  </div>
+</div>`;
+
+function ReporteGerencialForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <div className="space-y-4">
+            <Field label="Para (destinatario)">
+                <Input value={cfg.to ?? ''} onChange={v => set('to', v)} placeholder="gerencia@empresa.com" type="email" />
+            </Field>
+            <Field label="Asunto">
+                <Input value={cfg.subject ?? ''} onChange={v => set('subject', v)} placeholder="📊 Reporte Semanal de Gestión — {{previous.label}}" />
+            </Field>
+            <div>
+                <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-semibold text-gray-700">Cuerpo del reporte</label>
+                    <button
+                        type="button"
+                        onClick={() => { set('subject', '📊 Reporte Gerencial — {{previous.label}}'); set('body', REPORTE_TEMPLATE); }}
+                        className="text-xs px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg transition-colors font-medium"
+                    >
+                        📊 Usar plantilla gerencial
+                    </button>
+                </div>
+                <Textarea value={cfg.body ?? ''} onChange={v => set('body', v)}
+                    placeholder="Usa el botón para cargar la plantilla ejecutiva, o escribe el contenido manualmente."
+                    rows={5} />
+                <p className="text-xs text-gray-400 mt-1">
+                    Variables: <code className="bg-gray-100 px-1 rounded">{'{{summary}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{previous.critical_count}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{previous.label}}'}</code>
+                </p>
+            </div>
+        </div>
+    );
+}
+
 function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
     return (
         <div className="space-y-4">
@@ -340,9 +486,16 @@ const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, titl
     email:   (c, s)    => <EmailForm cfg={c} set={s} />,
     decision:(c, s)    => <DecisionForm cfg={c} set={s} />,
     log:     (c, s)    => <LogForm cfg={c} set={s} />,
-    bcv:        (c, s) => <BcvForm cfg={c} set={s} />,
-    delay:      (c, s) => <DelayForm cfg={c} set={s} />,
-    aprobacion: (c, s) => <AprobacionForm cfg={c} set={s} />,
+    bcv:          (c, s) => <BcvForm cfg={c} set={s} />,
+    delay:        (c, s) => <DelayForm cfg={c} set={s} />,
+    aprobacion:   (c, s) => <AprobacionForm cfg={c} set={s} />,
+    // category 'indicadores' cubre tanto Leer Indicadores como Alerta KPI Crítico
+    indicadores:  (c, s, title) => title.includes('lerta') || title.includes('Alerta')
+        ? <IndicadorCriticoForm cfg={c} set={s} />
+        : <IndicadoresForm cfg={c} set={s} />,
+    semaforo:     (c, s) => <SemaforoForm cfg={c} set={s} />,
+    eeff:         (c, s) => <EeffForm cfg={c} set={s} />,
+    reporte:      (c, s) => <ReporteGerencialForm cfg={c} set={s} />,
 };
 
 // ── Componente principal ──────────────────────────────────────────────────────

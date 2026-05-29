@@ -264,9 +264,139 @@ async function executeNode(
             };
         }
 
+        // ── Indicadores de Gestión ────────────────────────────────────────
+        case 'trigger:indicadores':
+        case 'processor:indicadores': {
+            const IND_URL = Deno.env.get('INDICADORES_SUPABASE_URL');
+            const IND_KEY = Deno.env.get('INDICADORES_SERVICE_ROLE_KEY');
+            if (!IND_URL || !IND_KEY) {
+                return { skipped: true, reason: 'INDICADORES_SUPABASE_URL o INDICADORES_SERVICE_ROLE_KEY no configurados en Supabase Secrets' };
+            }
+            const ind = createClient(IND_URL, IND_KEY);
+
+            // Construir filtro de status
+            const statusFilter: string[] = (cfg.status ?? 'all') === 'all'
+                ? []
+                : (cfg.status as string).split(',').map((s: string) => s.trim());
+
+            let query = ind.from('indicators')
+                .select('id,name,area,target,actual,status,responsible,observations,measurement_date');
+            if (cfg.area) query = query.ilike('area', `%${cfg.area}%`);
+            if (statusFilter.length === 1) query = query.eq('status', statusFilter[0]);
+            query = query.limit(Number(cfg.limit ?? 20));
+
+            const { data: indicators, error } = await query;
+            if (error) throw new Error(`Indicadores: ${error.message}`);
+
+            const list           = indicators ?? [];
+            const critical_count = list.filter((i: any) => i.status === 'critical').length;
+            const at_risk_count  = list.filter((i: any) => i.status === 'at_risk').length;
+            const achieved_count = list.filter((i: any) => i.status === 'achieved').length;
+
+            // Si es trigger, evaluar condición de disparo
+            if (node.type === 'trigger') {
+                const triggerOn = (cfg.trigger_on ?? 'critical') as string;
+                const shouldFire =
+                    triggerOn === 'any'           ? true :
+                    triggerOn === 'critical'      ? critical_count > 0 :
+                    triggerOn === 'at_risk'       ? at_risk_count > 0 :
+                    triggerOn.includes('critical') || triggerOn.includes('at_risk')
+                        ? (critical_count + at_risk_count) > 0 : true;
+                if (!shouldFire) {
+                    return { skipped: true, reason: `Sin indicadores en estado "${triggerOn}" — flujo no disparado` };
+                }
+            }
+
+            return {
+                indicators:    list,
+                count:         list.length,
+                critical_count,
+                at_risk_count,
+                achieved_count,
+                timestamp:     new Date().toISOString(),
+            };
+        }
+
+        // ── Semáforo de gestión ───────────────────────────────────────────
+        case 'processor:semaforo': {
+            const raw           = resolveValue(cfg.value ?? '0', context);
+            const value         = Number(raw) || 0;
+            const umbral_rojo   = Number(cfg.umbral_rojo   ?? 3);
+            const umbral_amarillo = Number(cfg.umbral_amarillo ?? 1);
+
+            const color = value >= umbral_rojo
+                ? 'rojo'
+                : value >= umbral_amarillo
+                ? 'amarillo'
+                : 'verde';
+
+            const label = color === 'rojo'
+                ? `🔴 CRÍTICO — ${value} indicadores requieren atención inmediata`
+                : color === 'amarillo'
+                ? `🟡 ADVERTENCIA — ${value} indicadores en riesgo`
+                : `🟢 NORMAL — todos los indicadores dentro de parámetros`;
+
+            return { color, label, value, umbral_rojo, umbral_amarillo };
+        }
+
+        // ── Estados Financieros ───────────────────────────────────────────
+        case 'processor:eeff': {
+            const EEFF_URL = Deno.env.get('EEFF_SUPABASE_URL');
+            const EEFF_KEY = Deno.env.get('EEFF_SERVICE_ROLE_KEY');
+            if (!EEFF_URL || !EEFF_KEY) {
+                return { skipped: true, reason: 'EEFF_SUPABASE_URL o EEFF_SERVICE_ROLE_KEY no configurados — agrega los secrets en Supabase Edge Functions' };
+            }
+            const eeff = createClient(EEFF_URL, EEFF_KEY);
+            // Consulta genérica — adaptar según el schema real del sistema EE.FF.
+            const { data, error } = await eeff
+                .from('financial_records')
+                .select('*')
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .single();
+            if (error) throw new Error(`EE.FF.: ${error.message}`);
+            return { record: data, timestamp: new Date().toISOString() };
+        }
+
+        // ── Reporte Gerencial (email formateado) ──────────────────────────
+        case 'output:reporte': {
+            if (!deps.resendKey) throw new Error('RESEND_API_KEY no configurado');
+            const to      = resolveValue(cfg.to ?? '', context);
+            const subject = resolveValue(cfg.subject ?? '📊 Reporte Gerencial — HermesAI Flow', context);
+            let   body    = resolveValue(cfg.body ?? '', context);
+            if (!to) throw new Error('Nodo Reporte Gerencial: campo "to" requerido');
+
+            if (!body?.trim()) {
+                body = `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;background:#fff">
+  <div style="background:linear-gradient(135deg,#1e1b4b,#4f46e5);padding:32px 24px;border-radius:12px 12px 0 0;text-align:center">
+    <h1 style="color:#fff;margin:0;font-size:22px">📊 Reporte de Gestión</h1>
+    <p style="color:#a5b4fc;margin:8px 0 0;font-size:13px">Informe ejecutivo generado automáticamente · ${new Date().toLocaleDateString('es-VE')}</p>
+  </div>
+  <div style="padding:28px 24px;background:#f8fafc">
+    ${buildContextSummary(context)}
+    <p style="color:#9ca3af;font-size:11px;margin-top:20px;text-align:center">HermesAI Flow · Automatización Inteligente de Procesos</p>
+  </div>
+</div>`;
+            }
+
+            const res = await fetch('https://api.resend.com/emails', {
+                method:  'POST',
+                headers: { Authorization: `Bearer ${deps.resendKey}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    from:    cfg.from ?? 'HermesAI Flow <onboarding@resend.dev>',
+                    to:      [to],
+                    subject,
+                    html:    body,
+                }),
+            });
+            if (!res.ok) throw new Error(`Resend: ${await res.text()}`);
+            const data = await res.json();
+            return { sent: true, email_id: data.id, to, subject };
+        }
+
         // ── Nodo no implementado ──────────────────────────────────────────
         default:
-            return { skipped: true, reason: `Tipo "${nodeKey}" — implementación pendiente en F2` };
+            return { skipped: true, reason: `Tipo "${nodeKey}" — implementación pendiente` };
     }
 }
 

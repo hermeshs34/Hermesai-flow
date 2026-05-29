@@ -4,6 +4,7 @@ import {
     Shield, Search, TrendingUp, Lock, Bell, Package,
     ShoppingCart, UserCheck, Database, ArrowUpRight,
     AlertTriangle, Timer, ChevronDown, ChevronRight,
+    BarChart2, Activity, PieChart, BookOpen, Gauge,
 } from 'lucide-react';
 
 export interface NodeType {
@@ -63,6 +64,17 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
         ],
     },
     {
+        label: 'Gestión Empresarial',
+        color: '#8b5cf6',
+        nodes: [
+            { id: 'indicadores-leer',    type: 'processor', category: 'indicadores',   title: 'Leer Indicadores',        description: 'Consultar KPIs del Sistema de Indicadores de Gestión',    icon: BarChart2,  color: '#6366f1' },
+            { id: 'indicador-critico',   type: 'trigger',   category: 'indicadores',   title: 'Alerta KPI Crítico',      description: 'Disparar cuando hay indicadores en estado crítico/riesgo', icon: Activity,   color: '#ef4444' },
+            { id: 'semaforo',            type: 'processor', category: 'semaforo',       title: 'Semáforo de Gestión',     description: 'Evaluar valor contra umbrales verde/amarillo/rojo',        icon: Gauge,      color: '#f59e0b' },
+            { id: 'eeff-leer',           type: 'processor', category: 'eeff',           title: 'Datos EE.FF.',            description: 'Consultar indicadores del sistema Estados Financieros',    icon: PieChart,   color: '#10b981' },
+            { id: 'reporte-gerencial',   type: 'output',    category: 'reporte',        title: 'Reporte Gerencial',       description: 'Enviar informe ejecutivo HTML con KPIs y semáforo',        icon: BookOpen,   color: '#8b5cf6' },
+        ],
+    },
+    {
         label: 'Manufactura & Textil',
         color: '#f59e0b',
         nodes: [
@@ -91,6 +103,7 @@ const TYPE_BG: Record<string, string> = {
 export function NodePalette({ onDragStart, onClose }: NodePaletteProps) {
     const [openSections, setOpenSections] = useState<Record<string, boolean>>({
         Universal: true,
+        'Gestión Empresarial': false,
         'Seguros & Reaseguros': false,
         'Banca & Finanzas': false,
         'Manufactura & Textil': false,

@@ -130,15 +130,58 @@ export function Settings() {
                             </a>
                         </div>
 
+                        {/* Indicadores */}
+                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
+                            <div>
+                                <p className="text-sm font-semibold text-gray-700">Sistema de Indicadores de Gestión</p>
+                                <p className="text-xs text-gray-400 mb-1">Proyecto: koxjkebnjusgazsdeokc.supabase.co</p>
+                                <p className="text-xs font-mono text-indigo-600">INDICADORES_SUPABASE_URL</p>
+                                <p className="text-xs font-mono text-indigo-600">INDICADORES_SERVICE_ROLE_KEY</p>
+                            </div>
+                            <a
+                                href="https://supabase.com/dashboard/project/kbscaxcokxwdbnrltkup/settings/functions"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition-colors"
+                            >
+                                Configurar <ExternalLink className="w-3 h-3" />
+                            </a>
+                        </div>
+
+                        {/* EE.FF. */}
+                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
+                            <div>
+                                <p className="text-sm font-semibold text-gray-700">Estados Financieros (EE.FF.)</p>
+                                <p className="text-xs text-gray-400 mb-1">Conectar cuando el sistema tenga Supabase propio</p>
+                                <p className="text-xs font-mono text-green-600">EEFF_SUPABASE_URL</p>
+                                <p className="text-xs font-mono text-green-600">EEFF_SERVICE_ROLE_KEY</p>
+                            </div>
+                            <a
+                                href="https://supabase.com/dashboard/project/kbscaxcokxwdbnrltkup/settings/functions"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors"
+                            >
+                                Configurar <ExternalLink className="w-3 h-3" />
+                            </a>
+                        </div>
+
                         {/* RiskGuard */}
                         <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
                             <div>
                                 <p className="text-sm font-semibold text-gray-700">RiskGuard Insurance (Siniestros)</p>
-                                <p className="text-xs text-gray-400">Secrets: RISKGUARD_SUPABASE_URL + RISKGUARD_SERVICE_ROLE_KEY</p>
+                                <p className="text-xs text-gray-400 mb-1">Conectar para flujos de siniestros y fraude</p>
+                                <p className="text-xs font-mono text-red-500">RISKGUARD_SUPABASE_URL</p>
+                                <p className="text-xs font-mono text-red-500">RISKGUARD_SERVICE_ROLE_KEY</p>
                             </div>
-                            <span className="px-2.5 py-1 text-xs bg-yellow-50 text-yellow-700 border border-yellow-200 rounded-lg font-medium">
-                                Sprint S3
-                            </span>
+                            <a
+                                href="https://supabase.com/dashboard/project/kbscaxcokxwdbnrltkup/settings/functions"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors"
+                            >
+                                Configurar <ExternalLink className="w-3 h-3" />
+                            </a>
                         </div>
                     </div>
                 </Section>
