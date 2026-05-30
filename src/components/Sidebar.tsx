@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react';
 import {
     LayoutDashboard, Workflow, Activity,
     Settings as SettingsIcon, Zap, ChevronRight,
     LogOut, CheckCircle, AlertCircle, Clock, HelpCircle,
 } from 'lucide-react';
+import { supabase } from '../core/supabase';
 import type { ViewType } from '../App';
 import type { User } from '../core/user.types';
 
@@ -14,19 +16,69 @@ interface SidebarProps {
     onLogout?:       () => void;
 }
 
-const SYSTEMS = [
-    { name: 'Tasa BCV',      status: 'ok'      },
-    { name: 'Indicadores',   status: 'ok'      },
-    { name: 'EE.FF.',        status: 'ok'      },
-    { name: 'RiskGuard',     status: 'pending' },
-    { name: 'LegalTech',     status: 'pending' },
-];
+type SystemStatus = 'ok' | 'error' | 'pending' | 'unknown';
+
+interface SystemHealth {
+    name:       string;
+    status:     SystemStatus;
+    lastRun?:   string;
+    nodeKey:    string;  // keyword en el nombre del nodo o workflow
+}
 
 const STATUS_DOT: Record<string, string> = {
     ok:      'bg-emerald-400',
     pending: 'bg-amber-400',
     error:   'bg-red-400',
+    unknown: 'bg-gray-400',
 };
+
+// Detecta salud de cada sistema mirando ejecuciones recientes
+function useSystemHealth(): SystemHealth[] {
+    const [health, setHealth] = useState<SystemHealth[]>([
+        { name: 'Tasa BCV',    nodeKey: 'bcv',        status: 'unknown' },
+        { name: 'Indicadores', nodeKey: 'indicadores', status: 'unknown' },
+        { name: 'EE.FF.',      nodeKey: 'eeff',        status: 'unknown' },
+        { name: 'RiskGuard',   nodeKey: 'riskguard',   status: 'unknown' },
+        { name: 'LegalTech',   nodeKey: 'legaltech',   status: 'unknown' },
+    ]);
+
+    useEffect(() => {
+        let active = true;
+        (async () => {
+            try {
+                const [{ data: runs }, { data: nodes }] = await Promise.all([
+                    supabase.from('execution_runs')
+                        .select('status, started_at, workflows(name)')
+                        .order('started_at', { ascending: false })
+                        .limit(50),
+                    supabase.from('workflow_nodes')
+                        .select('category')
+                        .in('category', ['bcv', 'indicadores', 'eeff', 'riskguard', 'legaltech']),
+                ]);
+                if (!active) return;
+
+                const configured = new Set((nodes ?? []).map((n: any) => n.category as string));
+
+                setHealth(prev => prev.map(sys => {
+                    const rel = (runs ?? []).filter((r: any) => {
+                        const name = (Array.isArray(r.workflows) ? r.workflows[0]?.name : r.workflows?.name) ?? '';
+                        return String(name).toLowerCase().includes(sys.nodeKey);
+                    });
+                    if (rel.length === 0) {
+                        return { ...sys, status: configured.has(sys.nodeKey) ? 'pending' : 'unknown' };
+                    }
+                    const last = rel[0] as any;
+                    const status: SystemStatus = last.status === 'success' ? 'ok'
+                        : last.status === 'error' ? 'error' : 'pending';
+                    return { ...sys, status, lastRun: last.started_at };
+                }));
+            } catch { /* fallo silencioso */ }
+        })();
+        return () => { active = false; };
+    }, []);
+
+    return health;
+}
 
 const NAV = [
     { id: 'dashboard'  as ViewType, label: 'Dashboard',             icon: LayoutDashboard, badge: null },
@@ -36,6 +88,7 @@ const NAV = [
 ];
 
 export function Sidebar({ currentView, onViewChange, onShowTutorial, currentUser, onLogout }: SidebarProps) {
+    const systems = useSystemHealth();
     const initials = currentUser?.name
         ?.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase() ?? 'HS';
 
@@ -81,7 +134,7 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, currentUser
                 <div className="mt-6 pt-4 border-t border-white/10">
                     <p className="text-[9px] font-semibold text-white/30 uppercase tracking-widest px-2 mb-3">Sistemas</p>
                     <div className="space-y-1.5 px-2">
-                        {SYSTEMS.map(s => (
+                        {systems.map(s => (
                             <div key={s.name} className="flex items-center justify-between">
                                 <span className="text-xs text-white/50">{s.name}</span>
                                 <div className="flex items-center gap-1.5">

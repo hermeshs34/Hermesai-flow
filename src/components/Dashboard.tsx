@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
 import type { Workflow } from '../types/workflow';
+import type { User } from '../core/user.types';
 import { WorkflowService } from '../services/workflow.service';
 import { toast } from 'sonner';
 
@@ -78,15 +79,20 @@ const TRIGGER: Record<string, string> = { manual: '▶ Manual', cron: '⏰ Cron'
 
 // ── Componente principal ──────────────────────────────────────────────────────
 interface DashboardProps {
-    onNavigate?: (view: 'canvas' | 'monitoring' | 'settings' | 'dashboard') => void;
+    onNavigate?:  (view: 'canvas' | 'monitoring' | 'settings' | 'dashboard') => void;
+    currentUser?: User;
 }
 
-export function Dashboard({ onNavigate }: DashboardProps) {
-    const [runs,      setRuns]      = useState<RunRow[]>([]);
-    const [workflows, setWorkflows] = useState<Workflow[]>([]);
-    const [loading,   setLoading]   = useState(true);
-    const [period,    setPeriod]    = useState<Period>('7d');
-    const [retrying,  setRetrying]  = useState<string | null>(null);
+export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
+    const [runs,       setRuns]       = useState<RunRow[]>([]);
+    const [workflows,  setWorkflows]  = useState<Workflow[]>([]);
+    const [cronFlows,  setCronFlows]  = useState<{name:string;cron:string;wfId:string}[]>([]);
+    const [loading,    setLoading]    = useState(true);
+    const [period,     setPeriod]     = useState<Period>('7d');
+    const [retrying,   setRetrying]   = useState<string | null>(null);
+    const [creating,   setCreating]   = useState<string | null>(null);
+
+    const orgId = currentUser?.organizationId ?? '';
 
     const goToCanvas = (templateName?: string) => {
         if (templateName) toast.info(`Abre el Constructor y crea el flujo "${templateName}" desde cero con los nodos de la paleta.`);
@@ -104,9 +110,15 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 .limit(200);
             if (cutoff) q = q.gte('started_at', cutoff);
 
-            const [runsRes, wfsRes] = await Promise.all([
+            const [runsRes, wfsRes, cronRes] = await Promise.all([
                 q,
                 supabase.from('workflows').select('id, name, status, is_active, execution_count, last_run_at, created_at').order('execution_count', { ascending: false }).limit(50),
+                // Punto 2: flujos cron dinámicos desde la DB
+                supabase.from('workflow_nodes')
+                    .select('workflow_id, config_json, workflows(name, is_active)')
+                    .eq('type', 'trigger')
+                    .eq('category', 'cron')
+                    .limit(20),
             ]);
 
             setRuns((runsRes.data ?? []).map((r: any) => ({
@@ -121,6 +133,15 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 isActive: w.is_active, createdAt: w.created_at, lastRun: w.last_run_at,
                 executionCount: w.execution_count ?? 0, status: w.status ?? 'paused',
             })));
+
+            setCronFlows((cronRes.data ?? [])
+                .filter((n: any) => n.config_json?.cron && (n.workflows as any)?.is_active)
+                .map((n: any) => ({
+                    name: (n.workflows as any)?.name ?? 'Flujo programado',
+                    cron: n.config_json.cron as string,
+                    wfId: n.workflow_id as string,
+                }))
+            );
         } catch {
             toast.error('Error cargando dashboard');
         } finally {
@@ -153,12 +174,36 @@ export function Dashboard({ onNavigate }: DashboardProps) {
         }
     };
 
+    // BUG FIX: usar orgId real, no wf.id como organizationId
     const toggleActive = async (wf: Workflow) => {
+        if (!orgId) { toast.error('Sin organización activa'); return; }
         try {
-            await WorkflowService.updateWorkflow(wf.id, wf.id, { isActive: !wf.isActive });
+            await WorkflowService.updateWorkflow(wf.id, orgId, { isActive: !wf.isActive });
             setWorkflows(prev => prev.map(w => w.id === wf.id ? { ...w, isActive: !w.isActive } : w));
             toast.success(wf.isActive ? `"${wf.name}" pausado` : `"${wf.name}" activado`);
-        } catch { toast.error('No se pudo actualizar'); }
+        } catch { toast.error('No se pudo actualizar el flujo'); }
+    };
+
+    // Plantilla: crear flujo pre-configurado y abrir en canvas
+    const createFromTemplate = async (t: typeof TEMPLATES[0]) => {
+        if (!orgId) { goToCanvas(t.name); return; }
+        setCreating(t.id);
+        try {
+            const userId = currentUser?.id ?? '';
+            const wf = await WorkflowService.createWorkflow(orgId, userId, {
+                name: t.name,
+                description: t.desc,
+            });
+            // Guardar en localStorage para que el canvas lo abra automáticamente
+            localStorage.setItem('hermesai_open_workflow', wf.id);
+            toast.success(`Flujo "${t.name}" creado — ábrelo en el Constructor`);
+            onNavigate?.('canvas');
+        } catch {
+            toast.info(`Navega al Constructor y crea "${t.name}" manualmente`);
+            onNavigate?.('canvas');
+        } finally {
+            setCreating(null);
+        }
     };
 
     // ── KPIs calculados ─────────────────────────────────────────────────────
@@ -406,8 +451,9 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                     <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-0 divide-x divide-y divide-gray-100">
                         {TEMPLATES.map(t => {
                             const Icon = t.icon;
+                            const isCreating = creating === t.id;
                             return (
-                                <div key={t.id} onClick={() => goToCanvas(t.name)} className="p-4 hover:bg-gray-50 transition-colors group cursor-pointer">
+                                <div key={t.id} onClick={() => !isCreating && createFromTemplate(t)} className={`p-4 hover:bg-gray-50 transition-colors group cursor-pointer ${isCreating ? 'opacity-60 pointer-events-none' : ''}`}>
                                     <div className={`w-9 h-9 rounded-xl ${t.bg} flex items-center justify-center mb-3`}>
                                         <Icon className={`w-4.5 h-4.5 ${t.color}`} style={{ width: '18px', height: '18px' }} />
                                     </div>
@@ -419,9 +465,13 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                                         ))}
                                     </div>
                                     <div className="flex items-center gap-1 mt-2 text-indigo-500 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <Play className="w-3 h-3" />
-                                        <span className="text-[10px] font-semibold">Ver en Constructor</span>
-                                        <ChevronRight className="w-3 h-3" />
+                                        {isCreating
+                                            ? <RefreshCw className="w-3 h-3 animate-spin" />
+                                            : <Play className="w-3 h-3" />}
+                                        <span className="text-[10px] font-semibold">
+                                            {isCreating ? 'Creando...' : 'Crear flujo'}
+                                        </span>
+                                        {!isCreating && <ChevronRight className="w-3 h-3" />}
                                     </div>
                                 </div>
                             );
@@ -442,19 +492,19 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                         </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                        {[
-                            { name: 'Tasa BCV Diaria',       cron: '0 9 * * 1-5',  next: 'Lun–Vie 9:00am UTC', system: 'BCV' },
-                            { name: 'Monitor Indicadores',   cron: '0 8 * * 1',    next: 'Lunes 8:00am UTC',   system: 'Indicadores' },
-                        ].map(f => (
-                            <div key={f.name} className="flex items-center justify-between bg-white/8 hover:bg-white/12 rounded-xl px-4 py-3 transition-colors">
+                        {cronFlows.length === 0 && !loading && (
+                            <p className="text-xs text-white/30 col-span-3 py-2">
+                                Sin flujos programados activos — crea uno con el nodo "Programado (Cron)" en el Constructor.
+                            </p>
+                        )}
+                        {cronFlows.map(f => (
+                            <div key={f.wfId} className="flex items-center justify-between bg-white/8 hover:bg-white/12 rounded-xl px-4 py-3 transition-colors">
                                 <div>
                                     <p className="text-sm font-semibold">{f.name}</p>
                                     <p className="text-[10px] text-indigo-300 font-mono mt-0.5">{f.cron}</p>
-                                    <p className="text-[10px] text-white/50 mt-0.5">Próxima: {f.next}</p>
+                                    <p className="text-[10px] text-white/40 mt-0.5">Activo · pg_cron</p>
                                 </div>
-                                <div className="text-right">
-                                    <span className="text-[10px] px-2 py-0.5 bg-indigo-500/30 text-indigo-300 rounded-full font-medium">{f.system}</span>
-                                </div>
+                                <div className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
                             </div>
                         ))}
                         <button

@@ -38,7 +38,7 @@ function App() {
       case 'canvas':     return <WorkflowCanvas currentUser={currentUser!} />;
       case 'monitoring': return <Monitoring />;
       case 'settings':   return <Settings />;
-      default:           return <Dashboard onNavigate={setCurrentView} />;
+      default:           return <Dashboard onNavigate={setCurrentView} currentUser={currentUser!} />;
     }
   };
 
