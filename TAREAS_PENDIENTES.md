@@ -1,82 +1,105 @@
 # TAREAS_PENDIENTES.md — HermesAI Flow
 > Backlog activo del proyecto. Actualizar al inicio y fin de cada sesión.
 
-**Última actualización:** 29 Mayo 2026 — Fin de sesión  
-**Fase actual:** Sprint S3 completado ✅ — Próximo: S4 (Cron automático + Netlify + RiskGuard)
+**Última actualización:** 30 Mayo 2026 — Fin de sesión
+**Fase actual:** Sprint S4 completado ✅ — Dashboard cockpit empresarial robustecido
 
 ---
 
-## ✅ Completado hoy (29 Mayo 2026)
+## ✅ Completado 30 Mayo 2026
 
-### Sprint S3 — Integración Indicadores de Gestión
-- [x] 5 nodos nuevos sección "Gestión Empresarial": Leer Indicadores, Alerta KPI, Semáforo, EE.FF., Reporte Gerencial
-- [x] Edge Function actualizada con schema real: `indicadores_definicion` + `indicadores_valores` + `alertas`
-- [x] Settings: sección de secrets para Indicadores, EE.FF. y RiskGuard con links directos
-- [x] Fix columnas reales `execution_logs`: `details_json` y `executed_at` (logs en Monitoreo funcionando)
-- [x] Fix comparación Decisión case-insensitive (`rojo == Rojo` ahora funciona)
-- [x] Fix email `buildContextSummary`: arrays muestran conteo, timestamps formateados, sin `[object Object]`
-- [x] Eliminar conexiones con clic en la flecha
-- [x] Flujo demostración completo validado end-to-end:
-  - `Inicio Manual → Leer Indicadores → Semáforo → Decisión → Reporte Gerencial (email) / Log`
-  - 50 indicadores leídos, 6 en riesgo, 44 logrados, 10 alertas críticas
-  - Email ejecutivo llega correctamente con datos formateados
+### Sprint S4 — Cron + EE.FF. + Dashboard Cockpit Empresarial
 
-### Bugs resueltos
-- [x] `execution_logs` vacía — columnas `details`/`timestamp` no existían en schema real
-- [x] `[object Object]` en email — arrays no se formateaban
-- [x] Decisión siempre FALSA — comparación case-sensitive (`rojo` vs `Rojo`)
-- [x] Sin logs en Monitoreo — query usaba nombres de columna incorrectos
-- [x] DNS error Indicadores — proyecto Supabase incorrecto en secrets
+**Cron automático**
+- [x] Edge Function `cron-runner` (se ejecuta cada minuto vía pg_cron)
+- [x] pg_cron configurado en Supabase con `net.http_post` cada minuto
+- [x] Flujo Indicadores con trigger Cron `0 8 * * 1` (lunes 8am)
+
+**Integración EE.FF. (Estados Financieros — proyecto ieuxpyodbqqhnxcfdflf)**
+- [x] Nodo `processor:eeff` conectado al schema real
+- [x] Usa tabla `financial_entries` (company_id + period_id) — NO income_statement_entries (vacía)
+- [x] Agrupa por category: Activos/Pasivos/Patrimonio/Ingresos/Gastos
+- [x] Secrets `EEFF_SUPABASE_URL` + `EEFF_SERVICE_ROLE_KEY` configurados
+- [⚠️] PENDIENTE: cifras salen más altas que el dashboard (doble conteo por niveles de cuenta)
+
+**Dashboard Cockpit Empresarial (respondiendo evaluación experta BPM)**
+- [x] Header de salud con gradiente dinámico + círculo de tasa de éxito
+- [x] Filtro de período 24h/7d/30d/todo con query real por cutoff
+- [x] KPIs operacionales: ejecuciones, exitosas, errores, activos, tiempo promedio
+- [x] KPIs ejecutivos: SLA (<30s), ahorro estimado USD, bloqueados, % automatización
+- [x] Bandeja Operativa (componente propio): criticidad por flujo + aprobaciones/bloqueados + reintentar
+- [x] Plantillas que CREAN flujos completos (nodos + conexiones) vía saveNodes/saveConnections
+- [x] localStorage reader en WorkflowCanvas — abre el flujo creado desde plantilla
+- [x] Banner de validación de campos vacíos (con estado React, no DOM)
+- [x] Campo responsable derivado de created_by → profiles
+- [x] Flujos programados dinámicos (query real workflow_nodes cron)
+
+**Salud de integraciones REAL**
+- [x] Edge Function `health-check` — latencia real en ms + prueba de credenciales
+- [x] Sidebar consulta health-check al montar y cada 60s
+- [x] Estados: ok (verde+latencia), error (rojo+mensaje), unconfigured (amarillo), loading
+- [x] Tooltip con latencia + último chequeo al hacer hover
+
+**Identidad y calidad**
+- [x] Tutorial rebrandeado de "FlowMaster" → "HermesAI Flow" (6 pasos con tips reales)
+- [x] Tutorial reconectado en App.tsx (botón ? en Sidebar)
+- [x] Sidebar rediseñado dark theme + avatar usuario
+- [x] BUG CRÍTICO resuelto: activar/pausar usaba wf.id como organizationId → ahora orgId real
+- [x] Lint: 0 errores (antes 109) — no-explicit-any a warn, _params ignorados, supabase/functions excluido
+- [x] tsc 0 errores · build exitoso (124 kB gzip)
 
 ---
 
-## 🔴 PENDIENTE INMEDIATO
+## 🔴 PENDIENTE INMEDIATO — Mañana 31 Mayo 2026
 
-- [ ] Ejecutar migración `branch` en Supabase SQL Editor (si no se hizo):
-  ```sql
-  ALTER TABLE workflow_connections
-      ADD COLUMN IF NOT EXISTS branch TEXT CHECK (branch IN ('true', 'false'));
-  ```
-- [ ] Restaurar umbral rojo del Semáforo a `1` (se cambió a `0` para pruebas)
+### 1. EE.FF. — Cuadrar cifras (PRIORIDAD ALTA)
+- [ ] Las cifras salen más altas que el dashboard de EE.FF. por doble conteo de niveles de cuenta
+- [ ] Dashboard EE.FF. muestra: Activos 392.951.710,07 / Pasivos 113.226.605,96 / Patrimonio 47.664.974,08 / Ingresos 121.252.820,55 / Utilidad 10.090.274,23
+- [ ] Investigar cómo el sistema EE.FF. filtra niveles (probablemente usa solo cuentas hoja o solo nivel raíz)
+- [ ] Revisar si hay un campo `level` o `parent_account_code` en financial_entries para evitar sumar padres+hijos
+- [ ] El usuario advirtió: cuadrar EE.FF. tomó meses, no es trivial
 
----
+### 2. Revisión completa del sistema
+- [ ] Probar todas las plantillas end-to-end (crear → completar campos → ejecutar)
+- [ ] Verificar health-check con tooltip de latencia en producción
+- [ ] Confirmar que Bandeja Operativa aparece cuando hay errores reales
+- [ ] Validar campo responsable muestra el nombre correcto del creador
 
-## 🟠 MAÑANA — Sprint S4
-
-### 1. Programar flujo con Cron
-- [ ] Cambiar trigger de "Inicio Manual" a "Programado (Cron)" en flujo Indicadores
-- [ ] Configurar: `0 8 * * 1` (lunes 8am) para reporte semanal automático
-- [ ] Verificar que pg_cron o Supabase Scheduled Functions estén disponibles
-
-### 2. Netlify deploy
+### 3. Netlify deploy (pendiente desde S4)
 - [ ] Conectar repo `hermeshs34/Hermesai-flow` a Netlify
-- [ ] Env vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_APP_ENV=production`
-- [ ] Verificar que el build pase sin errores
+- [ ] Env vars: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_APP_ENV=production
+- [ ] Verificar build en CI
 
-### 3. Conectores RiskGuard completos
-- [ ] Agregar secrets `RISKGUARD_SUPABASE_URL` + `RISKGUARD_SERVICE_ROLE_KEY`
-- [ ] Verificar schema real de RiskGuard (igual que hicimos con Indicadores)
-- [ ] Probar flujo: `Alerta Siniestro → Score Fraude → Decisión → Reporte`
-
-### 4. Mejorar plantilla email Reporte Gerencial
-- [ ] Incluir tabla de indicadores en riesgo (nombre + valor + meta + % cumplimiento)
-- [ ] Incluir lista de alertas críticas sin reconocer
-- [ ] Diseño más ejecutivo con logo HermesAI
+### 4. Conectores RiskGuard
+- [ ] Agregar secrets RISKGUARD_SUPABASE_URL + RISKGUARD_SERVICE_ROLE_KEY
+- [ ] Verificar schema real RiskGuard (igual que Indicadores y EE.FF.)
+- [ ] Probar plantilla "Alerta de Siniestro" end-to-end
 
 ---
 
-## 🟡 Sprint S5 — Agente IA
+## 🟡 Mejoras pendientes de la evaluación BPM (menor prioridad)
 
-- [ ] Nodo `processor:ia_analisis` — Claude Opus 4.7 analiza contexto y genera resumen
-- [ ] Streaming de respuesta al frontend
+- [ ] Gobierno: rol del usuario visible, auditoría, historial de cambios (quién creó/modificó/ejecutó)
+- [ ] Constructor: zoom, minimapa, auto-layout, snap-to-grid, undo/redo, versionado
+- [ ] Criticidad configurable por flujo (no solo derivada de errores)
+- [ ] Calidad de tipos: reducir los 75 warnings de `any` con tipos de Supabase generados
+
+---
+
+## 🟢 Sprint S5 — Agente IA (futuro)
+
+- [ ] Nodo `processor:ia_analisis` — Claude Opus analiza contexto y genera resumen
 - [ ] Plantilla "Análisis ejecutivo semanal con IA"
+- [ ] Recomendaciones IA de optimización en el dashboard
 
 ---
 
 ## 🔗 Referencias
 
 - GitHub: https://github.com/hermeshs34/Hermesai-flow
-- Supabase HermesAI Flow: https://kbscaxcokxwdbnrltkup.supabase.co
-- Supabase Indicadores: https://fciaudxeuycqtuzyurnb.supabase.co
-- Edge Functions: `execute-workflow` (f730799), `get-bcv-rate`
-- Último commit: f730799
+- Supabase HermesAI Flow: kbscaxcokxwdbnrltkup.supabase.co
+- Supabase Indicadores: fciaudxeuycqtuzyurnb.supabase.co
+- Supabase EE.FF.: ieuxpyodbqqhnxcfdflf.supabase.co
+- Edge Functions: `execute-workflow`, `get-bcv-rate`, `cron-runner`, `health-check`
+- Último commit: 6f29318
+- Verificaciones: `npm run lint` (0 err), `npx tsc --noEmit` (0 err), `npm run build` (OK)
