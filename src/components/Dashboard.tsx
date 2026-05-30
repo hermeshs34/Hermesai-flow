@@ -175,6 +175,110 @@ const SC: Record<string, { label: string; color: string; bg: string; border: str
 
 const TRIGGER: Record<string, string> = { manual: '▶ Manual', cron: '⏰ Cron', webhook: '⚡ Webhook' };
 
+// ── Bandeja Operativa — componente propio con estado ─────────────────────────
+interface BandejaProps {
+    runs:         RunRow[];
+    retrying:     string | null;
+    handleRetry:  (run: RunRow) => void;
+    onNavigate?:  (view: 'canvas' | 'monitoring' | 'settings' | 'dashboard') => void;
+}
+
+function BandejaOperativa({ runs, retrying, handleRetry, onNavigate }: BandejaProps) {
+    const [dismissed, setDismissed] = useState(false);
+    if (dismissed) return null;
+
+    const errByWf = runs
+        .filter(r => r.status === 'error')
+        .reduce<Record<string, { count: number; wf: RunRow }>>((acc, r) => {
+            if (!acc[r.workflow_name]) acc[r.workflow_name] = { count: 0, wf: r };
+            acc[r.workflow_name].count++;
+            return acc;
+        }, {});
+
+    const criticos = Object.values(errByWf)
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 4);
+
+    const pendientes = runs.filter(r =>
+        r.status === 'running' &&
+        Date.now() - new Date(r.started_at).getTime() > 2 * 60 * 1000
+    );
+
+    if (criticos.length === 0 && pendientes.length === 0) return null;
+
+    return (
+        <div className="bg-white rounded-2xl border border-amber-100 shadow-sm overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-amber-100 flex items-center justify-between bg-amber-50/40">
+                <div className="flex items-center gap-2">
+                    <Inbox className="w-4 h-4 text-amber-600" />
+                    <h2 className="font-semibold text-amber-800 text-sm">Bandeja Operativa</h2>
+                    <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-semibold">
+                        {criticos.length + pendientes.length} items
+                    </span>
+                </div>
+                <button onClick={() => setDismissed(true)} className="text-amber-400 hover:text-amber-600 text-xs transition-colors">
+                    Cerrar
+                </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-amber-50">
+
+                {/* Criticidad */}
+                <div className="p-4">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">🔴 Mayor criticidad</p>
+                    {criticos.length === 0
+                        ? <p className="text-xs text-gray-400">Sin errores recurrentes</p>
+                        : criticos.map(({ count, wf }) => (
+                            <div key={wf.workflow_name} className="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0 group">
+                                <div className="min-w-0 flex-1">
+                                    <p className="text-xs text-gray-800 font-medium truncate">{wf.workflow_name}</p>
+                                    <p className="text-[10px] text-gray-400">{fmtDate(wf.started_at)}</p>
+                                </div>
+                                <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                                    <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
+                                        {count} error{count > 1 ? 'es' : ''}
+                                    </span>
+                                    <button
+                                        onClick={() => handleRetry(wf)}
+                                        disabled={retrying === wf.id}
+                                        className="opacity-0 group-hover:opacity-100 text-[10px] px-2 py-0.5 bg-indigo-600 text-white rounded transition-all"
+                                    >
+                                        {retrying === wf.id ? '...' : 'Reintentar'}
+                                    </button>
+                                </div>
+                            </div>
+                        ))
+                    }
+                </div>
+
+                {/* Aprobaciones / bloqueados */}
+                <div className="p-4">
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">⏳ Requieren revisión humana</p>
+                    {pendientes.length === 0
+                        ? <p className="text-xs text-gray-400">Sin flujos bloqueados</p>
+                        : pendientes.map(r => {
+                            const minutos = Math.round((Date.now() - new Date(r.started_at).getTime()) / 60000);
+                            return (
+                                <div key={r.id} className="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
+                                    <div className="min-w-0 flex-1">
+                                        <p className="text-xs text-gray-800 font-medium truncate">{r.workflow_name}</p>
+                                        <p className="text-[10px] text-amber-600">En ejecución hace {minutos}m</p>
+                                    </div>
+                                    <button
+                                        onClick={() => onNavigate?.('monitoring')}
+                                        className="text-[10px] px-2 py-1 bg-amber-100 text-amber-700 rounded-lg hover:bg-amber-200 flex-shrink-0 ml-2 transition-colors"
+                                    >
+                                        Ver logs
+                                    </button>
+                                </div>
+                            );
+                        })
+                    }
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ── Componente principal ──────────────────────────────────────────────────────
 interface DashboardProps {
     onNavigate?:  (view: 'canvas' | 'monitoring' | 'settings' | 'dashboard') => void;
@@ -205,7 +309,7 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
 
             const [runsRes, wfsRes, cronRes] = await Promise.all([
                 q,
-                supabase.from('workflows').select('id, name, status, is_active, execution_count, last_run_at, created_at').order('execution_count', { ascending: false }).limit(50),
+                supabase.from('workflows').select('id, name, status, is_active, execution_count, last_run_at, created_at, profiles:created_by(name)').order('execution_count', { ascending: false }).limit(50),
                 // Punto 2: flujos cron dinámicos desde la DB
                 supabase.from('workflow_nodes')
                     .select('workflow_id, config_json, workflows(name, is_active)')
@@ -225,6 +329,7 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                 id: w.id, name: w.name, description: '', nodes: [], connections: [],
                 isActive: w.is_active, createdAt: w.created_at, lastRun: w.last_run_at,
                 executionCount: w.execution_count ?? 0, status: w.status ?? 'paused',
+                responsible: w.profiles?.name ?? 'Sin responsable',
             })));
 
             setCronFlows((cronRes.data ?? [])
@@ -463,80 +568,7 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                 </div>
 
                 {/* ── Bandeja Operativa ────────────────────────────────────── */}
-                {(() => {
-                    // Criticidad por workflow: contar errores recientes
-                    const errByWf = runs.filter(r => r.status === 'error').reduce<Record<string, number>>((acc, r) => {
-                        acc[r.workflow_name] = (acc[r.workflow_name] ?? 0) + 1;
-                        return acc;
-                    }, {});
-                    const criticos = Object.entries(errByWf)
-                        .sort(([, a], [, b]) => b - a)
-                        .slice(0, 3);
-
-                    // Aprobaciones pendientes = nodos de tipo aprobacion en runs running por > 2min
-                    const aprobacionesPendientes = runs.filter(r =>
-                        r.status === 'running' &&
-                        Date.now() - new Date(r.started_at).getTime() > 2 * 60 * 1000
-                    );
-
-                    if (criticos.length === 0 && aprobacionesPendientes.length === 0) return null;
-
-                    return (
-                        <div className="bg-white rounded-2xl border border-amber-100 shadow-sm overflow-hidden">
-                            <div className="px-5 py-3.5 border-b border-amber-100 flex items-center justify-between bg-amber-50/40">
-                                <div className="flex items-center gap-2">
-                                    <Inbox className="w-4 h-4 text-amber-600" />
-                                    <h2 className="font-semibold text-amber-800 text-sm">Bandeja Operativa</h2>
-                                    <span className="text-[10px] text-amber-500">Requiere atención</span>
-                                </div>
-                                <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-semibold">
-                                    {criticos.length + aprobacionesPendientes.length} items
-                                </span>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-amber-50">
-                                {/* Flujos con mayor criticidad */}
-                                <div className="p-4">
-                                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">🔴 Criticidad — Flujos con más errores</p>
-                                    {criticos.length === 0
-                                        ? <p className="text-xs text-gray-400">Sin errores recurrentes</p>
-                                        : criticos.map(([name, count]) => (
-                                            <div key={name} className="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
-                                                <span className="text-xs text-gray-700 truncate flex-1">{name}</span>
-                                                <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full ml-2 flex-shrink-0">
-                                                    {count} error{count > 1 ? 'es' : ''}
-                                                </span>
-                                            </div>
-                                        ))
-                                    }
-                                </div>
-                                {/* Aprobaciones pendientes */}
-                                <div className="p-4">
-                                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">⏳ Aprobaciones pendientes</p>
-                                    {aprobacionesPendientes.length === 0
-                                        ? <p className="text-xs text-gray-400">Sin flujos esperando aprobación</p>
-                                        : aprobacionesPendientes.map(r => (
-                                            <div key={r.id} className="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
-                                                <div>
-                                                    <p className="text-xs text-gray-700 font-medium">{r.workflow_name}</p>
-                                                    <p className="text-[10px] text-amber-500">
-                                                        En ejecución hace {Math.round((Date.now() - new Date(r.started_at).getTime()) / 60000)}m
-                                                    </p>
-                                                </div>
-                                                <button
-                                                    onClick={() => handleRetry(r)}
-                                                    disabled={retrying === r.id}
-                                                    className="text-[10px] px-2 py-1 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex-shrink-0"
-                                                >
-                                                    {retrying === r.id ? '...' : 'Revisar'}
-                                                </button>
-                                            </div>
-                                        ))
-                                    }
-                                </div>
-                            </div>
-                        </div>
-                    );
-                })()}
+                <BandejaOperativa runs={runs} retrying={retrying} handleRetry={handleRetry} onNavigate={onNavigate} />
 
                 {/* ── Fila central ─────────────────────────────────────────── */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -652,7 +684,9 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                                         <div className={`w-2 h-2 rounded-full flex-shrink-0 ${wf.isActive ? 'bg-emerald-400' : 'bg-gray-200'}`} />
                                         <div className="flex-1 min-w-0">
                                             <p className="text-xs font-semibold text-gray-800 truncate">{wf.name}</p>
-                                            <p className="text-[10px] text-gray-400">{wf.executionCount} ejecuciones</p>
+                                            <p className="text-[10px] text-gray-400 truncate">
+                                                {wf.executionCount} ejecuciones · 👤 {wf.responsible ?? 'Sin responsable'}
+                                            </p>
                                         </div>
                                         <button
                                             onClick={() => toggleActive(wf)}

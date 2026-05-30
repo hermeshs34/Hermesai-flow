@@ -62,8 +62,9 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     const [nodeToConfig,       setNodeToConfig]      = useState<WorkflowNodeData | null>(null);
 
     // ── Estado de operaciones ──────────────────────────────────────────────
-    const [saving,   setSaving]   = useState(false);
-    const [executing,setExecuting]= useState(false);
+    const [saving,          setSaving]         = useState(false);
+    const [executing,       setExecuting]      = useState(false);
+    const [bannerDismissed, setBannerDismissed]= useState(false);
     const canvasRef               = useRef<HTMLDivElement>(null);
     const saveTimer               = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -93,6 +94,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         setActiveWorkflowId(wf.id);
         setWorkflowName(wf.name);
         setShowWfDropdown(false);
+        setBannerDismissed(false); // mostrar banner al abrir cada flujo nuevo
         try {
             const full = await WorkflowService.getWorkflow(wf.id, currentUser.organizationId);
             setNodes(full?.nodes ?? []);
@@ -400,7 +402,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                 </div>
 
                 {/* ── Banner de validación de plantilla ───────────────── */}
-                {(() => {
+                {!bannerDismissed && (() => {
                     const missing = getMissingFields(nodes);
                     if (missing.length === 0) return null;
                     return (
@@ -410,8 +412,9 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                 <p className="text-xs font-bold">Plantilla incompleta — completa estos campos antes de ejecutar:</p>
                                 <p className="text-[11px] mt-0.5 text-amber-700">{missing.join(' · ')}</p>
                             </div>
-                            <X className="w-4 h-4 flex-shrink-0 text-amber-400 cursor-pointer hover:text-amber-600"
-                               onClick={e => (e.currentTarget.closest('div[class*="bg-amber"]') as HTMLElement | null)?.remove()} />
+                            <button onClick={() => setBannerDismissed(true)} className="flex-shrink-0 text-amber-400 hover:text-amber-600 transition-colors">
+                                <X className="w-4 h-4" />
+                            </button>
                         </div>
                     );
                 })()}

@@ -34,6 +34,7 @@ export interface Workflow {
   lastRun?: string;
   executionCount: number;
   status: 'active' | 'paused' | 'error';
+  responsible?: string; // derivado de created_by → profiles.name
 }
 
 export interface ExecutionLog {

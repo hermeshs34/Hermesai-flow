@@ -19,6 +19,8 @@ function mapWorkflow(row: Record<string, unknown>): Workflow {
         lastRun:        row.last_run_at as string | undefined,
         executionCount: row.execution_count as number,
         status:         row.status as Workflow['status'],
+        responsible:    (row.profiles as { name?: string } | null)?.name
+                        ?? (row.created_by ? 'Asignado' : 'Sin responsable'),
     };
 }
 
@@ -27,13 +29,22 @@ function mapWorkflow(row: Record<string, unknown>): Workflow {
 export class WorkflowService {
 
     static async getWorkflows(organizationId: string): Promise<Workflow[]> {
+        // Join con profiles para derivar el responsable desde created_by
         const { data, error } = await supabase
             .from('workflows')
-            .select('*')
+            .select('*, profiles:created_by(name)')
             .eq('organization_id', organizationId)
             .order('created_at', { ascending: false });
 
-        if (error) throw new Error(error.message);
+        if (error) {
+            // Fallback si el join falla (FK ausente): traer sin profiles
+            const { data: plain } = await supabase
+                .from('workflows')
+                .select('*')
+                .eq('organization_id', organizationId)
+                .order('created_at', { ascending: false });
+            return (plain ?? []).map(mapWorkflow);
+        }
         return (data ?? []).map(mapWorkflow);
     }
 
