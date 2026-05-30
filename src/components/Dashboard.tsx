@@ -77,12 +77,21 @@ const SC: Record<string, { label: string; color: string; bg: string; border: str
 const TRIGGER: Record<string, string> = { manual: '▶ Manual', cron: '⏰ Cron', webhook: '⚡ Webhook' };
 
 // ── Componente principal ──────────────────────────────────────────────────────
-export function Dashboard() {
+interface DashboardProps {
+    onNavigate?: (view: 'canvas' | 'monitoring' | 'settings' | 'dashboard') => void;
+}
+
+export function Dashboard({ onNavigate }: DashboardProps) {
     const [runs,      setRuns]      = useState<RunRow[]>([]);
     const [workflows, setWorkflows] = useState<Workflow[]>([]);
     const [loading,   setLoading]   = useState(true);
     const [period,    setPeriod]    = useState<Period>('7d');
     const [retrying,  setRetrying]  = useState<string | null>(null);
+
+    const goToCanvas = (templateName?: string) => {
+        if (templateName) toast.info(`Abre el Constructor y crea el flujo "${templateName}" desde cero con los nodos de la paleta.`);
+        onNavigate?.('canvas');
+    };
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -398,7 +407,7 @@ export function Dashboard() {
                         {TEMPLATES.map(t => {
                             const Icon = t.icon;
                             return (
-                                <div key={t.id} className="p-4 hover:bg-gray-50 transition-colors group cursor-pointer">
+                                <div key={t.id} onClick={() => goToCanvas(t.name)} className="p-4 hover:bg-gray-50 transition-colors group cursor-pointer">
                                     <div className={`w-9 h-9 rounded-xl ${t.bg} flex items-center justify-center mb-3`}>
                                         <Icon className={`w-4.5 h-4.5 ${t.color}`} style={{ width: '18px', height: '18px' }} />
                                     </div>
@@ -448,12 +457,18 @@ export function Dashboard() {
                                 </div>
                             </div>
                         ))}
-                        <div className="flex items-center justify-center bg-white/5 rounded-xl px-4 py-3 border-2 border-dashed border-white/10 hover:border-indigo-500/40 transition-colors cursor-pointer">
+                        <button
+                            onClick={() => {
+                                toast.info('En el Constructor: arrastra un nodo "Programado (Cron)" y configura la expresión horaria.');
+                                onNavigate?.('canvas');
+                            }}
+                            className="flex items-center justify-center bg-white/5 rounded-xl px-4 py-3 border-2 border-dashed border-white/10 hover:border-indigo-500/40 hover:bg-white/8 transition-colors w-full text-left"
+                        >
                             <div className="text-center">
                                 <p className="text-xs text-white/40 font-medium">+ Agregar flujo programado</p>
-                                <p className="text-[10px] text-white/20 mt-0.5">Configura en el Constructor</p>
+                                <p className="text-[10px] text-white/20 mt-0.5">Ir al Constructor →</p>
                             </div>
-                        </div>
+                        </button>
                     </div>
                 </div>
 
