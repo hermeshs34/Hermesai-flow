@@ -245,7 +245,7 @@ export class DatabaseMigrationService {
 
   private async convertPLSQLtoPLpgSQL(procedure: string): Promise<string> {
     // Conversión básica PL/SQL → PL/pgSQL
-    let converted = procedure
+    const converted = procedure
       .replace(/VARCHAR2/g, 'VARCHAR')
       .replace(/NUMBER/g, 'NUMERIC')
       .replace(/SYSDATE/g, 'NOW()')
