@@ -11,8 +11,30 @@ import type { NodeType }   from './NodePalette';
 import type { User }       from '../core/user.types';
 import {
     Play, Trash2, Plus, ChevronDown,
-    CheckCircle, Loader2, PanelLeftOpen,
+    CheckCircle, Loader2, PanelLeftOpen, AlertTriangle, X,
 } from 'lucide-react';
+
+// Campos requeridos por categoría de nodo — vacíos = plantilla incompleta
+const REQUIRED_FIELDS: Record<string, { field: string; label: string }[]> = {
+    email:      [{ field: 'to',       label: 'Destinatario de email'  }],
+    reporte:    [{ field: 'to',       label: 'Destinatario del reporte'}],
+    aprobacion: [{ field: 'approver', label: 'Aprobador'               }],
+    eeff:       [{ field: 'company',  label: 'Empresa EE.FF.'          }],
+};
+
+function getMissingFields(nodes: WorkflowNodeData[]): string[] {
+    const missing: string[] = [];
+    for (const node of nodes) {
+        const reqs = REQUIRED_FIELDS[node.category] ?? [];
+        for (const req of reqs) {
+            const val = node.config?.[req.field];
+            if (!val || String(val).trim() === '') {
+                missing.push(`"${node.title}" → ${req.label}`);
+            }
+        }
+    }
+    return missing;
+}
 
 interface WorkflowCanvasProps {
     currentUser: User;
@@ -376,6 +398,23 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                         </button>
                     </div>
                 </div>
+
+                {/* ── Banner de validación de plantilla ───────────────── */}
+                {(() => {
+                    const missing = getMissingFields(nodes);
+                    if (missing.length === 0) return null;
+                    return (
+                        <div className="flex items-start gap-3 px-4 py-3 bg-amber-50 border-b border-amber-200 text-amber-800">
+                            <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600" />
+                            <div className="flex-1 min-w-0">
+                                <p className="text-xs font-bold">Plantilla incompleta — completa estos campos antes de ejecutar:</p>
+                                <p className="text-[11px] mt-0.5 text-amber-700">{missing.join(' · ')}</p>
+                            </div>
+                            <X className="w-4 h-4 flex-shrink-0 text-amber-400 cursor-pointer hover:text-amber-600"
+                               onClick={e => (e.currentTarget.closest('div[class*="bg-amber"]') as HTMLElement | null)?.remove()} />
+                        </div>
+                    );
+                })()}
 
                 {/* ── Canvas ──────────────────────────────────────────── */}
                 {!activeWorkflowId && !loadingWorkflows ? (

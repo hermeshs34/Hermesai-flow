@@ -462,6 +462,82 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                     </div>
                 </div>
 
+                {/* ── Bandeja Operativa ────────────────────────────────────── */}
+                {(() => {
+                    // Criticidad por workflow: contar errores recientes
+                    const errByWf = runs.filter(r => r.status === 'error').reduce<Record<string, number>>((acc, r) => {
+                        acc[r.workflow_name] = (acc[r.workflow_name] ?? 0) + 1;
+                        return acc;
+                    }, {});
+                    const criticos = Object.entries(errByWf)
+                        .sort(([, a], [, b]) => b - a)
+                        .slice(0, 3);
+
+                    // Aprobaciones pendientes = nodos de tipo aprobacion en runs running por > 2min
+                    const aprobacionesPendientes = runs.filter(r =>
+                        r.status === 'running' &&
+                        Date.now() - new Date(r.started_at).getTime() > 2 * 60 * 1000
+                    );
+
+                    if (criticos.length === 0 && aprobacionesPendientes.length === 0) return null;
+
+                    return (
+                        <div className="bg-white rounded-2xl border border-amber-100 shadow-sm overflow-hidden">
+                            <div className="px-5 py-3.5 border-b border-amber-100 flex items-center justify-between bg-amber-50/40">
+                                <div className="flex items-center gap-2">
+                                    <Inbox className="w-4 h-4 text-amber-600" />
+                                    <h2 className="font-semibold text-amber-800 text-sm">Bandeja Operativa</h2>
+                                    <span className="text-[10px] text-amber-500">Requiere atención</span>
+                                </div>
+                                <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-semibold">
+                                    {criticos.length + aprobacionesPendientes.length} items
+                                </span>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-amber-50">
+                                {/* Flujos con mayor criticidad */}
+                                <div className="p-4">
+                                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">🔴 Criticidad — Flujos con más errores</p>
+                                    {criticos.length === 0
+                                        ? <p className="text-xs text-gray-400">Sin errores recurrentes</p>
+                                        : criticos.map(([name, count]) => (
+                                            <div key={name} className="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
+                                                <span className="text-xs text-gray-700 truncate flex-1">{name}</span>
+                                                <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full ml-2 flex-shrink-0">
+                                                    {count} error{count > 1 ? 'es' : ''}
+                                                </span>
+                                            </div>
+                                        ))
+                                    }
+                                </div>
+                                {/* Aprobaciones pendientes */}
+                                <div className="p-4">
+                                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-3">⏳ Aprobaciones pendientes</p>
+                                    {aprobacionesPendientes.length === 0
+                                        ? <p className="text-xs text-gray-400">Sin flujos esperando aprobación</p>
+                                        : aprobacionesPendientes.map(r => (
+                                            <div key={r.id} className="flex items-center justify-between py-1.5 border-b border-gray-50 last:border-0">
+                                                <div>
+                                                    <p className="text-xs text-gray-700 font-medium">{r.workflow_name}</p>
+                                                    <p className="text-[10px] text-amber-500">
+                                                        En ejecución hace {Math.round((Date.now() - new Date(r.started_at).getTime()) / 60000)}m
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    onClick={() => handleRetry(r)}
+                                                    disabled={retrying === r.id}
+                                                    className="text-[10px] px-2 py-1 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex-shrink-0"
+                                                >
+                                                    {retrying === r.id ? '...' : 'Revisar'}
+                                                </button>
+                                            </div>
+                                        ))
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })()}
+
                 {/* ── Fila central ─────────────────────────────────────────── */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
 

@@ -16,65 +16,50 @@ interface SidebarProps {
     onLogout?:       () => void;
 }
 
-type SystemStatus = 'ok' | 'error' | 'pending' | 'unknown';
+type SystemStatus = 'ok' | 'error' | 'unconfigured' | 'loading';
 
 interface SystemHealth {
     name:       string;
     status:     SystemStatus;
-    lastRun?:   string;
-    nodeKey:    string;  // keyword en el nombre del nodo o workflow
+    latency_ms: number | null;
+    message:    string;
+    last_check: string;
 }
 
 const STATUS_DOT: Record<string, string> = {
-    ok:      'bg-emerald-400',
-    pending: 'bg-amber-400',
-    error:   'bg-red-400',
-    unknown: 'bg-gray-400',
+    ok:           'bg-emerald-400',
+    error:        'bg-red-400',
+    unconfigured: 'bg-amber-400',
+    loading:      'bg-gray-300 animate-pulse',
 };
 
-// Detecta salud de cada sistema mirando ejecuciones recientes
+const INIT: SystemHealth[] = [
+    { name: 'Tasa BCV',    status: 'loading', latency_ms: null, message: 'Verificando...', last_check: '' },
+    { name: 'Indicadores', status: 'loading', latency_ms: null, message: 'Verificando...', last_check: '' },
+    { name: 'EE.FF.',      status: 'loading', latency_ms: null, message: 'Verificando...', last_check: '' },
+    { name: 'RiskGuard',   status: 'loading', latency_ms: null, message: 'Verificando...', last_check: '' },
+    { name: 'Resend',      status: 'loading', latency_ms: null, message: 'Verificando...', last_check: '' },
+];
+
+// Llama a la edge function health-check para obtener latencia y estado reales
 function useSystemHealth(): SystemHealth[] {
-    const [health, setHealth] = useState<SystemHealth[]>([
-        { name: 'Tasa BCV',    nodeKey: 'bcv',        status: 'unknown' },
-        { name: 'Indicadores', nodeKey: 'indicadores', status: 'unknown' },
-        { name: 'EE.FF.',      nodeKey: 'eeff',        status: 'unknown' },
-        { name: 'RiskGuard',   nodeKey: 'riskguard',   status: 'unknown' },
-        { name: 'LegalTech',   nodeKey: 'legaltech',   status: 'unknown' },
-    ]);
+    const [health, setHealth] = useState<SystemHealth[]>(INIT);
+
+    const check = () => {
+        supabase.functions.invoke('health-check')
+            .then(({ data }) => {
+                if (data?.systems) setHealth(data.systems as SystemHealth[]);
+            })
+            .catch(() => {
+                setHealth(INIT.map(s => ({ ...s, status: 'error' as const, message: 'No se pudo contactar health-check' })));
+            });
+    };
 
     useEffect(() => {
-        let active = true;
-        (async () => {
-            try {
-                const [{ data: runs }, { data: nodes }] = await Promise.all([
-                    supabase.from('execution_runs')
-                        .select('status, started_at, workflows(name)')
-                        .order('started_at', { ascending: false })
-                        .limit(50),
-                    supabase.from('workflow_nodes')
-                        .select('category')
-                        .in('category', ['bcv', 'indicadores', 'eeff', 'riskguard', 'legaltech']),
-                ]);
-                if (!active) return;
-
-                const configured = new Set((nodes ?? []).map((n: any) => n.category as string));
-
-                setHealth(prev => prev.map(sys => {
-                    const rel = (runs ?? []).filter((r: any) => {
-                        const name = (Array.isArray(r.workflows) ? r.workflows[0]?.name : r.workflows?.name) ?? '';
-                        return String(name).toLowerCase().includes(sys.nodeKey);
-                    });
-                    if (rel.length === 0) {
-                        return { ...sys, status: configured.has(sys.nodeKey) ? 'pending' : 'unknown' };
-                    }
-                    const last = rel[0] as any;
-                    const status: SystemStatus = last.status === 'success' ? 'ok'
-                        : last.status === 'error' ? 'error' : 'pending';
-                    return { ...sys, status, lastRun: last.started_at };
-                }));
-            } catch { /* fallo silencioso */ }
-        })();
-        return () => { active = false; };
+        check();
+        const interval = setInterval(check, 60_000); // refrescar cada minuto
+        return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     return health;
@@ -135,14 +120,19 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, currentUser
                     <p className="text-[9px] font-semibold text-white/30 uppercase tracking-widest px-2 mb-3">Sistemas</p>
                     <div className="space-y-1.5 px-2">
                         {systems.map(s => (
-                            <div key={s.name} className="flex items-center justify-between">
+                            <div key={s.name}
+                                className="flex items-center justify-between"
+                                title={`${s.message}${s.latency_ms != null ? ` · ${s.latency_ms}ms` : ''}${s.last_check ? ` · ${new Date(s.last_check).toLocaleTimeString('es-VE')}` : ''}`}
+                            >
                                 <span className="text-xs text-white/50">{s.name}</span>
                                 <div className="flex items-center gap-1.5">
-                                    <div className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[s.status]}`} />
+                                    <div className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[s.status] ?? 'bg-gray-300'}`} />
                                     {s.status === 'ok'
                                         ? <CheckCircle className="w-3 h-3 text-emerald-400" />
-                                        : s.status === 'pending'
+                                        : s.status === 'unconfigured'
                                         ? <Clock className="w-3 h-3 text-amber-400" />
+                                        : s.status === 'loading'
+                                        ? <div className="w-3 h-3 rounded-full bg-gray-200 animate-pulse" />
                                         : <AlertCircle className="w-3 h-3 text-red-400" />
                                     }
                                 </div>
