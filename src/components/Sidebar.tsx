@@ -1,7 +1,7 @@
 import {
     LayoutDashboard, Workflow, Activity,
     Settings as SettingsIcon, Zap, ChevronRight,
-    LogOut, CheckCircle, AlertCircle, Clock,
+    LogOut, CheckCircle, AlertCircle, Clock, HelpCircle,
 } from 'lucide-react';
 import type { ViewType } from '../App';
 import type { User } from '../core/user.types';
@@ -35,7 +35,7 @@ const NAV = [
     { id: 'settings'   as ViewType, label: 'Configuración',          icon: SettingsIcon,     badge: null },
 ];
 
-export function Sidebar({ currentView, onViewChange, currentUser, onLogout }: SidebarProps) {
+export function Sidebar({ currentView, onViewChange, onShowTutorial, currentUser, onLogout }: SidebarProps) {
     const initials = currentUser?.name
         ?.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase() ?? 'HS';
 
@@ -109,15 +109,26 @@ export function Sidebar({ currentView, onViewChange, currentUser, onLogout }: Si
                         <p className="text-xs font-semibold text-white truncate">{currentUser?.name ?? 'Usuario'}</p>
                         <p className="text-[10px] text-white/40 truncate">{currentUser?.email ?? ''}</p>
                     </div>
-                    {onLogout && (
-                        <button
-                            onClick={onLogout}
-                            className="p-1.5 rounded-lg hover:bg-red-500/20 text-white/40 hover:text-red-400 transition-colors"
-                            title="Cerrar sesión"
-                        >
-                            <LogOut className="w-3.5 h-3.5" />
-                        </button>
-                    )}
+                            <div className="flex items-center gap-1">
+                        {onShowTutorial && (
+                            <button
+                                onClick={onShowTutorial}
+                                className="p-1.5 rounded-lg hover:bg-indigo-500/20 text-white/40 hover:text-indigo-400 transition-colors"
+                                title="Guía de inicio"
+                            >
+                                <HelpCircle className="w-3.5 h-3.5" />
+                            </button>
+                        )}
+                        {onLogout && (
+                            <button
+                                onClick={onLogout}
+                                className="p-1.5 rounded-lg hover:bg-red-500/20 text-white/40 hover:text-red-400 transition-colors"
+                                title="Cerrar sesión"
+                            >
+                                <LogOut className="w-3.5 h-3.5" />
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>

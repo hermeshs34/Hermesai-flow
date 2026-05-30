@@ -5,6 +5,7 @@ import { WorkflowCanvas } from './components/WorkflowCanvas';
 import { Dashboard } from './components/Dashboard';
 import { Monitoring } from './components/Monitoring';
 import { Settings } from './components/Settings';
+import { Tutorial } from './components/Tutorial';
 import { LoginView } from './modules/iam/LoginView';
 import { authService } from './core/auth.service';
 import type { User } from './core/user.types';
@@ -15,6 +16,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [currentView, setCurrentView] = useState<ViewType>('dashboard');
+  const [showTutorial, setShowTutorial] = useState(false);
 
   // Sincronizar sesión al arrancar
   useEffect(() => {
@@ -72,13 +74,14 @@ function App() {
       <Sidebar
         currentView={currentView}
         onViewChange={setCurrentView}
-        onShowTutorial={() => {}}
+        onShowTutorial={() => setShowTutorial(true)}
         currentUser={currentUser}
         onLogout={handleLogout}
       />
       <main className="flex-1 overflow-hidden">
         {renderContent()}
       </main>
+      <Tutorial isOpen={showTutorial} onClose={() => setShowTutorial(false)} />
       <Toaster position="bottom-right" theme="light" richColors closeButton />
     </div>
   );
