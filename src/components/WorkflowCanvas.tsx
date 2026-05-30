@@ -50,11 +50,21 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         WorkflowService.getWorkflows(currentUser.organizationId)
             .then(wfs => {
                 setWorkflows(wfs);
-                if (wfs.length > 0) selectWorkflow(wfs[0]);
+                if (wfs.length === 0) return;
+
+                // Si viene del Dashboard (plantilla creada), abrir ese flujo
+                const pendingId = localStorage.getItem('hermesai_open_workflow');
+                if (pendingId) {
+                    localStorage.removeItem('hermesai_open_workflow');
+                    const target = wfs.find(w => w.id === pendingId);
+                    if (target) { selectWorkflow(target); return; }
+                }
+                selectWorkflow(wfs[0]);
             })
             .catch(() => toast.error('No se pudo cargar los flujos'))
             .finally(() => setLoadingWorkflows(false));
-    }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentUser.organizationId]);
 
     // ── Seleccionar flujo y cargar sus nodos ───────────────────────────────
     const selectWorkflow = useCallback(async (wf: Workflow) => {

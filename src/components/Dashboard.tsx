@@ -6,10 +6,108 @@ import {
     ChevronRight, Inbox, GitBranch,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
-import type { Workflow } from '../types/workflow';
+import type { Workflow, WorkflowNodeData, WorkflowConnection } from '../types/workflow';
 import type { User } from '../core/user.types';
 import { WorkflowService } from '../services/workflow.service';
 import { toast } from 'sonner';
+
+// ── Plantillas pre-armadas (nodos + conexiones) ───────────────────────────────
+interface TemplateBlueprint {
+    nodes:       Omit<WorkflowNodeData, 'connections'>[];
+    connections: WorkflowConnection[];
+}
+
+function makeId() { return crypto.randomUUID(); }
+
+function buildTemplate(id: string): TemplateBlueprint {
+    const n1 = makeId(), n2 = makeId(), n3 = makeId(), n4 = makeId(), n5 = makeId();
+    const c1 = makeId(), c2 = makeId(), c3 = makeId(), c4 = makeId();
+
+    const blueprints: Record<string, TemplateBlueprint> = {
+        t1: { // Reporte BCV Diario
+            nodes: [
+                { id: n1, type: 'trigger',   category: 'cron',      title: 'Programado (Cron)',    position: { x: 80,  y: 100 }, config: { cron: '0 9 * * 1-5' }, status: 'idle' },
+                { id: n2, type: 'processor', category: 'bcv',       title: 'Tasa BCV',             position: { x: 380, y: 100 }, config: {}, status: 'idle' },
+                { id: n3, type: 'output',    category: 'email',     title: 'Enviar Email',         position: { x: 680, y: 100 }, config: { to: '', subject: '📈 Tasa BCV del día — {{previous.bcv_rate}} Bs/USD', body: '' }, status: 'idle' },
+            ],
+            connections: [
+                { id: c1, sourceId: n1, targetId: n2 },
+                { id: c2, sourceId: n2, targetId: n3 },
+            ],
+        },
+        t2: { // Monitor Indicadores
+            nodes: [
+                { id: n1, type: 'trigger',   category: 'cron',        title: 'Programado (Cron)',    position: { x: 80,  y: 100 }, config: { cron: '0 8 * * 1' }, status: 'idle' },
+                { id: n2, type: 'processor', category: 'indicadores', title: 'Leer Indicadores',     position: { x: 380, y: 100 }, config: { status: 'critical,at_risk', limit: '50' }, status: 'idle' },
+                { id: n3, type: 'processor', category: 'semaforo',    title: 'Semáforo de Gestión',  position: { x: 680, y: 100 }, config: { value: '{{previous.critical_count}}', umbral_rojo: '1', umbral_amarillo: '0' }, status: 'idle' },
+                { id: n4, type: 'processor', category: 'decision',    title: 'Decisión (Si/No)',     position: { x: 980, y: 100 }, config: { left: '{{previous.color}}', operator: '==', right: 'rojo' }, status: 'idle' },
+                { id: n5, type: 'output',    category: 'reporte',     title: 'Reporte Gerencial',    position: { x: 1280, y: 60 }, config: { to: '', subject: '🔴 Alerta KPIs — {{previous.label}}', body: '' }, status: 'idle' },
+            ],
+            connections: [
+                { id: c1, sourceId: n1, targetId: n2 },
+                { id: c2, sourceId: n2, targetId: n3 },
+                { id: c3, sourceId: n3, targetId: n4 },
+                { id: c4, sourceId: n4, targetId: n5, branch: 'true' },
+            ],
+        },
+        t3: { // Alerta Siniestro
+            nodes: [
+                { id: n1, type: 'trigger',   category: 'riskguard',   title: 'Alerta Siniestro',     position: { x: 80,  y: 100 }, config: { estado: 'pendiente' }, status: 'idle' },
+                { id: n2, type: 'processor', category: 'fraude',      title: 'Score Fraude',          position: { x: 380, y: 100 }, config: {}, status: 'idle' },
+                { id: n3, type: 'processor', category: 'decision',    title: 'Decisión (Si/No)',      position: { x: 680, y: 100 }, config: { left: '{{previous.nivel}}', operator: '==', right: 'alto' }, status: 'idle' },
+                { id: n4, type: 'output',    category: 'notificacion',title: 'Notificar Ajustador',   position: { x: 980, y: 60  }, config: { to: '' }, status: 'idle' },
+                { id: n5, type: 'output',    category: 'log',         title: 'Registrar Log',         position: { x: 980, y: 240 }, config: { message: 'Siniestro con score normal — {{previous.nivel}}' }, status: 'idle' },
+            ],
+            connections: [
+                { id: c1, sourceId: n1, targetId: n2 },
+                { id: c2, sourceId: n2, targetId: n3 },
+                { id: c3, sourceId: n3, targetId: n4, branch: 'true'  },
+                { id: c4, sourceId: n3, targetId: n5, branch: 'false' },
+            ],
+        },
+        t4: { // Resumen Financiero Mensual
+            nodes: [
+                { id: n1, type: 'trigger',   category: 'cron',   title: 'Programado (Cron)',   position: { x: 80,  y: 100 }, config: { cron: '0 8 1 * *' }, status: 'idle' },
+                { id: n2, type: 'processor', category: 'eeff',   title: 'Datos EE.FF.',        position: { x: 380, y: 100 }, config: { query_type: 'summary', company: '' }, status: 'idle' },
+                { id: n3, type: 'output',    category: 'reporte',title: 'Reporte Gerencial',   position: { x: 680, y: 100 }, config: { to: '', subject: '📊 Resumen Financiero Mensual — {{previous.periodo}}', body: '' }, status: 'idle' },
+            ],
+            connections: [
+                { id: c1, sourceId: n1, targetId: n2 },
+                { id: c2, sourceId: n2, targetId: n3 },
+            ],
+        },
+        t5: { // Score AML Automático
+            nodes: [
+                { id: n1, type: 'trigger',   category: 'webhook', title: 'Webhook Entrante',    position: { x: 80,  y: 100 }, config: {}, status: 'idle' },
+                { id: n2, type: 'processor', category: 'aml',     title: 'Score AML',           position: { x: 380, y: 100 }, config: {}, status: 'idle' },
+                { id: n3, type: 'processor', category: 'aml',     title: 'Verificar OFAC/ONU',  position: { x: 680, y: 100 }, config: {}, status: 'idle' },
+                { id: n4, type: 'processor', category: 'decision',title: 'Decisión (Si/No)',    position: { x: 980, y: 100 }, config: { left: '{{previous.nivel}}', operator: '==', right: 'alto' }, status: 'idle' },
+                { id: n5, type: 'output',    category: 'operacion',title: 'Congelar Operación', position: { x: 1280, y: 60 }, config: {}, status: 'idle' },
+            ],
+            connections: [
+                { id: c1, sourceId: n1, targetId: n2 },
+                { id: c2, sourceId: n2, targetId: n3 },
+                { id: c3, sourceId: n3, targetId: n4 },
+                { id: c4, sourceId: n4, targetId: n5, branch: 'true' },
+            ],
+        },
+        t6: { // Orden de Compra
+            nodes: [
+                { id: n1, type: 'trigger',   category: 'inventario',  title: 'Alerta de Stock',      position: { x: 80,  y: 100 }, config: {}, status: 'idle' },
+                { id: n2, type: 'processor', category: 'aprobacion',  title: 'Solicitar Aprobación', position: { x: 380, y: 100 }, config: { approver: '', reason: 'Reposición de inventario bajo mínimo' }, status: 'idle' },
+                { id: n3, type: 'output',    category: 'compras',     title: 'Orden de Compra',      position: { x: 680, y: 100 }, config: {}, status: 'idle' },
+                { id: n4, type: 'output',    category: 'notificacion',title: 'Notificar Producción', position: { x: 980, y: 100 }, config: {}, status: 'idle' },
+            ],
+            connections: [
+                { id: c1, sourceId: n1, targetId: n2 },
+                { id: c2, sourceId: n2, targetId: n3 },
+                { id: c3, sourceId: n3, targetId: n4 },
+            ],
+        },
+    };
+
+    return blueprints[id] ?? { nodes: [], connections: [] };
+}
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 type Period = '24h' | '7d' | '30d' | 'all';
@@ -93,11 +191,6 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
     const [creating,   setCreating]   = useState<string | null>(null);
 
     const orgId = currentUser?.organizationId ?? '';
-
-    const goToCanvas = (templateName?: string) => {
-        if (templateName) toast.info(`Abre el Constructor y crea el flujo "${templateName}" desde cero con los nodos de la paleta.`);
-        onNavigate?.('canvas');
-    };
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -184,23 +277,29 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
         } catch { toast.error('No se pudo actualizar el flujo'); }
     };
 
-    // Plantilla: crear flujo pre-configurado y abrir en canvas
+    // Plantilla: crear flujo completo (nodos + conexiones) y abrir en canvas
     const createFromTemplate = async (t: typeof TEMPLATES[0]) => {
-        if (!orgId) { goToCanvas(t.name); return; }
+        if (!orgId) { onNavigate?.('canvas'); return; }
         setCreating(t.id);
         try {
-            const userId = currentUser?.id ?? '';
-            const wf = await WorkflowService.createWorkflow(orgId, userId, {
-                name: t.name,
-                description: t.desc,
-            });
-            // Guardar en localStorage para que el canvas lo abra automáticamente
+            const userId  = currentUser?.id ?? '';
+            const wf      = await WorkflowService.createWorkflow(orgId, userId, { name: t.name, description: t.desc });
+            const blueprint = buildTemplate(t.id);
+
+            // Guardar nodos y conexiones pre-configurados
+            if (blueprint.nodes.length > 0) {
+                const nodes: WorkflowNodeData[] = blueprint.nodes.map(n => ({ ...n, connections: [] }));
+                await WorkflowService.saveNodes(wf.id, orgId, nodes);
+                await WorkflowService.saveConnections(wf.id, blueprint.connections);
+            }
+
+            // Señal para WorkflowCanvas: abrir este flujo al navegar
             localStorage.setItem('hermesai_open_workflow', wf.id);
-            toast.success(`Flujo "${t.name}" creado — ábrelo en el Constructor`);
+            toast.success(`✅ Flujo "${t.name}" creado con ${blueprint.nodes.length} nodos — abriendo en el Constructor`);
             onNavigate?.('canvas');
-        } catch {
-            toast.info(`Navega al Constructor y crea "${t.name}" manualmente`);
-            onNavigate?.('canvas');
+        } catch (err) {
+            console.error('createFromTemplate:', err);
+            toast.error('No se pudo crear el flujo — intenta de nuevo');
         } finally {
             setCreating(null);
         }
@@ -216,6 +315,17 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
     const rate     = total ? Math.round((success / total) * 100) : 0;
     const errRuns  = runs.filter(r => r.status === 'error').slice(0, 5);
     const recent   = runs.slice(0, 12);
+
+    // ── KPIs ejecutivos ─────────────────────────────────────────────────────
+    // SLA: % ejecuciones que completaron en < 30s (umbral operacional)
+    const SLA_MS       = 30_000;
+    const slaOk        = withDur.filter(r => (r.duration_ms ?? 0) <= SLA_MS).length;
+    const slaPct       = withDur.length ? Math.round((slaOk / withDur.length) * 100) : 100;
+    // Ahorro estimado: cada ejecución exitosa = 15 min de trabajo manual @ $25/hr
+    const ahorroUsd    = Math.round(success * 15 / 60 * 25);
+    // Flujos bloqueados: runs en 'running' por más de 5 min (posiblemente stuck)
+    const stuckRuns    = runs.filter(r => r.status === 'running' &&
+        Date.now() - new Date(r.started_at).getTime() > 5 * 60 * 1000).length;
 
     const health      = rate >= 90 ? 'Óptimo' : rate >= 70 ? 'Normal' : 'Atención requerida';
     const healthGrad  = rate >= 90 ? 'from-emerald-600 to-teal-600' : rate >= 70 ? 'from-amber-500 to-orange-500' : 'from-red-600 to-rose-600';
@@ -284,25 +394,72 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                     </div>
                 </div>
 
-                {/* ── KPI Cards ────────────────────────────────────────────── */}
+                {/* ── KPI Cards operacionales ──────────────────────────────── */}
                 <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
                     {[
-                        { label: 'Ejecuciones',     value: total,             icon: Zap,          bl: 'border-l-indigo-500',  ic: 'text-indigo-500', bg: 'bg-indigo-50' },
-                        { label: 'Exitosas',         value: success,           icon: CheckCircle,  bl: 'border-l-emerald-500', ic: 'text-emerald-500',bg: 'bg-emerald-50' },
-                        { label: 'Con Error',        value: errors,            icon: AlertCircle,  bl: 'border-l-red-500',     ic: 'text-red-500',    bg: 'bg-red-50' },
-                        { label: 'Flujos Activos',   value: workflows.filter(w => w.isActive).length, icon: Activity, bl: 'border-l-blue-500', ic: 'text-blue-500', bg: 'bg-blue-50' },
-                        { label: 'Tiempo Promedio',  value: fmt(avgDur),       icon: TrendingUp,   bl: 'border-l-violet-500',  ic: 'text-violet-500', bg: 'bg-violet-50' },
+                        { label: 'Ejecuciones',    value: total,                                     icon: Zap,         bl: 'border-l-indigo-500',  ic: 'text-indigo-500',  bg: 'bg-indigo-50'  },
+                        { label: 'Exitosas',        value: success,                                   icon: CheckCircle, bl: 'border-l-emerald-500', ic: 'text-emerald-500', bg: 'bg-emerald-50' },
+                        { label: 'Con Error',       value: errors,                                    icon: AlertCircle, bl: 'border-l-red-500',     ic: 'text-red-500',     bg: 'bg-red-50'     },
+                        { label: 'Flujos Activos',  value: workflows.filter(w => w.isActive).length, icon: Activity,    bl: 'border-l-blue-500',    ic: 'text-blue-500',    bg: 'bg-blue-50'    },
+                        { label: 'T. Promedio',     value: fmt(avgDur),                               icon: TrendingUp,  bl: 'border-l-violet-500',  ic: 'text-violet-500',  bg: 'bg-violet-50'  },
                     ].map(({ label, value, icon: Icon, bl, ic, bg }) => (
                         <div key={label} className={`bg-white rounded-xl border border-gray-100 border-l-4 ${bl} p-4 shadow-sm hover:shadow-md transition-shadow`}>
                             <div className="flex items-center justify-between mb-2">
                                 <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{label}</span>
-                                <div className={`p-1.5 rounded-lg ${bg}`}>
-                                    <Icon className={`w-3.5 h-3.5 ${ic}`} />
-                                </div>
+                                <div className={`p-1.5 rounded-lg ${bg}`}><Icon className={`w-3.5 h-3.5 ${ic}`} /></div>
                             </div>
                             <p className="text-2xl font-bold text-gray-900">{value}</p>
                         </div>
                     ))}
+                </div>
+
+                {/* ── KPIs ejecutivos de negocio ────────────────────────────── */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    {/* SLA */}
+                    <div className={`bg-white rounded-xl border border-l-4 p-4 shadow-sm ${slaPct >= 95 ? 'border-l-emerald-500' : slaPct >= 80 ? 'border-l-amber-500' : 'border-l-red-500'}`}>
+                        <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">SLA (&lt;30s)</span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${slaPct >= 95 ? 'bg-emerald-50 text-emerald-700' : slaPct >= 80 ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'}`}>
+                                {slaPct >= 95 ? '✅ OK' : slaPct >= 80 ? '⚠️ Riesgo' : '🔴 Crítico'}
+                            </span>
+                        </div>
+                        <p className="text-2xl font-bold text-gray-900">{slaPct}%</p>
+                        <p className="text-[10px] text-gray-400 mt-0.5">{slaOk} de {withDur.length} en tiempo</p>
+                    </div>
+
+                    {/* Ahorro estimado */}
+                    <div className="bg-white rounded-xl border border-gray-100 border-l-4 border-l-teal-500 p-4 shadow-sm">
+                        <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Ahorro Estimado</span>
+                            <span className="text-[10px] text-teal-600 font-semibold">@15min/ejecución</span>
+                        </div>
+                        <p className="text-2xl font-bold text-gray-900">${ahorroUsd.toLocaleString()}</p>
+                        <p className="text-[10px] text-gray-400 mt-0.5">USD en {periodLabel(period)}</p>
+                    </div>
+
+                    {/* Flujos bloqueados */}
+                    <div className={`bg-white rounded-xl border border-l-4 p-4 shadow-sm ${stuckRuns > 0 ? 'border-l-red-500' : 'border-l-gray-200'}`}>
+                        <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Bloqueados</span>
+                            <span className="text-[10px] text-gray-400">+5 min sin completar</span>
+                        </div>
+                        <p className={`text-2xl font-bold ${stuckRuns > 0 ? 'text-red-600' : 'text-gray-900'}`}>{stuckRuns}</p>
+                        <p className="text-[10px] text-gray-400 mt-0.5">{stuckRuns > 0 ? 'Requieren atención' : 'Sin flujos bloqueados'}</p>
+                    </div>
+
+                    {/* Tasa de automatización */}
+                    <div className="bg-white rounded-xl border border-gray-100 border-l-4 border-l-indigo-500 p-4 shadow-sm">
+                        <div className="flex items-center justify-between mb-1">
+                            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Automatización</span>
+                            <span className="text-[10px] text-indigo-500 font-semibold">cron vs manual</span>
+                        </div>
+                        <p className="text-2xl font-bold text-gray-900">
+                            {total ? Math.round(runs.filter(r => r.triggered_by === 'cron').length / total * 100) : 0}%
+                        </p>
+                        <p className="text-[10px] text-gray-400 mt-0.5">
+                            {runs.filter(r => r.triggered_by === 'cron').length} automáticas de {total}
+                        </p>
+                    </div>
                 </div>
 
                 {/* ── Fila central ─────────────────────────────────────────── */}
