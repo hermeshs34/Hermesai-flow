@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
     Users, ShieldCheck, ScrollText, Loader2, Search,
-    CheckCircle, XCircle, Lock, AlertTriangle,
+    CheckCircle, XCircle, Lock, AlertTriangle, UserPlus, X, Copy,
 } from 'lucide-react';
 import { GovernanceService, type ManagedUser, type AuditEntry } from '../services/governance.service';
 import { ROL_META, ROLES_ASIGNABLES, type Role, type User } from '../core/user.types';
@@ -38,6 +38,12 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [search, setSearch] = useState('');
     const [savingId, setSavingId] = useState<string | null>(null);
 
+    // Crear usuario
+    const [showCreate, setShowCreate] = useState(false);
+    const [creating,   setCreating]   = useState(false);
+    const [form, setForm] = useState<{ name: string; email: string; role: Role }>({ name: '', email: '', role: 'operador' });
+    const [tempPass, setTempPass] = useState<string | null>(null);
+
     const isAdmin = authService.hasPermission(currentUser, 'manage_users');
 
     const load = useCallback(async () => {
@@ -60,7 +66,14 @@ export function Governance({ currentUser }: GovernanceProps) {
 
     const changeRole = async (u: ManagedUser, newRole: Role) => {
         if (newRole === u.role) return;
-        if (u.id === currentUser.id) { toast.error('No puedes cambiar tu propio rol'); return; }
+        // Salvaguarda último admin: no permitir dejar la org sin administrador
+        if (u.role === 'admin' && newRole !== 'admin') {
+            const admins = await GovernanceService.countActiveAdmins(currentUser.organizationId);
+            if (admins <= 1) {
+                toast.error('No puedes quitar el último administrador activo. Asigna otro admin primero.');
+                return;
+            }
+        }
         setSavingId(u.id);
         try {
             await GovernanceService.updateUserRole(currentUser, u.id, newRole, u.role);
@@ -69,6 +82,22 @@ export function Governance({ currentUser }: GovernanceProps) {
         } catch {
             toast.error('No se pudo cambiar el rol');
         } finally { setSavingId(null); }
+    };
+
+    const handleCreate = async () => {
+        const name = form.name.trim(), email = form.email.trim();
+        if (!name || !email) { toast.error('Nombre y email son obligatorios'); return; }
+        setCreating(true);
+        try {
+            const { tempPassword } = await GovernanceService.createUser({ name, email, role: form.role });
+            toast.success(`Usuario "${name}" creado`);
+            setTempPass(tempPassword ?? null);
+            setForm({ name: '', email: '', role: 'operador' });
+            if (!tempPassword) setShowCreate(false);
+            load();
+        } catch (e) {
+            toast.error((e as Error)?.message ?? 'No se pudo crear el usuario');
+        } finally { setCreating(false); }
     };
 
     const toggleActive = async (u: ManagedUser) => {
@@ -149,13 +178,21 @@ export function Governance({ currentUser }: GovernanceProps) {
                             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
                                 <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
                                     <h2 className="font-semibold text-gray-800 text-sm">{users.length} usuarios</h2>
-                                    <div className="relative">
-                                        <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                                        <input
-                                            value={search} onChange={e => setSearch(e.target.value)}
-                                            placeholder="Buscar usuario..."
-                                            className="text-xs pl-8 pr-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200 w-52"
-                                        />
+                                    <div className="flex items-center gap-2">
+                                        <div className="relative">
+                                            <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                                            <input
+                                                value={search} onChange={e => setSearch(e.target.value)}
+                                                placeholder="Buscar usuario..."
+                                                className="text-xs pl-8 pr-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200 w-52"
+                                            />
+                                        </div>
+                                        <button
+                                            onClick={() => { setShowCreate(true); setTempPass(null); }}
+                                            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+                                        >
+                                            <UserPlus className="w-3.5 h-3.5" /> Nuevo usuario
+                                        </button>
                                     </div>
                                 </div>
                                 <table className="w-full text-sm">
@@ -303,6 +340,78 @@ export function Governance({ currentUser }: GovernanceProps) {
                     </>
                 )}
             </div>
+
+            {/* ── Modal Nuevo Usuario ──────────────────────────────────── */}
+            {showCreate && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !creating && setShowCreate(false)}>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
+                            <div className="flex items-center gap-2">
+                                <UserPlus className="w-4 h-4 text-indigo-600" />
+                                <h3 className="font-semibold text-gray-800 text-sm">Nuevo Usuario</h3>
+                            </div>
+                            <button onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                        </div>
+
+                        {tempPass ? (
+                            <div className="p-6 text-center space-y-3">
+                                <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center mx-auto">
+                                    <CheckCircle className="w-6 h-6 text-emerald-500" />
+                                </div>
+                                <p className="text-sm font-semibold text-gray-800">Usuario creado correctamente</p>
+                                <p className="text-xs text-gray-500">Comparte esta clave temporal con el usuario. Debe cambiarla en su primer ingreso.</p>
+                                <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                                    <code className="flex-1 text-sm font-mono text-gray-800 text-left">{tempPass}</code>
+                                    <button
+                                        onClick={() => { navigator.clipboard.writeText(tempPass); toast.success('Clave copiada'); }}
+                                        className="text-gray-400 hover:text-indigo-600"><Copy className="w-4 h-4" /></button>
+                                </div>
+                                <button onClick={() => { setShowCreate(false); setTempPass(null); }}
+                                    className="w-full mt-2 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+                                    Entendido
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="p-5 space-y-4">
+                                <div>
+                                    <label className="block text-xs font-semibold text-gray-600 mb-1">Nombre completo</label>
+                                    <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                                        placeholder="Ej: María González"
+                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-gray-600 mb-1">Email</label>
+                                    <input value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+                                        type="email" placeholder="usuario@empresa.com"
+                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-gray-600 mb-1">Rol</label>
+                                    <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value as Role }))}
+                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-200">
+                                        {ROLES_ASIGNABLES.map(r => <option key={r} value={r}>{ROL_META[r].label}</option>)}
+                                    </select>
+                                    <p className="text-[11px] text-gray-400 mt-1">{ROL_META[form.role].descripcion}</p>
+                                </div>
+                                <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2">
+                                    <p className="text-[11px] text-indigo-700">Se generará una clave temporal automática que podrás compartir con el usuario.</p>
+                                </div>
+                                <div className="flex gap-2 pt-1">
+                                    <button onClick={() => setShowCreate(false)} disabled={creating}
+                                        className="flex-1 py-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50">
+                                        Cancelar
+                                    </button>
+                                    <button onClick={handleCreate} disabled={creating}
+                                        className="flex-1 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2">
+                                        {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                                        {creating ? 'Creando...' : 'Crear usuario'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

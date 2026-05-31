@@ -81,6 +81,28 @@ export class GovernanceService {
         }));
     }
 
+    // Crea un usuario vía Edge Function segura (service_role en el servidor).
+    // El actor/organización se derivan del JWT en la propia Edge Function.
+    static async createUser(
+        payload: { email: string; name: string; role: Role; password?: string }
+    ): Promise<{ tempPassword?: string }> {
+        const { data, error } = await supabase.functions.invoke('admin-create-user', { body: payload });
+        if (error) throw new Error(error.message);
+        if (data?.error) throw new Error(data.error);
+        return { tempPassword: data?.temp_password };
+    }
+
+    // ¿Cuántos administradores ACTIVOS hay? (salvaguarda último admin)
+    static async countActiveAdmins(organizationId: string): Promise<number> {
+        const { count } = await supabase
+            .from('profiles')
+            .select('id', { count: 'exact', head: true })
+            .eq('organization_id', organizationId)
+            .eq('role', 'admin')
+            .eq('is_active', true);
+        return count ?? 0;
+    }
+
     static async updateUserRole(actor: User, userId: string, newRole: Role, oldRole: Role): Promise<void> {
         const { error } = await supabase
             .from('profiles')
