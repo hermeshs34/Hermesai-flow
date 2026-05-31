@@ -1,8 +1,40 @@
 # TAREAS_PENDIENTES.md — HermesAI Flow
 > Backlog activo del proyecto. Actualizar al inicio y fin de cada sesión.
 
-**Última actualización:** 30 Mayo 2026 — Fin de sesión
-**Fase actual:** Sprint S4 completado ✅ — Dashboard cockpit empresarial robustecido
+**Última actualización:** 31 Mayo 2026 — Fin de sesión
+**Fase actual:** F1 Gobierno completado ✅ — Próximo: F2 (aprobaciones reales / human-in-the-loop)
+
+---
+
+## ✅ Completado 31 Mayo 2026 — F1 GOBIERNO
+
+**Modelo de roles BPM** (`src/core/user.types.ts`)
+- [x] 6 roles: admin, dueno_proceso, supervisor, operador, autorizador, auditor (+ legacy compat)
+- [x] 9 permisos granulares + matriz rol→permisos + ROL_META con colores y descripción
+
+**Migración SQL** (`database/migrations/20260531_f1_gobierno.sql`) — EJECUTADA en Supabase
+- [x] `audit_log` INMUTABLE (RLS solo INSERT, sin UPDATE/DELETE)
+- [x] `matriz_aprobacion` + `delegaciones` (suplencia)
+- [x] Funciones `my_org_id()` e `is_admin()` (SECURITY DEFINER, evitan recursión RLS)
+- [x] RLS con aislamiento por organización
+
+**Servicio + UI de Gobierno**
+- [x] `governance.service.ts`: audit log, CRUD usuarios, SoD (creador≠aprobador), matriz
+- [x] `Governance.tsx`: 3 tabs (Usuarios/Matriz/Auditoría), acceso solo admin
+- [x] Sidebar: item Gobierno condicional + badge de rol bajo avatar
+
+**Gestión de usuarios (Edge Functions)**
+- [x] `admin-create-user`: crea usuario seguro (service_role en servidor, valida admin, rollback, audit) — DESPLEGADA
+- [x] Crear usuario con clave temporal autogenerada (modal con copiar)
+- [x] Salvaguarda último admin en auto-cambio de rol
+- [x] Audit log cableado a acciones reales: login, crear/ejecutar flujo
+
+**Cambio de contraseña self-service**
+- [x] `ChangePasswordModal.tsx`: verifica clave actual + requisitos en vivo + audit
+- [x] Botón 🔑 en sidebar para cualquier usuario
+- [x] Probado end-to-end: admin crea usuario → entra con temporal → cambia su clave ✅
+
+**Verificaciones:** tsc 0 err · lint 0 err · build OK · todo commiteado y pusheado (`8bd3dc0`)
 
 ---
 
