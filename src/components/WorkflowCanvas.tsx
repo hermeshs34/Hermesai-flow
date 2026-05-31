@@ -5,6 +5,7 @@ import { NodePalette }     from './NodePalette';
 import { ConnectionLine }  from './ConnectionLine';
 import NodeConfigPanel     from './NodeConfigPanel';
 import { WorkflowService } from '../services/workflow.service';
+import { GovernanceService } from '../services/governance.service';
 import { supabase }        from '../core/supabase';
 import type { WorkflowNodeData, WorkflowConnection, Workflow } from '../types/workflow';
 import type { NodeType }   from './NodePalette';
@@ -139,6 +140,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             setWorkflowName(wf.name);
             setNewWfName('');
             setShowWfDropdown(false);
+            GovernanceService.log(currentUser, 'crear', 'workflow', { entidadId: wf.id, descripcion: `Flujo "${wf.name}" creado` });
             toast.success(`Flujo "${wf.name}" creado`);
         } catch (err: any) {
             toast.error(`No se pudo crear el flujo: ${err.message}`);
@@ -164,6 +166,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             });
             if (error) throw error;
             if (data?.success) {
+                GovernanceService.log(currentUser, 'ejecutar', 'workflow', { entidadId: activeWorkflowId, descripcion: `Ejecutado "${workflowName}" — ${data.logs} pasos en ${data.duration}ms` });
                 toast.success(
                     `Flujo completado — ${data.logs} pasos en ${data.duration}ms`,
                     { id: toastId }

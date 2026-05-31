@@ -6,6 +6,7 @@ import { Dashboard } from './components/Dashboard';
 import { Monitoring } from './components/Monitoring';
 import { Settings } from './components/Settings';
 import { Governance } from './components/Governance';
+import { GovernanceService } from './services/governance.service';
 import { Tutorial } from './components/Tutorial';
 import { LoginView } from './modules/iam/LoginView';
 import { authService } from './core/auth.service';
@@ -27,7 +28,10 @@ function App() {
       .finally(() => setAuthLoading(false));
   }, []);
 
-  const handleLogin = (user: User) => setCurrentUser(user);
+  const handleLogin = (user: User) => {
+    setCurrentUser(user);
+    GovernanceService.log(user, 'login', 'sesion', { descripcion: `Inicio de sesión — ${user.email}` });
+  };
 
   const handleLogout = async () => {
     await authService.logout();
