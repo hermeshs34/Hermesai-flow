@@ -1,5 +1,5 @@
 import { supabase } from './supabase.ts';
-import { ROLE_PERMISSIONS, type User } from './user.types.ts';
+import { ROLE_PERMISSIONS, type User, type Permission } from './user.types.ts';
 
 const SESSION_KEY     = 'hermesflow_session';
 const RATE_KEY_PREFIX = 'hermesflow_rate_';
@@ -165,7 +165,7 @@ class AuthService {
         sessionStorage.removeItem(SESSION_KEY);
     }
 
-    hasPermission(user: User | null, permission: string): boolean {
+    hasPermission(user: User | null, permission: Permission): boolean {
         if (!user) return false;
         return (ROLE_PERMISSIONS[user.role] || []).includes(permission);
     }

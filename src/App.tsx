@@ -5,12 +5,13 @@ import { WorkflowCanvas } from './components/WorkflowCanvas';
 import { Dashboard } from './components/Dashboard';
 import { Monitoring } from './components/Monitoring';
 import { Settings } from './components/Settings';
+import { Governance } from './components/Governance';
 import { Tutorial } from './components/Tutorial';
 import { LoginView } from './modules/iam/LoginView';
 import { authService } from './core/auth.service';
 import type { User } from './core/user.types';
 
-export type ViewType = 'canvas' | 'dashboard' | 'monitoring' | 'settings';
+export type ViewType = 'canvas' | 'dashboard' | 'monitoring' | 'settings' | 'governance';
 
 function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -38,6 +39,7 @@ function App() {
       case 'canvas':     return <WorkflowCanvas currentUser={currentUser!} />;
       case 'monitoring': return <Monitoring />;
       case 'settings':   return <Settings />;
+      case 'governance': return <Governance currentUser={currentUser!} />;
       default:           return <Dashboard onNavigate={setCurrentView} currentUser={currentUser!} />;
     }
   };

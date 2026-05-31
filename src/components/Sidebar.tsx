@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import {
     LayoutDashboard, Workflow, Activity,
     Settings as SettingsIcon, Zap, ChevronRight,
-    LogOut, CheckCircle, AlertCircle, Clock, HelpCircle,
+    LogOut, CheckCircle, AlertCircle, Clock, HelpCircle, ShieldCheck,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
+import { authService } from '../core/auth.service';
+import { ROL_META } from '../core/user.types';
 import type { ViewType } from '../App';
 import type { User } from '../core/user.types';
 
@@ -77,6 +79,13 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, currentUser
     const initials = currentUser?.name
         ?.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase() ?? 'HS';
 
+    // Gobierno solo visible para quien tiene permiso manage_users (admin)
+    const canGovern = authService.hasPermission(currentUser ?? null, 'manage_users');
+    const navItems = canGovern
+        ? [...NAV, { id: 'governance' as ViewType, label: 'Gobierno', icon: ShieldCheck, badge: null }]
+        : NAV;
+    const rolMeta = currentUser ? ROL_META[currentUser.role] : null;
+
     return (
         <div className="w-64 flex flex-col bg-[#0f1729] text-white flex-shrink-0">
 
@@ -96,7 +105,7 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, currentUser
             {/* Navegación */}
             <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
                 <p className="text-[9px] font-semibold text-white/30 uppercase tracking-widest px-2 mb-2">Módulos</p>
-                {NAV.map(({ id, label, icon: Icon }) => {
+                {navItems.map(({ id, label, icon: Icon }) => {
                     const active = currentView === id;
                     return (
                         <button
@@ -150,7 +159,12 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, currentUser
                     </div>
                     <div className="flex-1 min-w-0">
                         <p className="text-xs font-semibold text-white truncate">{currentUser?.name ?? 'Usuario'}</p>
-                        <p className="text-[10px] text-white/40 truncate">{currentUser?.email ?? ''}</p>
+                        {rolMeta && (
+                            <span className="inline-flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded-full mt-0.5"
+                                style={{ backgroundColor: `${rolMeta.color}26`, color: rolMeta.color }}>
+                                <ShieldCheck className="w-2.5 h-2.5" /> {rolMeta.label}
+                            </span>
+                        )}
                     </div>
                             <div className="flex items-center gap-1">
                         {onShowTutorial && (
