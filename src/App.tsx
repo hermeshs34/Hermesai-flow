@@ -8,6 +8,7 @@ import { Settings } from './components/Settings';
 import { Governance } from './components/Governance';
 import { GovernanceService } from './services/governance.service';
 import { Tutorial } from './components/Tutorial';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { LoginView } from './modules/iam/LoginView';
 import { authService } from './core/auth.service';
 import type { User } from './core/user.types';
@@ -19,6 +20,7 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [currentView, setCurrentView] = useState<ViewType>('dashboard');
   const [showTutorial, setShowTutorial] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   // Sincronizar sesión al arrancar
   useEffect(() => {
@@ -81,6 +83,7 @@ function App() {
         currentView={currentView}
         onViewChange={setCurrentView}
         onShowTutorial={() => setShowTutorial(true)}
+        onChangePassword={() => setShowChangePassword(true)}
         currentUser={currentUser}
         onLogout={handleLogout}
       />
@@ -88,6 +91,9 @@ function App() {
         {renderContent()}
       </main>
       <Tutorial isOpen={showTutorial} onClose={() => setShowTutorial(false)} />
+      {showChangePassword && (
+        <ChangePasswordModal user={currentUser} onClose={() => setShowChangePassword(false)} />
+      )}
       <Toaster position="bottom-right" theme="light" richColors closeButton />
     </div>
   );

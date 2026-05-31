@@ -169,6 +169,23 @@ class AuthService {
         if (!user) return false;
         return (ROLE_PERMISSIONS[user.role] || []).includes(permission);
     }
+
+    // ── Cambio de contraseña ──────────────────────────────────────────────
+    // Verifica la clave actual re-autenticando, luego actualiza a la nueva.
+    async changePassword(email: string, currentPassword: string, newPassword: string): Promise<void> {
+        if (newPassword.length < 8) {
+            throw new Error('La nueva contraseña debe tener al menos 8 caracteres.');
+        }
+        // 1. Verificar clave actual
+        const { error: verifyErr } = await supabase.auth.signInWithPassword({
+            email: email.trim().toLowerCase(), password: currentPassword,
+        });
+        if (verifyErr) throw new Error('La contraseña actual es incorrecta.');
+
+        // 2. Actualizar a la nueva
+        const { error: updateErr } = await supabase.auth.updateUser({ password: newPassword });
+        if (updateErr) throw new Error(`No se pudo actualizar la contraseña: ${updateErr.message}`);
+    }
 }
 
 export const authService = new AuthService();

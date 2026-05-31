@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
     LayoutDashboard, Workflow, Activity,
     Settings as SettingsIcon, Zap, ChevronRight,
-    LogOut, CheckCircle, AlertCircle, Clock, HelpCircle, ShieldCheck,
+    LogOut, CheckCircle, AlertCircle, Clock, HelpCircle, ShieldCheck, KeyRound,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
 import { authService } from '../core/auth.service';
@@ -11,11 +11,12 @@ import type { ViewType } from '../App';
 import type { User } from '../core/user.types';
 
 interface SidebarProps {
-    currentView:     ViewType;
-    onViewChange:    (view: ViewType) => void;
-    onShowTutorial?: () => void;
-    currentUser?:    User;
-    onLogout?:       () => void;
+    currentView:       ViewType;
+    onViewChange:      (view: ViewType) => void;
+    onShowTutorial?:   () => void;
+    onChangePassword?: () => void;
+    currentUser?:      User;
+    onLogout?:         () => void;
 }
 
 type SystemStatus = 'ok' | 'error' | 'unconfigured' | 'loading';
@@ -74,7 +75,7 @@ const NAV = [
     { id: 'settings'   as ViewType, label: 'Configuración',          icon: SettingsIcon,     badge: null },
 ];
 
-export function Sidebar({ currentView, onViewChange, onShowTutorial, currentUser, onLogout }: SidebarProps) {
+export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePassword, currentUser, onLogout }: SidebarProps) {
     const systems = useSystemHealth();
     const initials = currentUser?.name
         ?.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase() ?? 'HS';
@@ -167,6 +168,15 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, currentUser
                         )}
                     </div>
                             <div className="flex items-center gap-1">
+                        {onChangePassword && (
+                            <button
+                                onClick={onChangePassword}
+                                className="p-1.5 rounded-lg hover:bg-indigo-500/20 text-white/40 hover:text-indigo-400 transition-colors"
+                                title="Cambiar contraseña"
+                            >
+                                <KeyRound className="w-3.5 h-3.5" />
+                            </button>
+                        )}
                         {onShowTutorial && (
                             <button
                                 onClick={onShowTutorial}
