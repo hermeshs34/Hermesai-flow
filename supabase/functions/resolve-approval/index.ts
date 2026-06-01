@@ -85,6 +85,16 @@ serve(async (req) => {
                 error_message: `Rechazado por aprobador. ${comentario ?? ''}`,
             }).eq('id', tarea.execution_run_id);
 
+            // Insertar evento final en el log para que Monitoreo lo muestre
+            await supabase.from('execution_logs').insert({
+                workflow_id:      tarea.workflow_id,
+                organization_id:  tarea.organization_id,
+                execution_run_id: tarea.execution_run_id,
+                status:           'error',
+                message:          `❌ Flujo rechazado — "${tarea.node_title ?? 'Aprobación'}"${comentario ? `: ${comentario}` : ''}`,
+                details_json:     { decision: 'rechazado', aprobador_id: approverId, comentario: comentario ?? null },
+            });
+
             // Notificar al solicitante si tiene email registrado
             if (RESEND_API_KEY && tarea.solicitante_id) {
                 try {

@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
     Bell, Shield, Info, CheckCircle,
     ExternalLink, Zap, BarChart2, User,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
+import { authService } from '../core/auth.service';
 import { toast } from 'sonner';
 
 // ── Sección visual ────────────────────────────────────────────────────────────
@@ -42,11 +43,44 @@ export function Settings() {
     const supabaseUrl  = import.meta.env.VITE_SUPABASE_URL as string ?? '';
     const projectRef   = supabaseUrl.split('//')[1]?.split('.')[0] ?? '—';
 
+    // Cargar preferencias al montar
+    useEffect(() => {
+        const user = authService.getCurrentUser();
+        if (!user?.organizationId) return;
+        supabase
+            .from('organizations')
+            .select('notif_email, notif_errors, notif_success')
+            .eq('id', user.organizationId)
+            .single()
+            .then(({ data }) => {
+                if (data) {
+                    setNotifEmail(data.notif_email ?? '');
+                    setNotifErrors(data.notif_errors ?? true);
+                    setNotifSuccess(data.notif_success ?? false);
+                }
+            });
+    }, []);
+
     const handleSaveNotifications = async () => {
         setSaving(true);
-        await new Promise(r => setTimeout(r, 600));
-        setSaving(false);
-        toast.success('Preferencias de notificación guardadas');
+        try {
+            const user = authService.getCurrentUser();
+            if (!user?.organizationId) throw new Error('Sin organización');
+            const { error } = await supabase
+                .from('organizations')
+                .update({
+                    notif_email:   notifEmail || null,
+                    notif_errors:  notifErrors,
+                    notif_success: notifSuccess,
+                })
+                .eq('id', user.organizationId);
+            if (error) throw new Error(error.message);
+            toast.success('Preferencias de notificación guardadas');
+        } catch (err: any) {
+            toast.error(`Error al guardar: ${err.message}`);
+        } finally {
+            setSaving(false);
+        }
     };
 
     const handleTestBcv = async () => {
