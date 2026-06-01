@@ -113,13 +113,35 @@ export function Governance({ currentUser }: GovernanceProps) {
             const result = await res.json();
             if (!res.ok) throw new Error(result.error ?? 'Error al resolver');
 
-            // El flujo reanudó — mostrar resultado final del resume
-            const resumeOk = result.resume?.success !== false;
-            const resumeErr = result.resume?.error;
-            if (decision === 'aprobado' && !resumeOk) {
-                toast.warning(`⚠ Aprobado, pero el flujo falló al reanudar: ${resumeErr ?? 'error desconocido'}`);
+            if (decision === 'rechazado') {
+                toast.success('❌ Flujo rechazado');
             } else {
-                toast.success(decision === 'aprobado' ? '✅ Flujo aprobado y reanudado' : '❌ Flujo rechazado');
+                // Aprobado: reanudar el flujo directamente desde el frontend
+                toast.info('✅ Aprobado — reanudando flujo...');
+                const resumeRes = await fetch(
+                    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/execute-workflow`,
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+                        },
+                        body: JSON.stringify({
+                            workflowId:     result.workflowId,
+                            organizationId: result.organizationId,
+                            triggeredBy:    'approval',
+                            action:         'resume',
+                            runId:          result.runId,
+                            approverId,
+                        }),
+                    }
+                );
+                const resumeData = await resumeRes.json();
+                if (!resumeRes.ok || resumeData?.error) {
+                    toast.warning(`⚠ Aprobado pero error al reanudar: ${resumeData?.error ?? 'error desconocido'}`);
+                } else {
+                    toast.success('✅ Flujo aprobado y reanudado correctamente');
+                }
             }
             setAprobaciones(prev => prev.filter(t => t.id !== tarea.id));
             setComentario(prev => { const n = { ...prev }; delete n[tarea.id]; return n; });

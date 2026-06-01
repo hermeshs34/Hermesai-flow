@@ -91,35 +91,16 @@ serve(async (req) => {
             );
         }
 
-        // 5. Aprobado → reanudar el flujo usando el cliente Supabase (evita JWT issues en fetch directo)
-        const { data: resumeData, error: resumeErr } = await supabase.functions.invoke('execute-workflow', {
-            body: {
-                workflowId:      tarea.workflow_id,
-                organizationId:  tarea.organization_id,
-                triggeredBy:     'approval',
-                action:          'resume',
-                runId:           tarea.execution_run_id,
-                approverId,
-            },
-        });
-
-        // Si execute-workflow devolvió error, marcar el run con el error real
-        if (resumeErr || resumeData?.error) {
-            const errMsg = resumeErr?.message ?? resumeData?.error ?? 'error desconocido';
-            await supabase.from('execution_runs').update({
-                status:        'error',
-                finished_at:   new Date().toISOString(),
-                error_message: `Error al reanudar tras aprobación: ${errMsg}`,
-            }).eq('id', tarea.execution_run_id).eq('status', 'esperando_aprobacion');
-
-            return new Response(
-                JSON.stringify({ success: false, error: `Error al reanudar flujo: ${errMsg}`, resume: resumeData }),
-                { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }
-            );
-        }
-
+        // 5. Aprobado → devolver datos para que el FRONTEND llame a execute-workflow
+        // (llamadas inter-función tienen problemas de JWT; el frontend ya tiene sesión válida)
         return new Response(
-            JSON.stringify({ success: true, decision: 'aprobado', resume: resumeData }),
+            JSON.stringify({
+                success:        true,
+                decision:       'aprobado',
+                runId:          tarea.execution_run_id,
+                workflowId:     tarea.workflow_id,
+                organizationId: tarea.organization_id,
+            }),
             { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } }
         );
 
