@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import {
     Users, ShieldCheck, ScrollText, Loader2, Search,
     CheckCircle, XCircle, Lock, AlertTriangle, UserPlus, X, Copy, ClipboardCheck,
+    Plus, Pencil, Trash2, ToggleLeft, ToggleRight,
 } from 'lucide-react';
 import { GovernanceService, type ManagedUser, type AuditEntry } from '../services/governance.service';
 import { ROL_META, ROLES_ASIGNABLES, type Role, type User } from '../core/user.types';
@@ -56,7 +57,15 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [search,       setSearch]       = useState('');
     const [resolvingId,  setResolvingId]  = useState<string | null>(null);
     const [comentario,   setComentario]   = useState<Record<string, string>>({});
-    const [savingId, setSavingId] = useState<string | null>(null);
+    const [savingId,     setSavingId]     = useState<string | null>(null);
+
+    // Matriz CRUD
+    type MatrizRegla = { id: string; nombre: string; categoria: string; umbral_monto: number; moneda: string; rol_aprobador: string; nivel: number; activa: boolean };
+    const REGLA_VACIA: Omit<MatrizRegla, 'id'> = { nombre: '', categoria: '', umbral_monto: 0, moneda: 'USD', rol_aprobador: 'autorizador', nivel: 1, activa: true };
+    const [showMatrizForm, setShowMatrizForm] = useState(false);
+    const [editingRegla,   setEditingRegla]   = useState<MatrizRegla | null>(null);
+    const [reglaForm,      setReglaForm]      = useState<Omit<MatrizRegla, 'id'>>(REGLA_VACIA);
+    const [savingRegla,    setSavingRegla]    = useState(false);
 
     // Crear usuario
     const [showCreate, setShowCreate] = useState(false);
@@ -65,6 +74,58 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [tempPass, setTempPass] = useState<string | null>(null);
 
     const isAdmin = authService.hasPermission(currentUser, 'manage_users');
+
+    // ── Handlers Matriz ──────────────────────────────────────────────────────
+    const openNuevaRegla = () => {
+        setEditingRegla(null);
+        setReglaForm(REGLA_VACIA);
+        setShowMatrizForm(true);
+    };
+
+    const openEditarRegla = (r: MatrizRegla) => {
+        setEditingRegla(r);
+        setReglaForm({ nombre: r.nombre, categoria: r.categoria ?? '', umbral_monto: r.umbral_monto, moneda: r.moneda, rol_aprobador: r.rol_aprobador, nivel: r.nivel, activa: r.activa });
+        setShowMatrizForm(true);
+    };
+
+    const cancelarReglaForm = () => { setShowMatrizForm(false); setEditingRegla(null); setReglaForm(REGLA_VACIA); };
+
+    const guardarRegla = async () => {
+        if (!reglaForm.nombre.trim() || !reglaForm.rol_aprobador) { toast.error('Nombre y rol aprobador son requeridos'); return; }
+        setSavingRegla(true);
+        try {
+            if (editingRegla) {
+                const { error } = await supabase.from('matriz_aprobacion').update({ ...reglaForm, categoria: reglaForm.categoria || null }).eq('id', editingRegla.id);
+                if (error) throw new Error(error.message);
+                toast.success('Regla actualizada');
+            } else {
+                const { error } = await supabase.from('matriz_aprobacion').insert({ ...reglaForm, categoria: reglaForm.categoria || null, organization_id: currentUser.organizationId, created_by: currentUser.id });
+                if (error) throw new Error(error.message);
+                toast.success('Regla creada');
+            }
+            cancelarReglaForm();
+            const m = await GovernanceService.getMatriz(currentUser.organizationId);
+            setMatriz(m as Record<string, unknown>[]);
+        } catch (err: any) {
+            toast.error(err.message);
+        } finally {
+            setSavingRegla(false);
+        }
+    };
+
+    const toggleRegla = async (r: MatrizRegla) => {
+        const { error } = await supabase.from('matriz_aprobacion').update({ activa: !r.activa }).eq('id', r.id);
+        if (error) { toast.error(error.message); return; }
+        setMatriz(prev => prev.map(m => m.id === r.id ? { ...m, activa: !r.activa } : m));
+    };
+
+    const eliminarRegla = async (r: MatrizRegla) => {
+        if (!confirm(`¿Eliminar la regla "${r.nombre}"?`)) return;
+        const { error } = await supabase.from('matriz_aprobacion').delete().eq('id', r.id);
+        if (error) { toast.error(error.message); return; }
+        setMatriz(prev => prev.filter(m => m.id !== r.id));
+        toast.success('Regla eliminada');
+    };
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -429,47 +490,146 @@ export function Governance({ currentUser }: GovernanceProps) {
 
                         {/* ── MATRIZ ────────────────────────────────────── */}
                         {tab === 'matriz' && (
-                            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-                                <div className="px-5 py-3.5 border-b border-gray-100 bg-gray-50/60">
-                                    <h2 className="font-semibold text-gray-800 text-sm">Reglas de autorización por monto y criticidad</h2>
-                                </div>
-                                {matriz.length === 0 ? (
-                                    <div className="py-12 text-center">
-                                        <ShieldCheck className="w-8 h-8 text-gray-200 mx-auto mb-2" />
-                                        <p className="text-sm text-gray-400">Sin reglas de aprobación configuradas</p>
-                                        <p className="text-[11px] text-gray-300 mt-1">Define umbrales de monto y el rol que debe aprobar cada nivel</p>
+                            <div className="space-y-4">
+                                {/* Cabecera + botón nueva regla */}
+                                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                                    <div className="px-5 py-3.5 border-b border-gray-100 bg-gray-50/60 flex items-center justify-between">
+                                        <div>
+                                            <h2 className="font-semibold text-gray-800 text-sm">Matriz de Autorización</h2>
+                                            <p className="text-[11px] text-gray-400 mt-0.5">Define qué rol debe aprobar según monto o categoría de proceso</p>
+                                        </div>
+                                        {isAdmin && !showMatrizForm && (
+                                            <button onClick={openNuevaRegla} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">
+                                                <Plus className="w-3.5 h-3.5" /> Nueva regla
+                                            </button>
+                                        )}
                                     </div>
-                                ) : (
-                                    <table className="w-full text-sm">
-                                        <thead>
-                                            <tr className="text-[10px] text-gray-400 uppercase tracking-wider border-b border-gray-100">
-                                                <th className="text-left px-5 py-2 font-bold">Regla</th>
-                                                <th className="text-left px-3 py-2 font-bold">Umbral</th>
-                                                <th className="text-left px-3 py-2 font-bold">Aprobador</th>
-                                                <th className="text-center px-3 py-2 font-bold">Nivel</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {matriz.map((m) => (
-                                                <tr key={m.id as string} className="border-b border-gray-50">
-                                                    <td className="px-5 py-3 font-medium text-gray-800">{m.nombre as string}</td>
-                                                    <td className="px-3 py-3 text-gray-600">{m.moneda as string} {Number(m.umbral_monto).toLocaleString()}</td>
-                                                    <td className="px-3 py-3">
-                                                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ backgroundColor: `${ROL_META[m.rol_aprobador as Role]?.color ?? '#94a3b8'}18`, color: ROL_META[m.rol_aprobador as Role]?.color ?? '#64748b' }}>
-                                                            {ROL_META[m.rol_aprobador as Role]?.label ?? m.rol_aprobador as string}
-                                                        </span>
-                                                    </td>
-                                                    <td className="px-3 py-3 text-center text-gray-500">{m.nivel as number}</td>
+
+                                    {/* Formulario inline crear/editar */}
+                                    {showMatrizForm && (
+                                        <div className="px-5 py-4 bg-indigo-50/50 border-b border-indigo-100">
+                                            <p className="text-xs font-semibold text-indigo-700 mb-3">{editingRegla ? 'Editar regla' : 'Nueva regla de autorización'}</p>
+                                            <div className="grid grid-cols-2 gap-3">
+                                                <div className="col-span-2">
+                                                    <label className="block text-[11px] text-gray-500 mb-1">Nombre de la regla *</label>
+                                                    <input value={reglaForm.nombre} onChange={e => setReglaForm(f => ({ ...f, nombre: e.target.value }))}
+                                                        placeholder="Ej: Siniestros mayores a $10,000"
+                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-500 mb-1">Categoría (opcional)</label>
+                                                    <input value={reglaForm.categoria} onChange={e => setReglaForm(f => ({ ...f, categoria: e.target.value }))}
+                                                        placeholder="Ej: siniestro, pago, contrato"
+                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-500 mb-1">Rol aprobador *</label>
+                                                    <select value={reglaForm.rol_aprobador} onChange={e => setReglaForm(f => ({ ...f, rol_aprobador: e.target.value }))}
+                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white">
+                                                        {ROLES_ASIGNABLES.map(r => (
+                                                            <option key={r} value={r}>{ROL_META[r]?.label ?? r}</option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-500 mb-1">Umbral monto mínimo</label>
+                                                    <div className="flex gap-2">
+                                                        <select value={reglaForm.moneda} onChange={e => setReglaForm(f => ({ ...f, moneda: e.target.value }))}
+                                                            className="text-sm px-2 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white w-24">
+                                                            {['USD', 'EUR', 'VES'].map(c => <option key={c}>{c}</option>)}
+                                                        </select>
+                                                        <input type="number" min={0} value={reglaForm.umbral_monto} onChange={e => setReglaForm(f => ({ ...f, umbral_monto: Number(e.target.value) }))}
+                                                            className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <label className="block text-[11px] text-gray-500 mb-1">Nivel de escalamiento</label>
+                                                    <input type="number" min={1} max={5} value={reglaForm.nivel} onChange={e => setReglaForm(f => ({ ...f, nivel: Number(e.target.value) }))}
+                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2 mt-3">
+                                                <button onClick={guardarRegla} disabled={savingRegla}
+                                                    className="px-4 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+                                                    {savingRegla ? 'Guardando...' : editingRegla ? 'Actualizar' : 'Crear regla'}
+                                                </button>
+                                                <button onClick={cancelarReglaForm} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors">
+                                                    Cancelar
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Tabla de reglas */}
+                                    {matriz.length === 0 && !showMatrizForm ? (
+                                        <div className="py-12 text-center">
+                                            <ShieldCheck className="w-8 h-8 text-gray-200 mx-auto mb-2" />
+                                            <p className="text-sm text-gray-400">Sin reglas de aprobación configuradas</p>
+                                            <p className="text-[11px] text-gray-300 mt-1">Haz clic en "Nueva regla" para definir umbrales y aprobadores</p>
+                                        </div>
+                                    ) : matriz.length > 0 && (
+                                        <table className="w-full text-sm">
+                                            <thead>
+                                                <tr className="text-[10px] text-gray-400 uppercase tracking-wider border-b border-gray-100">
+                                                    <th className="text-left px-5 py-2 font-bold">Regla</th>
+                                                    <th className="text-left px-3 py-2 font-bold">Categoría</th>
+                                                    <th className="text-left px-3 py-2 font-bold">Umbral</th>
+                                                    <th className="text-left px-3 py-2 font-bold">Aprobador</th>
+                                                    <th className="text-center px-3 py-2 font-bold">Niv.</th>
+                                                    <th className="text-center px-3 py-2 font-bold">Estado</th>
+                                                    {isAdmin && <th className="px-3 py-2" />}
                                                 </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                )}
-                                <div className="px-5 py-3 bg-amber-50/50 border-t border-amber-100 flex items-start gap-2">
-                                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
-                                    <p className="text-[11px] text-amber-700">
-                                        <strong>Segregación de funciones activa:</strong> el creador de un flujo no puede aprobarlo. La edición de reglas se habilitará en la siguiente iteración.
-                                    </p>
+                                            </thead>
+                                            <tbody>
+                                                {(matriz as MatrizRegla[]).map((m) => (
+                                                    <tr key={m.id} className={`border-b border-gray-50 ${!m.activa ? 'opacity-50' : ''}`}>
+                                                        <td className="px-5 py-3 font-medium text-gray-800">{m.nombre}</td>
+                                                        <td className="px-3 py-3 text-gray-500 text-xs">{m.categoria || <span className="text-gray-300">—</span>}</td>
+                                                        <td className="px-3 py-3 text-gray-600 text-xs">
+                                                            {m.umbral_monto > 0 ? `${m.moneda} ${Number(m.umbral_monto).toLocaleString()}` : <span className="text-gray-400">Cualquier monto</span>}
+                                                        </td>
+                                                        <td className="px-3 py-3">
+                                                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                                                                style={{ backgroundColor: `${ROL_META[m.rol_aprobador as Role]?.color ?? '#94a3b8'}18`, color: ROL_META[m.rol_aprobador as Role]?.color ?? '#64748b' }}>
+                                                                {ROL_META[m.rol_aprobador as Role]?.label ?? m.rol_aprobador}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-3 py-3 text-center text-gray-500 text-xs">{m.nivel}</td>
+                                                        <td className="px-3 py-3 text-center">
+                                                            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${m.activa ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-400'}`}>
+                                                                {m.activa ? 'Activa' : 'Inactiva'}
+                                                            </span>
+                                                        </td>
+                                                        {isAdmin && (
+                                                            <td className="px-3 py-3">
+                                                                <div className="flex items-center justify-end gap-1">
+                                                                    <button onClick={() => toggleRegla(m)} title={m.activa ? 'Desactivar' : 'Activar'}
+                                                                        className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-indigo-600 transition-colors">
+                                                                        {m.activa ? <ToggleRight className="w-4 h-4 text-emerald-500" /> : <ToggleLeft className="w-4 h-4" />}
+                                                                    </button>
+                                                                    <button onClick={() => openEditarRegla(m)} title="Editar"
+                                                                        className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-indigo-600 transition-colors">
+                                                                        <Pencil className="w-3.5 h-3.5" />
+                                                                    </button>
+                                                                    <button onClick={() => eliminarRegla(m)} title="Eliminar"
+                                                                        className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
+                                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                        )}
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+
+                                    <div className="px-5 py-3 bg-amber-50/50 border-t border-amber-100 flex items-start gap-2">
+                                        <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
+                                        <p className="text-[11px] text-amber-700">
+                                            <strong>Segregación de funciones activa:</strong> quien ejecuta un flujo no puede aprobarlo. El nodo de Aprobación usa el rol definido aquí para seleccionar al aprobador.
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
                         )}
