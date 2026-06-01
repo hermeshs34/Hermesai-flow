@@ -635,14 +635,15 @@ serve(async (req) => {
         let completedNodeIds: Set<string> = new Set();
 
         if (action === 'resume' && resumeRunId) {
-            // Reanudar run pausado tras aprobación
+            // Reanudar run pausado — acepta esperando_aprobacion o error (reintento tras fallo de resume)
             const { data: existingRun, error: fetchErr } = await supabase
                 .from('execution_runs')
                 .select('id, context_json, completed_node_ids')
                 .eq('id', resumeRunId)
-                .eq('status', 'esperando_aprobacion')
+                .in('status', ['esperando_aprobacion', 'error'])
+                .not('paused_node_id', 'is', null)
                 .single();
-            if (fetchErr || !existingRun) throw new Error('Run pausado no encontrado o ya procesado');
+            if (fetchErr || !existingRun) throw new Error('Run pausado no encontrado — ya completado o sin pausa registrada');
             runId            = existingRun.id;
             startedAt        = Date.now();
             restoredContext  = (existingRun.context_json as Record<string, any>) ?? {};

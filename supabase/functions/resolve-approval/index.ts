@@ -91,7 +91,13 @@ serve(async (req) => {
             );
         }
 
-        // 5. Aprobado → devolver datos para que el FRONTEND llame a execute-workflow
+        // 5. Garantizar que el run esté en esperando_aprobacion (puede estar en error por reintento previo)
+        await supabase.from('execution_runs')
+            .update({ status: 'esperando_aprobacion', error_message: null })
+            .eq('id', tarea.execution_run_id)
+            .in('status', ['esperando_aprobacion', 'error']);
+
+        // 6. Devolver datos para que el FRONTEND llame a execute-workflow con action=resume
         // (llamadas inter-función tienen problemas de JWT; el frontend ya tiene sesión válida)
         return new Response(
             JSON.stringify({
