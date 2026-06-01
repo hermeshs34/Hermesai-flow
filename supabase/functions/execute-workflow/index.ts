@@ -783,10 +783,11 @@ serve(async (req) => {
                     });
 
                     // Persistir contexto acumulado para reanudar después
+                    // Incluir el nodo de aprobación en completedNodeIds para no re-ejecutarlo al reanudar
                     await supabase.from('execution_runs').update({
                         status:             'esperando_aprobacion',
                         context_json:       context,
-                        completed_node_ids: [...completedNodeIds],
+                        completed_node_ids: [...completedNodeIds, node.id],
                         paused_node_id:     node.id,
                     }).eq('id', runId);
 
