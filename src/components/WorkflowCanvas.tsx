@@ -7,6 +7,7 @@ import NodeConfigPanel     from './NodeConfigPanel';
 import { WorkflowService } from '../services/workflow.service';
 import { GovernanceService } from '../services/governance.service';
 import { supabase }        from '../core/supabase';
+import { authService }     from '../core/auth.service';
 import type { WorkflowNodeData, WorkflowConnection, Workflow } from '../types/workflow';
 import type { NodeType }   from './NodePalette';
 import type { User }       from '../core/user.types';
@@ -320,7 +321,8 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
 
                             {showWfDropdown && (
                                 <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-xl shadow-lg z-50">
-                                    {/* Crear nuevo */}
+                                    {/* Crear nuevo — solo roles con manage_workflows */}
+                                    {authService.hasPermission(currentUser, 'manage_workflows') && (
                                     <div className="p-2 border-b border-gray-100">
                                         <div className="flex gap-2">
                                             <input
@@ -344,6 +346,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                             </button>
                                         </div>
                                     </div>
+                                    )}
 
                                     {/* Lista */}
                                     <div className="max-h-60 overflow-y-auto">
