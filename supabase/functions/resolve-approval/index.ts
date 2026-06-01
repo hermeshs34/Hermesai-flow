@@ -7,7 +7,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const ANON_KEY         = Deno.env.get('SUPABASE_ANON_KEY')!;
+const RESEND_API_KEY   = Deno.env.get('RESEND_API_KEY') ?? '';
 
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -84,6 +84,47 @@ serve(async (req) => {
                 finished_at:   new Date().toISOString(),
                 error_message: `Rechazado por aprobador. ${comentario ?? ''}`,
             }).eq('id', tarea.execution_run_id);
+
+            // Notificar al solicitante si tiene email registrado
+            if (RESEND_API_KEY && tarea.solicitante_id) {
+                try {
+                    const { data: solicitante } = await supabase
+                        .from('profiles')
+                        .select('name, email')
+                        .eq('id', tarea.solicitante_id)
+                        .single();
+
+                    if (solicitante?.email) {
+                        const { data: wfData } = await supabase
+                            .from('workflows').select('name').eq('id', tarea.workflow_id).single();
+
+                        await fetch('https://api.resend.com/emails', {
+                            method: 'POST',
+                            headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                from:    'HermesAI Flow <onboarding@resend.dev>',
+                                to:      [solicitante.email],
+                                subject: `❌ Flujo rechazado — ${wfData?.name ?? 'Flujo'}`,
+                                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+  <div style="background:#7f1d1d;padding:24px;border-radius:8px 8px 0 0">
+    <h2 style="color:#fff;margin:0;font-size:18px">❌ Solicitud Rechazada</h2>
+    <p style="color:#fca5a5;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
+  </div>
+  <div style="padding:24px;background:#f8fafc">
+    <p style="color:#374151;font-size:14px">Hola <strong>${solicitante.name}</strong>,</p>
+    <p style="color:#374151;font-size:14px">Tu solicitud del flujo <strong>"${wfData?.name ?? ''}"</strong> fue <strong style="color:#dc2626">rechazada</strong>.</p>
+    ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${tarea.descripcion}</p>` : ''}
+    ${comentario ? `<div style="background:#fee2e2;border-left:4px solid #dc2626;padding:12px 16px;border-radius:4px;margin:12px 0"><p style="margin:0;color:#7f1d1d;font-size:13px"><strong>Motivo:</strong> ${comentario}</p></div>` : ''}
+    <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
+  </div>
+</div>`,
+                            }),
+                        });
+                    }
+                } catch {
+                    // No interrumpir si falla el email
+                }
+            }
 
             return new Response(
                 JSON.stringify({ success: true, decision: 'rechazado', runId: tarea.execution_run_id }),

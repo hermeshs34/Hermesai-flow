@@ -795,6 +795,54 @@ serve(async (req) => {
                     await addLog(node.id, 'warning',
                         `⏸ Flujo pausado — esperando aprobación de rol "${err.rolAprobador}". Vence: ${err.venceAt}`
                     );
+
+                    // ── Notificar por email a los aprobadores del rol requerido ──
+                    if (RESEND_API_KEY) {
+                        try {
+                            const { data: aprobadores } = await supabase
+                                .from('profiles')
+                                .select('name, email')
+                                .eq('organization_id', organizationId)
+                                .eq('role', err.rolAprobador)
+                                .eq('is_active', true);
+
+                            for (const ap of (aprobadores ?? [])) {
+                                if (!ap.email) continue;
+                                await fetch('https://api.resend.com/emails', {
+                                    method: 'POST',
+                                    headers: {
+                                        Authorization: `Bearer ${RESEND_API_KEY}`,
+                                        'Content-Type': 'application/json',
+                                    },
+                                    body: JSON.stringify({
+                                        from:    'HermesAI Flow <onboarding@resend.dev>',
+                                        to:      [ap.email],
+                                        subject: `⏸ Aprobación requerida — ${workflow.name}`,
+                                        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+  <div style="background:#1e3a5f;padding:24px;border-radius:8px 8px 0 0">
+    <h2 style="color:#fff;margin:0;font-size:18px">⏸ Aprobación Pendiente</h2>
+    <p style="color:#a5b4fc;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
+  </div>
+  <div style="padding:24px;background:#f8fafc">
+    <p style="color:#374151;font-size:14px">Hola <strong>${ap.name}</strong>,</p>
+    <p style="color:#374151;font-size:14px">El flujo <strong>"${workflow.name}"</strong> requiere tu aprobación para continuar.</p>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
+      <tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px;width:40%">Descripción</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${err.descripcion ?? '—'}</td></tr>
+      ${err.monto ? `<tr><td style="padding:10px 16px;color:#6b7280;font-size:12px;background:#f8fafc">Monto</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${err.monto}</td></tr>` : ''}
+      ${err.categoria ? `<tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px">Categoría</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${err.categoria}</td></tr>` : ''}
+      <tr${err.categoria ? '' : ' style="background:#f1f5f9"'}><td style="padding:10px 16px;color:#6b7280;font-size:12px">Vence</td><td style="padding:10px 16px;font-weight:600;font-size:13px;color:#dc2626">${new Date(err.venceAt).toLocaleString('es-VE')}</td></tr>
+    </table>
+    <p style="color:#374151;font-size:14px">Ingresa a <strong>Gobierno → Bandeja de Aprobación</strong> para aprobar o rechazar.</p>
+    <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
+  </div>
+</div>`,
+                                    }),
+                                });
+                            }
+                        } catch {
+                            // No interrumpir el flujo si el email falla
+                        }
+                    }
                     break;
                 }
 
