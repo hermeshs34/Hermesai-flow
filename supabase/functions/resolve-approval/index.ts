@@ -50,16 +50,11 @@ serve(async (req) => {
             );
         }
 
-        // 2. Verificar SoD: el aprobador no puede ser quien creó el flujo
-        const { data: wf } = await supabase
-            .from('workflows')
-            .select('created_by')
-            .eq('id', tarea.workflow_id)
-            .single();
-
-        if (wf?.created_by && wf.created_by === approverId) {
+        // 2. Verificar SoD: el aprobador no puede ser quien SOLICITÓ/EJECUTÓ esta tarea
+        // (se compara con solicitante_id, no created_by — el diseñador puede ser el aprobador)
+        if (tarea.solicitante_id && tarea.solicitante_id === approverId) {
             return new Response(
-                JSON.stringify({ error: 'Segregación de funciones: el creador del flujo no puede aprobarlo' }),
+                JSON.stringify({ error: 'Segregación de funciones: quien ejecutó el flujo no puede aprobarlo' }),
                 { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
             );
         }
