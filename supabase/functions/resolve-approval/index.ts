@@ -96,28 +96,21 @@ serve(async (req) => {
             );
         }
 
-        // 5. Aprobado → reanudar el flujo llamando a execute-workflow con action='resume'
-        const resumeRes = await fetch(`${SUPABASE_URL}/functions/v1/execute-workflow`, {
-            method:  'POST',
-            headers: {
-                'Content-Type':  'application/json',
-                'Authorization': `Bearer ${ANON_KEY}`,
-            },
-            body: JSON.stringify({
+        // 5. Aprobado → reanudar el flujo usando el cliente Supabase (evita JWT issues en fetch directo)
+        const { data: resumeData, error: resumeErr } = await supabase.functions.invoke('execute-workflow', {
+            body: {
                 workflowId:      tarea.workflow_id,
                 organizationId:  tarea.organization_id,
                 triggeredBy:     'approval',
                 action:          'resume',
                 runId:           tarea.execution_run_id,
                 approverId,
-            }),
+            },
         });
 
-        const resumeData = await resumeRes.json();
-
         // Si execute-workflow devolvió error, marcar el run con el error real
-        if (!resumeRes.ok || resumeData?.error) {
-            const errMsg = resumeData?.error ?? `HTTP ${resumeRes.status}`;
+        if (resumeErr || resumeData?.error) {
+            const errMsg = resumeErr?.message ?? resumeData?.error ?? 'error desconocido';
             await supabase.from('execution_runs').update({
                 status:        'error',
                 finished_at:   new Date().toISOString(),
