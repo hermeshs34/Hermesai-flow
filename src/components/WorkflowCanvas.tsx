@@ -165,7 +165,12 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                 },
             });
             if (error) throw error;
-            if (data?.success) {
+            if (data?.paused) {
+                toast.success(
+                    '⏸ Flujo pausado — tarea enviada a la Bandeja de Aprobación',
+                    { id: toastId, duration: 6000 }
+                );
+            } else if (data?.success) {
                 GovernanceService.log(currentUser, 'ejecutar', 'workflow', { entidadId: activeWorkflowId, descripcion: `Ejecutado "${workflowName}" — ${data.logs} pasos en ${data.duration}ms` });
                 toast.success(
                     `Flujo completado — ${data.logs} pasos en ${data.duration}ms`,

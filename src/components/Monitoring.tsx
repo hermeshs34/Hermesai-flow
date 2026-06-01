@@ -29,19 +29,23 @@ interface LogRow {
 }
 
 const STATUS_ICON: Record<string, React.ReactNode> = {
-    success:   <CheckCircle  className="w-4 h-4 text-green-500" />,
-    error:     <AlertCircle  className="w-4 h-4 text-red-500"   />,
-    running:   <RefreshCw    className="w-4 h-4 text-blue-500 animate-spin" />,
-    cancelled: <Clock        className="w-4 h-4 text-gray-400"  />,
-    info:      <Activity     className="w-4 h-4 text-blue-400"  />,
-    warning:   <Clock        className="w-4 h-4 text-yellow-500"/>,
+    success:               <CheckCircle  className="w-4 h-4 text-green-500" />,
+    error:                 <AlertCircle  className="w-4 h-4 text-red-500"   />,
+    running:               <RefreshCw    className="w-4 h-4 text-blue-500 animate-spin" />,
+    cancelled:             <Clock        className="w-4 h-4 text-gray-400"  />,
+    info:                  <Activity     className="w-4 h-4 text-blue-400"  />,
+    warning:               <Clock        className="w-4 h-4 text-yellow-500"/>,
+    esperando_aprobacion:  <Clock        className="w-4 h-4 text-amber-500" />,
+    rechazado:             <AlertCircle  className="w-4 h-4 text-red-400"   />,
 };
 
 const STATUS_BADGE: Record<string, string> = {
-    success:   'bg-green-100 text-green-700',
-    error:     'bg-red-100 text-red-700',
-    running:   'bg-blue-100 text-blue-700',
-    cancelled: 'bg-gray-100 text-gray-500',
+    success:              'bg-green-100 text-green-700',
+    error:                'bg-red-100 text-red-700',
+    running:              'bg-blue-100 text-blue-700',
+    cancelled:            'bg-gray-100 text-gray-500',
+    esperando_aprobacion: 'bg-amber-100 text-amber-700',
+    rechazado:            'bg-red-100 text-red-600',
 };
 
 function fmt(ms: number | null): string {
