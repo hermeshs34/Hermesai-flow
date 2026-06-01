@@ -113,7 +113,14 @@ export function Governance({ currentUser }: GovernanceProps) {
             const result = await res.json();
             if (!res.ok) throw new Error(result.error ?? 'Error al resolver');
 
-            toast.success(decision === 'aprobado' ? '✅ Flujo aprobado y reanudado' : '❌ Flujo rechazado');
+            // El flujo reanudó — mostrar resultado final del resume
+            const resumeOk = result.resume?.success !== false;
+            const resumeErr = result.resume?.error;
+            if (decision === 'aprobado' && !resumeOk) {
+                toast.warning(`⚠ Aprobado, pero el flujo falló al reanudar: ${resumeErr ?? 'error desconocido'}`);
+            } else {
+                toast.success(decision === 'aprobado' ? '✅ Flujo aprobado y reanudado' : '❌ Flujo rechazado');
+            }
             setAprobaciones(prev => prev.filter(t => t.id !== tarea.id));
             setComentario(prev => { const n = { ...prev }; delete n[tarea.id]; return n; });
         } catch (e) {

@@ -114,6 +114,21 @@ serve(async (req) => {
 
         const resumeData = await resumeRes.json();
 
+        // Si execute-workflow devolvió error, marcar el run con el error real
+        if (!resumeRes.ok || resumeData?.error) {
+            const errMsg = resumeData?.error ?? `HTTP ${resumeRes.status}`;
+            await supabase.from('execution_runs').update({
+                status:        'error',
+                finished_at:   new Date().toISOString(),
+                error_message: `Error al reanudar tras aprobación: ${errMsg}`,
+            }).eq('id', tarea.execution_run_id).eq('status', 'esperando_aprobacion');
+
+            return new Response(
+                JSON.stringify({ success: false, error: `Error al reanudar flujo: ${errMsg}`, resume: resumeData }),
+                { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }
+            );
+        }
+
         return new Response(
             JSON.stringify({ success: true, decision: 'aprobado', resume: resumeData }),
             { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } }
