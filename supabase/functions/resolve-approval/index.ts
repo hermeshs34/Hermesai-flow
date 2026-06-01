@@ -7,6 +7,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const ANON_KEY         = Deno.env.get('SUPABASE_ANON_KEY')!;
 
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -100,7 +101,7 @@ serve(async (req) => {
             method:  'POST',
             headers: {
                 'Content-Type':  'application/json',
-                'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
+                'Authorization': `Bearer ${ANON_KEY}`,
             },
             body: JSON.stringify({
                 workflowId:      tarea.workflow_id,
