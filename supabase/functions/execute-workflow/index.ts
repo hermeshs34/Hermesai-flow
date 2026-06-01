@@ -263,18 +263,16 @@ async function executeNode(
             return { logged: message, timestamp: new Date().toISOString() };
         }
 
-        // ── Aprobación Humana ─────────────────────────────────────────────
+        // ── Aprobación Humana — pausa real (F2) ──────────────────────────
         case 'processor:aprobacion': {
-            // En Sprint S2: auto-aprueba y registra. Sprint S3 agregará pausa real con token.
-            const approver = cfg.approver ?? 'supervisor';
-            const reason   = resolveValue(cfg.reason ?? 'Requiere revisión manual', context);
-            return {
-                approved:    true,
-                approver,
-                reason,
-                mode:        'auto-approved (Sprint S3 agregará pausa real)',
-                timestamp:   new Date().toISOString(),
-            };
+            const rolAprobador = cfg.approver ?? 'supervisor';
+            const descripcion  = resolveValue(cfg.reason ?? 'Requiere revisión manual', context);
+            const monto        = cfg.monto ? Number(resolveValue(String(cfg.monto), context)) : null;
+            const categoria    = cfg.categoria ? resolveValue(cfg.categoria, context) : null;
+            const horasVence   = cfg.horasVence ? Number(cfg.horasVence) : 48;
+            const venceAt      = new Date(Date.now() + horasVence * 60 * 60 * 1000).toISOString();
+            // Señal para que el loop principal pause la ejecución
+            throw { __pauseApproval: true, rolAprobador, descripcion, monto, categoria, venceAt };
         }
 
         // ── Siniestro RiskGuard ───────────────────────────────────────────
@@ -585,7 +583,13 @@ serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
 
     try {
-        const { workflowId, organizationId, triggeredBy = 'manual' } = await req.json();
+        const body = await req.json();
+        const {
+            workflowId, organizationId, triggeredBy = 'manual',
+            action,       // 'resume' para reanudar tras aprobación
+            runId: resumeRunId, // ID del run pausado (solo cuando action='resume')
+            approverId,   // auth.uid() del aprobador (solo cuando action='resume')
+        } = body;
 
         if (!workflowId || !organizationId) {
             return new Response(
@@ -624,22 +628,42 @@ serve(async (req) => {
             );
         }
 
-        // 3. Crear registro de ejecución
-        const { data: run, error: runErr } = await supabase
-            .from('execution_runs')
-            .insert({
-                organization_id: organizationId,
-                workflow_id:     workflowId,
-                triggered_by:    triggeredBy,
-                status:          'running',
-            })
-            .select()
-            .single();
+        // 3. Crear o reutilizar registro de ejecución
+        let runId: string;
+        let startedAt: number;
+        let restoredContext: Record<string, any> = {};
+        let completedNodeIds: Set<string> = new Set();
 
-        if (runErr || !run) throw new Error(`No se pudo crear execution_run: ${runErr?.message}`);
+        if (action === 'resume' && resumeRunId) {
+            // Reanudar run pausado tras aprobación
+            const { data: existingRun, error: fetchErr } = await supabase
+                .from('execution_runs')
+                .select('id, context_json, completed_node_ids')
+                .eq('id', resumeRunId)
+                .eq('status', 'esperando_aprobacion')
+                .single();
+            if (fetchErr || !existingRun) throw new Error('Run pausado no encontrado o ya procesado');
+            runId            = existingRun.id;
+            startedAt        = Date.now();
+            restoredContext  = (existingRun.context_json as Record<string, any>) ?? {};
+            completedNodeIds = new Set((existingRun.completed_node_ids as string[]) ?? []);
+            await supabase.from('execution_runs').update({ status: 'running' }).eq('id', runId);
+        } else {
+            const { data: run, error: runErr } = await supabase
+                .from('execution_runs')
+                .insert({
+                    organization_id: organizationId,
+                    workflow_id:     workflowId,
+                    triggered_by:    triggeredBy,
+                    status:          'running',
+                })
+                .select()
+                .single();
+            if (runErr || !run) throw new Error(`No se pudo crear execution_run: ${runErr?.message}`);
+            runId     = run.id;
+            startedAt = Date.now();
+        }
 
-        const runId     = run.id;
-        const startedAt = Date.now();
         const logBuffer: any[] = [];
 
         const addLog = async (
@@ -655,10 +679,10 @@ serve(async (req) => {
                 node_id:          nodeId,
                 status,
                 message,
-                details_json:     details ?? null,   // columna real en schema
-                executed_at:      new Date().toISOString(), // columna real en schema
+                details_json:     details ?? null,
+                executed_at:      new Date().toISOString(),
             };
-            logBuffer.push({ ...entry, timestamp: entry.executed_at }); // buffer interno conserva 'timestamp' para Monitoring
+            logBuffer.push({ ...entry, timestamp: entry.executed_at });
             const { error: logErr } = await supabase.from('execution_logs').insert(entry);
             if (logErr) console.error('addLog error:', logErr.message);
         };
@@ -667,19 +691,26 @@ serve(async (req) => {
         const sorted = topologicalSort(nodes, connections ?? []);
 
         // 5. Ejecutar nodos en secuencia
-        const context: Record<string, any> = {};
-        const skippedNodes = new Set<string>(); // nodos en rama no tomada
-        let hasError = false;
+        const context: Record<string, any> = { ...restoredContext };
+        const skippedNodes = new Set<string>();
+        let hasError    = false;
         let errorMessage = '';
+        let paused      = false;
 
-        await addLog(null, 'info', `▶ Flujo "${workflow.name}" iniciado (${sorted.length} nodos)`);
+        await addLog(null, 'info',
+            action === 'resume'
+                ? `↩ Flujo "${workflow.name}" reanudado tras aprobación`
+                : `▶ Flujo "${workflow.name}" iniciado (${sorted.length} nodos)`
+        );
 
         for (const node of sorted) {
+            // Al reanudar: saltar nodos ya completados antes de la pausa
+            if (completedNodeIds.has(node.id)) continue;
+
             // Omitir nodos en rama no seleccionada por una Decisión anterior
             if (skippedNodes.has(node.id)) {
                 await supabase.from('workflow_nodes').update({ status: 'idle' }).eq('id', node.id);
                 await addLog(node.id, 'warning', `↷ Nodo "${node.title}" omitido (rama no activa)`);
-                // Propagar skip a descendientes de este nodo también
                 const connList = connections ?? [];
                 for (const c of connList) {
                     if (c.source_node_id === node.id) skippedNodes.add(c.target_node_id);
@@ -700,9 +731,9 @@ serve(async (req) => {
                 });
 
                 context[node.id] = result;
-                const elapsed    = Date.now() - nodeStart;
+                completedNodeIds.add(node.id);
+                const elapsed = Date.now() - nodeStart;
 
-                // Si es un nodo de Decisión, marcar rama perdedora como skipped
                 if (node.category === 'decision' && result.branch) {
                     const losingBranch = result.branch === 'true' ? 'false' : 'true';
                     const connList = connections ?? [];
@@ -731,36 +762,81 @@ serve(async (req) => {
                     result
                 );
             } catch (err: any) {
+                // ── Pausa por aprobación pendiente ────────────────────────
+                if (err.__pauseApproval) {
+                    paused = true;
+                    await supabase.from('workflow_nodes').update({ status: 'idle' }).eq('id', node.id);
+
+                    // Crear tarea en bandeja del aprobador
+                    await supabase.from('tareas_aprobacion').insert({
+                        organization_id:  organizationId,
+                        workflow_id:      workflowId,
+                        execution_run_id: runId,
+                        node_id:          node.id,
+                        node_title:       node.title ?? 'Aprobación',
+                        solicitante_id:   approverId ?? null,
+                        rol_aprobador:    err.rolAprobador,
+                        descripcion:      err.descripcion,
+                        monto:            err.monto,
+                        categoria:        err.categoria,
+                        vence_at:         err.venceAt,
+                    });
+
+                    // Persistir contexto acumulado para reanudar después
+                    await supabase.from('execution_runs').update({
+                        status:             'esperando_aprobacion',
+                        context_json:       context,
+                        completed_node_ids: [...completedNodeIds],
+                        paused_node_id:     node.id,
+                    }).eq('id', runId);
+
+                    await addLog(node.id, 'warning',
+                        `⏸ Flujo pausado — esperando aprobación de rol "${err.rolAprobador}". Vence: ${err.venceAt}`
+                    );
+                    break;
+                }
+
+                // ── Error real ────────────────────────────────────────────
                 hasError     = true;
                 errorMessage = err.message;
-
-                await supabase
-                    .from('workflow_nodes')
-                    .update({ status: 'error' })
-                    .eq('id', node.id);
-
+                await supabase.from('workflow_nodes').update({ status: 'error' }).eq('id', node.id);
                 await addLog(node.id, 'error', `✗ Nodo "${node.title}" falló: ${err.message}`);
                 break;
             }
         }
 
-        // 6. Finalizar ejecución
-        const totalMs    = Date.now() - startedAt;
+        // 6. Finalizar ejecución (solo si no está pausado)
+        const totalMs = Date.now() - startedAt;
+
+        if (paused) {
+            return new Response(
+                JSON.stringify({
+                    success:  false,
+                    paused:   true,
+                    runId,
+                    duration: totalMs,
+                    logs:     logBuffer.length,
+                    message:  'Flujo pausado — esperando aprobación humana',
+                }),
+                { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } }
+            );
+        }
+
         const finalStatus = hasError ? 'error' : 'success';
 
         await Promise.all([
             supabase.from('execution_runs').update({
-                status:       finalStatus,
-                finished_at:  new Date().toISOString(),
-                duration_ms:  totalMs,
-                logs_count:   logBuffer.length,
+                status:        finalStatus,
+                finished_at:   new Date().toISOString(),
+                duration_ms:   totalMs,
+                logs_count:    logBuffer.length,
                 error_message: errorMessage || null,
             }).eq('id', runId),
 
             supabase.from('workflows').update({
-                last_run_at:      new Date().toISOString(),
-                execution_count:  (workflow.execution_count ?? 0) + 1,
-                status:           hasError ? 'error' : 'active',
+                last_run_at:     new Date().toISOString(),
+                execution_count: (workflow.execution_count ?? 0) + 1,
+                status:          hasError ? 'error' : 'active',
             }).eq('id', workflowId),
         ]);
 

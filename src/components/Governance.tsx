@@ -1,18 +1,35 @@
 import { useEffect, useState, useCallback } from 'react';
 import {
     Users, ShieldCheck, ScrollText, Loader2, Search,
-    CheckCircle, XCircle, Lock, AlertTriangle, UserPlus, X, Copy,
+    CheckCircle, XCircle, Lock, AlertTriangle, UserPlus, X, Copy, ClipboardCheck,
 } from 'lucide-react';
 import { GovernanceService, type ManagedUser, type AuditEntry } from '../services/governance.service';
 import { ROL_META, ROLES_ASIGNABLES, type Role, type User } from '../core/user.types';
 import { authService } from '../core/auth.service';
+import { supabase } from '../core/supabase';
 import { toast } from 'sonner';
 
 interface GovernanceProps {
     currentUser: User;
 }
 
-type Tab = 'usuarios' | 'auditoria' | 'matriz';
+type Tab = 'usuarios' | 'auditoria' | 'matriz' | 'aprobaciones';
+
+interface TareaAprobacion {
+    id: string;
+    workflow_id: string;
+    execution_run_id: string;
+    node_id: string;
+    node_title: string;
+    rol_aprobador: string;
+    descripcion: string;
+    monto: number | null;
+    categoria: string | null;
+    estado: string;
+    vence_at: string;
+    created_at: string;
+    workflows?: { name: string };
+}
 
 function fmtDate(iso: string): string {
     return new Date(iso).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -30,12 +47,15 @@ const ACCION_META: Record<string, { label: string; color: string }> = {
 };
 
 export function Governance({ currentUser }: GovernanceProps) {
-    const [tab,    setTab]    = useState<Tab>('usuarios');
-    const [users,  setUsers]  = useState<ManagedUser[]>([]);
-    const [audit,  setAudit]  = useState<AuditEntry[]>([]);
-    const [matriz, setMatriz] = useState<Record<string, unknown>[]>([]);
-    const [loading,setLoading]= useState(true);
-    const [search, setSearch] = useState('');
+    const [tab,          setTab]         = useState<Tab>('usuarios');
+    const [users,        setUsers]        = useState<ManagedUser[]>([]);
+    const [audit,        setAudit]        = useState<AuditEntry[]>([]);
+    const [matriz,       setMatriz]       = useState<Record<string, unknown>[]>([]);
+    const [aprobaciones, setAprobaciones] = useState<TareaAprobacion[]>([]);
+    const [loading,      setLoading]      = useState(true);
+    const [search,       setSearch]       = useState('');
+    const [resolvingId,  setResolvingId]  = useState<string | null>(null);
+    const [comentario,   setComentario]   = useState<Record<string, string>>({});
     const [savingId, setSavingId] = useState<string | null>(null);
 
     // Crear usuario
@@ -55,12 +75,53 @@ export function Governance({ currentUser }: GovernanceProps) {
                 GovernanceService.getMatriz(currentUser.organizationId),
             ]);
             setUsers(u); setAudit(a); setMatriz(m as Record<string, unknown>[]);
+
+            const { data: tareas } = await supabase
+                .from('tareas_aprobacion')
+                .select('*, workflows(name)')
+                .eq('organization_id', currentUser.organizationId)
+                .eq('estado', 'pendiente')
+                .order('created_at', { ascending: false });
+            setAprobaciones((tareas ?? []) as TareaAprobacion[]);
         } catch {
             toast.error('Error cargando datos de gobierno');
         } finally {
             setLoading(false);
         }
     }, [currentUser.organizationId]);
+
+    const resolveApproval = async (tarea: TareaAprobacion, decision: 'aprobado' | 'rechazado') => {
+        setResolvingId(tarea.id);
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            const approverId = session?.user?.id;
+            if (!approverId) throw new Error('Sin sesión activa');
+
+            const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/resolve-approval`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+                },
+                body: JSON.stringify({
+                    tareaId:    tarea.id,
+                    decision,
+                    comentario: comentario[tarea.id] ?? '',
+                    approverId,
+                }),
+            });
+            const result = await res.json();
+            if (!res.ok) throw new Error(result.error ?? 'Error al resolver');
+
+            toast.success(decision === 'aprobado' ? '✅ Flujo aprobado y reanudado' : '❌ Flujo rechazado');
+            setAprobaciones(prev => prev.filter(t => t.id !== tarea.id));
+            setComentario(prev => { const n = { ...prev }; delete n[tarea.id]; return n; });
+        } catch (e) {
+            toast.error((e as Error).message ?? 'Error al resolver aprobación');
+        } finally {
+            setResolvingId(null);
+        }
+    };
 
     useEffect(() => { load(); }, [load]);
 
@@ -135,10 +196,11 @@ export function Governance({ currentUser }: GovernanceProps) {
         u.email.toLowerCase().includes(search.toLowerCase())
     );
 
-    const TABS: { id: Tab; label: string; icon: typeof Users }[] = [
-        { id: 'usuarios',  label: 'Usuarios y Roles', icon: Users },
-        { id: 'matriz',    label: 'Matriz de Aprobación', icon: ShieldCheck },
-        { id: 'auditoria', label: 'Auditoría', icon: ScrollText },
+    const TABS: { id: Tab; label: string; icon: typeof Users; badge?: number }[] = [
+        { id: 'usuarios',      label: 'Usuarios y Roles',      icon: Users },
+        { id: 'aprobaciones',  label: 'Bandeja de Aprobación', icon: ClipboardCheck, badge: aprobaciones.length },
+        { id: 'matriz',        label: 'Matriz de Aprobación',  icon: ShieldCheck },
+        { id: 'auditoria',     label: 'Auditoría',             icon: ScrollText },
     ];
 
     return (
@@ -156,7 +218,7 @@ export function Governance({ currentUser }: GovernanceProps) {
 
                 {/* Tabs */}
                 <div className="flex gap-1 bg-white border border-gray-200 rounded-xl p-1 shadow-sm w-fit">
-                    {TABS.map(({ id, label, icon: Icon }) => (
+                    {TABS.map(({ id, label, icon: Icon, badge }) => (
                         <button
                             key={id}
                             onClick={() => setTab(id)}
@@ -165,6 +227,11 @@ export function Governance({ currentUser }: GovernanceProps) {
                             }`}
                         >
                             <Icon className="w-4 h-4" /> {label}
+                            {badge != null && badge > 0 && (
+                                <span className="ml-1 bg-red-500 text-white text-xs font-bold rounded-full px-1.5 py-0.5 leading-none">
+                                    {badge}
+                                </span>
+                            )}
                         </button>
                     ))}
                 </div>
@@ -252,6 +319,82 @@ export function Governance({ currentUser }: GovernanceProps) {
                                         ))}
                                     </tbody>
                                 </table>
+                            </div>
+                        )}
+
+                        {/* ── BANDEJA DE APROBACIONES ───────────────────── */}
+                        {tab === 'aprobaciones' && (
+                            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                                <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
+                                    <div>
+                                        <h2 className="font-semibold text-gray-800 text-sm">Bandeja de Aprobaciones</h2>
+                                        <p className="text-xs text-gray-400 mt-0.5">Flujos pausados esperando tu autorización</p>
+                                    </div>
+                                    <span className="text-xs text-gray-500">{aprobaciones.length} pendiente{aprobaciones.length !== 1 ? 's' : ''}</span>
+                                </div>
+
+                                {aprobaciones.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+                                        <CheckCircle className="w-10 h-10 mb-3 text-emerald-300" />
+                                        <p className="text-sm font-medium">Sin aprobaciones pendientes</p>
+                                        <p className="text-xs mt-1">Los flujos que requieran tu autorización aparecerán aquí</p>
+                                    </div>
+                                ) : (
+                                    <div className="divide-y divide-gray-100">
+                                        {aprobaciones.map(tarea => (
+                                            <div key={tarea.id} className="px-5 py-4 hover:bg-gray-50/50 transition-colors">
+                                                <div className="flex items-start justify-between gap-4">
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="flex items-center gap-2 mb-1">
+                                                            <span className="font-semibold text-gray-800 text-sm truncate">
+                                                                {tarea.workflows?.name ?? tarea.workflow_id}
+                                                            </span>
+                                                            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium shrink-0">
+                                                                {tarea.node_title ?? 'Aprobación'}
+                                                            </span>
+                                                        </div>
+                                                        <p className="text-xs text-gray-600 mb-1">{tarea.descripcion}</p>
+                                                        <div className="flex items-center gap-3 text-xs text-gray-400 flex-wrap">
+                                                            {tarea.monto != null && (
+                                                                <span>Monto: <strong className="text-gray-600">{tarea.monto.toLocaleString('es-VE')}</strong></span>
+                                                            )}
+                                                            {tarea.categoria && (
+                                                                <span>Categoría: <strong className="text-gray-600">{tarea.categoria}</strong></span>
+                                                            )}
+                                                            <span>Rol requerido: <strong className="text-indigo-600">{tarea.rol_aprobador}</strong></span>
+                                                            <span>Vence: <strong className={new Date(tarea.vence_at) < new Date() ? 'text-red-500' : 'text-gray-600'}>{fmtDate(tarea.vence_at)}</strong></span>
+                                                        </div>
+                                                        <input
+                                                            type="text"
+                                                            placeholder="Comentario (opcional)..."
+                                                            value={comentario[tarea.id] ?? ''}
+                                                            onChange={e => setComentario(prev => ({ ...prev, [tarea.id]: e.target.value }))}
+                                                            className="mt-2 w-full text-xs border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                                                        />
+                                                    </div>
+                                                    <div className="flex flex-col gap-2 shrink-0">
+                                                        <button
+                                                            onClick={() => resolveApproval(tarea, 'aprobado')}
+                                                            disabled={resolvingId === tarea.id}
+                                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50"
+                                                        >
+                                                            {resolvingId === tarea.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                                                            Aprobar
+                                                        </button>
+                                                        <button
+                                                            onClick={() => resolveApproval(tarea, 'rechazado')}
+                                                            disabled={resolvingId === tarea.id}
+                                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 border border-red-200"
+                                                        >
+                                                            <XCircle className="w-3 h-3" />
+                                                            Rechazar
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                         )}
 
