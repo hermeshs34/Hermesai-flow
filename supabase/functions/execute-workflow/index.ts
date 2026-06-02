@@ -60,12 +60,21 @@ function resolveValue(expr: string, context: Record<string, any>): any {
             // {{summary}} → tabla HTML con todos los datos del contexto
             if (path === 'summary') return buildContextSummary(context);
 
-            // {{previous.campo}} → último nodo ejecutado
+            // {{previous.campo}} o {{previous.array.0.campo}} → último nodo ejecutado
             if (path.startsWith('previous.')) {
-                const field = path.slice(9);
+                const field   = path.slice(9); // quitar "previous."
                 const nodeIds = Object.keys(context).filter(k => k !== '__lastNodeId');
                 const lastId  = nodeIds[nodeIds.length - 1];
-                return lastId ? (context[lastId]?.[field] ?? '') : '';
+                if (!lastId) return '';
+                const nodeData = context[lastId];
+                // Traversar path anidado: hits.0.tipo_lista → nodeData.hits[0].tipo_lista
+                let val: any = nodeData;
+                for (const segment of field.split('.')) {
+                    if (val === null || val === undefined) return '';
+                    // Soporte de índice numérico para arrays
+                    val = Array.isArray(val) ? val[Number(segment)] : val[segment];
+                }
+                return val ?? '';
             }
 
             const parts = path.split('.');
@@ -320,8 +329,14 @@ async function executeNode(
                 throw new Error('El nodo Verificar OFAC requiere configurar "nombre" o "documento" a verificar');
             }
 
-            // Limpiar URL: eliminar trailing slash para evitar path inválido
-            const rgUrl = RG_URL.replace(/\/$/, '');
+            // Limpiar y validar URL
+            const rgUrl = RG_URL.trim().replace(/\/$/, '');
+            if (!rgUrl.startsWith('https://') && !rgUrl.startsWith('http://')) {
+                throw new Error(
+                    `RISKGUARD_SUPABASE_URL inválida. Valor actual: "${rgUrl.substring(0, 40)}...". ` +
+                    `Debe ser: https://xxxx.supabase.co (sin /rest/v1 ni rutas extra)`
+                );
+            }
             const rg = createClient(rgUrl, RG_KEY);
 
             let hits: any[] = [];
