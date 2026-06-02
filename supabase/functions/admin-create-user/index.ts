@@ -16,7 +16,7 @@ const CORS = {
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const ROLES_VALIDOS = ['admin', 'dueno_proceso', 'supervisor', 'operador', 'autorizador', 'auditor'];
+const ROLES_VALIDOS = ['admin', 'dueno_proceso', 'supervisor', 'operador', 'autorizador', 'cumplimiento', 'auditor'];
 
 serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });

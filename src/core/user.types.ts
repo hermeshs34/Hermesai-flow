@@ -6,6 +6,7 @@ export type Role =
     | 'supervisor'     // Supervisor/Control — aprueba, reasigna, monitorea
     | 'operador'       // Operativo — ejecuta y completa tareas
     | 'autorizador'    // Autorizador Máximo — aprueba operaciones sobre umbral crítico
+    | 'cumplimiento'   // Cumplimiento AML/CFT — aprueba procesos OFAC/PEP/ROS
     | 'auditor'        // Auditor — solo lectura total + trazabilidad
     // legacy (no romper usuarios existentes)
     | 'editor'
@@ -48,6 +49,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     supervisor:    ['manage_workflows', 'execute_workflows', 'approve_tasks', 'view_logs'],
     operador:      ['execute_workflows', 'view_logs'],
     autorizador:   ['approve_tasks', 'authorize_critical', 'view_logs'],
+    cumplimiento:  ['approve_tasks', 'view_logs', 'view_audit'],
     auditor:       ['view_all', 'view_logs', 'view_audit'],
     // legacy
     editor:        ['manage_workflows', 'execute_workflows', 'view_logs'],
@@ -62,6 +64,7 @@ export const ROL_META: Record<Role, { label: string; color: string; descripcion:
     supervisor:    { label: 'Supervisor',        color: '#10b981', descripcion: 'Aprueba, reasigna y monitorea ejecuciones' },
     operador:      { label: 'Operativo',         color: '#f59e0b', descripcion: 'Ejecuta flujos y completa tareas asignadas' },
     autorizador:   { label: 'Autorizador Máximo',color: '#dc2626', descripcion: 'Aprueba operaciones sobre umbral crítico' },
+    cumplimiento:  { label: 'Cumplimiento',      color: '#0891b2', descripcion: 'Aprueba procesos AML/CFT, OFAC/PEP y reportes ROS' },
     auditor:       { label: 'Auditor',           color: '#8b5cf6', descripcion: 'Lectura total y trazabilidad (sin modificar)' },
     editor:        { label: 'Editor',            color: '#0ea5e9', descripcion: 'Rol heredado — edita flujos' },
     operator:      { label: 'Operador',          color: '#f59e0b', descripcion: 'Rol heredado — ejecuta flujos' },
@@ -69,4 +72,4 @@ export const ROL_META: Record<Role, { label: string; color: string; descripcion:
 };
 
 // Roles asignables desde la UI (los legacy no se ofrecen para nuevos usuarios)
-export const ROLES_ASIGNABLES: Role[] = ['admin', 'dueno_proceso', 'supervisor', 'operador', 'autorizador', 'auditor'];
+export const ROLES_ASIGNABLES: Role[] = ['admin', 'dueno_proceso', 'supervisor', 'operador', 'autorizador', 'cumplimiento', 'auditor'];
