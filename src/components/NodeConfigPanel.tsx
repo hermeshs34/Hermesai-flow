@@ -673,16 +673,20 @@ function getAutoDefaults(node: WorkflowNodeData, prevNode: WorkflowNodeData | nu
         if (!node.config?.right)    defaults.right    = 'true';
     }
 
-    // Email después de OFAC → pre-llenar asunto y plantilla
+    // Email después de OFAC → pre-llenar asunto y plantilla completa
     if (node.category === 'email' && prevNode.category === 'aml') {
         if (!node.config?.subject)
             defaults.subject = '⚠️ Alerta Listas Restrictivas — {{previous.nombre_buscado}}';
+        if (!node.config?.body)
+            defaults.body = OFAC_EMAIL_TEMPLATE;
     }
 
-    // Email después de aprobación → pre-llenar asunto
+    // Email después de aprobación → pre-llenar asunto y plantilla OFAC (datos del nodo AML siguen en contexto)
     if (node.category === 'email' && prevNode.category === 'aprobacion') {
         if (!node.config?.subject)
-            defaults.subject = '✅ Proceso aprobado — {{previous.nombre_buscado}}';
+            defaults.subject = '✅ Alerta OFAC aprobada — {{previous.nombre_buscado}}';
+        if (!node.config?.body)
+            defaults.body = OFAC_EMAIL_TEMPLATE;
     }
 
     return defaults;
