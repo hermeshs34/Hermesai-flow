@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback } from 'react';
 import {
     Users, ShieldCheck, ScrollText, Loader2, Search,
     CheckCircle, XCircle, Lock, AlertTriangle, UserPlus, X, Copy, ClipboardCheck,
-    Plus, Pencil, Trash2, ToggleLeft, ToggleRight,
+    Plus, Pencil, Trash2, ToggleLeft, ToggleRight, Sparkles, FlaskConical,
+    TrendingUp, Clock, ChevronDown, ChevronUp, BookOpen,
 } from 'lucide-react';
 import { GovernanceService, type ManagedUser, type AuditEntry } from '../services/governance.service';
 import { ROL_META, ROLES_ASIGNABLES, type Role, type User } from '../core/user.types';
@@ -59,13 +60,34 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [comentario,   setComentario]   = useState<Record<string, string>>({});
     const [savingId,     setSavingId]     = useState<string | null>(null);
 
-    // Matriz CRUD
-    type MatrizRegla = { id: string; nombre: string; categoria: string; umbral_monto: number; moneda: string; rol_aprobador: string; nivel: number; activa: boolean };
-    const REGLA_VACIA: Omit<MatrizRegla, 'id'> = { nombre: '', categoria: '', umbral_monto: 0, moneda: 'USD', rol_aprobador: 'autorizador', nivel: 1, activa: true };
-    const [showMatrizForm, setShowMatrizForm] = useState(false);
-    const [editingRegla,   setEditingRegla]   = useState<MatrizRegla | null>(null);
-    const [reglaForm,      setReglaForm]      = useState<Omit<MatrizRegla, 'id'>>(REGLA_VACIA);
-    const [savingRegla,    setSavingRegla]    = useState(false);
+    // Matriz CRUD — F3.3
+    type MatrizRegla = {
+        id: string; nombre: string; categoria: string;
+        operador: string; umbral_monto: number; umbral_max: number | null; moneda: string;
+        rol_aprobador: string; nivel: number; activa: boolean;
+        condicion_extra: string; aprobadores_multiples: number;
+        escalamiento_horas: number; aplica_automatico: boolean;
+        descripcion_regulatoria: string;
+        veces_activada: number; aprobaciones_count: number;
+        rechazos_count: number; tiempo_promedio_hs: number | null;
+    };
+    const REGLA_VACIA: Omit<MatrizRegla, 'id'> = {
+        nombre: '', categoria: '', operador: '>=', umbral_monto: 0, umbral_max: null,
+        moneda: 'USD', rol_aprobador: 'autorizador', nivel: 1, activa: true,
+        condicion_extra: '', aprobadores_multiples: 1, escalamiento_horas: 48,
+        aplica_automatico: false, descripcion_regulatoria: '',
+        veces_activada: 0, aprobaciones_count: 0, rechazos_count: 0, tiempo_promedio_hs: null,
+    };
+    const [showMatrizForm,  setShowMatrizForm]  = useState(false);
+    const [editingRegla,    setEditingRegla]    = useState<MatrizRegla | null>(null);
+    const [reglaForm,       setReglaForm]       = useState<Omit<MatrizRegla, 'id'>>(REGLA_VACIA);
+    const [savingRegla,     setSavingRegla]     = useState(false);
+    const [expandedRegla,   setExpandedRegla]   = useState<string | null>(null);
+    const [simuladorVal,    setSimuladorVal]    = useState('');
+    const [simuladorCat,    setSimuladorCat]    = useState('');
+    const [simuladorResult, setSimuladorResult] = useState<MatrizRegla[] | null>(null);
+    const [iaLoading,       setIaLoading]       = useState(false);
+    const [iaSugerencia,    setIaSugerencia]    = useState<string | null>(null);
 
     // Crear usuario
     const [showCreate, setShowCreate] = useState(false);
@@ -80,26 +102,53 @@ export function Governance({ currentUser }: GovernanceProps) {
         setEditingRegla(null);
         setReglaForm(REGLA_VACIA);
         setShowMatrizForm(true);
+        setIaSugerencia(null);
     };
 
     const openEditarRegla = (r: MatrizRegla) => {
         setEditingRegla(r);
-        setReglaForm({ nombre: r.nombre, categoria: r.categoria ?? '', umbral_monto: r.umbral_monto, moneda: r.moneda, rol_aprobador: r.rol_aprobador, nivel: r.nivel, activa: r.activa });
+        setReglaForm({
+            nombre: r.nombre, categoria: r.categoria ?? '',
+            operador: r.operador ?? '>=', umbral_monto: r.umbral_monto, umbral_max: r.umbral_max,
+            moneda: r.moneda, rol_aprobador: r.rol_aprobador, nivel: r.nivel, activa: r.activa,
+            condicion_extra: r.condicion_extra ?? '', aprobadores_multiples: r.aprobadores_multiples ?? 1,
+            escalamiento_horas: r.escalamiento_horas ?? 48, aplica_automatico: r.aplica_automatico ?? false,
+            descripcion_regulatoria: r.descripcion_regulatoria ?? '',
+            veces_activada: 0, aprobaciones_count: 0, rechazos_count: 0, tiempo_promedio_hs: null,
+        });
         setShowMatrizForm(true);
+        setIaSugerencia(null);
     };
 
     const cancelarReglaForm = () => { setShowMatrizForm(false); setEditingRegla(null); setReglaForm(REGLA_VACIA); };
 
     const guardarRegla = async () => {
         if (!reglaForm.nombre.trim() || !reglaForm.rol_aprobador) { toast.error('Nombre y rol aprobador son requeridos'); return; }
+        if (reglaForm.operador === 'entre' && !reglaForm.umbral_max) { toast.error('Con operador "entre" debes indicar el monto máximo'); return; }
         setSavingRegla(true);
+        const payload = {
+            nombre:                   reglaForm.nombre,
+            categoria:                reglaForm.categoria || null,
+            operador:                 reglaForm.operador,
+            umbral_monto:             reglaForm.umbral_monto,
+            umbral_max:               reglaForm.operador === 'entre' ? reglaForm.umbral_max : null,
+            moneda:                   reglaForm.moneda,
+            rol_aprobador:            reglaForm.rol_aprobador,
+            nivel:                    reglaForm.nivel,
+            activa:                   reglaForm.activa,
+            condicion_extra:          reglaForm.condicion_extra || null,
+            aprobadores_multiples:    reglaForm.aprobadores_multiples,
+            escalamiento_horas:       reglaForm.escalamiento_horas,
+            aplica_automatico:        reglaForm.aplica_automatico,
+            descripcion_regulatoria:  reglaForm.descripcion_regulatoria || null,
+        };
         try {
             if (editingRegla) {
-                const { error } = await supabase.from('matriz_aprobacion').update({ ...reglaForm, categoria: reglaForm.categoria || null }).eq('id', editingRegla.id);
+                const { error } = await supabase.from('matriz_aprobacion').update(payload).eq('id', editingRegla.id);
                 if (error) throw new Error(error.message);
                 toast.success('Regla actualizada');
             } else {
-                const { error } = await supabase.from('matriz_aprobacion').insert({ ...reglaForm, categoria: reglaForm.categoria || null, organization_id: currentUser.organizationId, created_by: currentUser.id });
+                const { error } = await supabase.from('matriz_aprobacion').insert({ ...payload, organization_id: currentUser.organizationId, created_by: currentUser.id });
                 if (error) throw new Error(error.message);
                 toast.success('Regla creada');
             }
@@ -110,6 +159,61 @@ export function Governance({ currentUser }: GovernanceProps) {
             toast.error(err.message);
         } finally {
             setSavingRegla(false);
+        }
+    };
+
+    // Simulador de reglas
+    const simularReglas = () => {
+        const monto = Number(simuladorVal);
+        const cat   = simuladorCat.trim().toLowerCase();
+        const activas = (matriz as MatrizRegla[]).filter(r => r.activa);
+        const matches = activas.filter(r => {
+            const catMatch = !r.categoria || r.categoria.toLowerCase() === cat || cat === '';
+            let montoMatch = true;
+            if (r.umbral_monto > 0 || r.operador !== '>=') {
+                switch (r.operador) {
+                    case '>=':    montoMatch = monto >= r.umbral_monto; break;
+                    case '>':     montoMatch = monto >  r.umbral_monto; break;
+                    case '<=':    montoMatch = monto <= r.umbral_monto; break;
+                    case '<':     montoMatch = monto <  r.umbral_monto; break;
+                    case '==':    montoMatch = monto === r.umbral_monto; break;
+                    case 'entre': montoMatch = monto >= r.umbral_monto && monto <= (r.umbral_max ?? Infinity); break;
+                }
+            }
+            return catMatch && montoMatch;
+        });
+        setSimuladorResult(matches.sort((a, b) => b.nivel - a.nivel));
+    };
+
+    // Sugerencias IA (llama a execute-workflow con un flujo especial o simplemente genera localmente)
+    const pedirSugerenciaIA = async () => {
+        setIaLoading(true);
+        setIaSugerencia(null);
+        try {
+            // Análisis local de gaps en la matriz actual
+            const reglas = (matriz as MatrizRegla[]).filter(r => r.activa);
+            const categorias = [...new Set(reglas.map(r => r.categoria).filter(Boolean))];
+            const sinEscalamiento = reglas.filter(r => r.aprobadores_multiples < 2 && r.umbral_monto >= 50000);
+            const sinRegulatorio = reglas.filter(r => !r.descripcion_regulatoria);
+            const sugerencias: string[] = [];
+
+            if (reglas.length === 0) {
+                sugerencias.push('📋 No hay reglas activas. Recomiendo crear al menos: (1) Pagos > USD 10.000 → Supervisor, (2) Contratos > USD 50.000 → Gerente con doble aprobación, (3) Listas restrictivas → Cumplimiento automático.');
+            } else {
+                if (sinEscalamiento.length > 0)
+                    sugerencias.push(`⚠️ ${sinEscalamiento.length} regla(s) con montos ≥ USD 50.000 tienen solo 1 aprobador. Considera activar doble control (aprobadores_multiples = 2) para cumplir con controles internos.`);
+                if (sinRegulatorio.length > 0)
+                    sugerencias.push(`📑 ${sinRegulatorio.length} regla(s) no tienen referencia regulatoria. Documenta la normativa aplicable (SUDEBAN, OFAC, etc.) para auditorías.`);
+                if (!categorias.includes('aml') && !categorias.includes('ofac'))
+                    sugerencias.push('🔍 No hay regla para la categoría "aml" u "ofac". Recomiendo crear una regla de cumplimiento para verificaciones OFAC/PEP que aplique automáticamente.');
+                if (reglas.every(r => r.escalamiento_horas >= 72))
+                    sugerencias.push('⏰ Todas las reglas tienen escalamiento ≥ 72 horas. Considera reducir el SLA para procesos críticos (pagos urgentes, siniestros activos).');
+                if (sugerencias.length === 0)
+                    sugerencias.push('✅ La matriz está bien configurada. Considera revisar las métricas de uso periódicamente para ajustar umbrales según el volumen real de operaciones.');
+            }
+            setIaSugerencia(sugerencias.join('\n\n'));
+        } finally {
+            setIaLoading(false);
         }
     };
 
@@ -488,70 +592,169 @@ export function Governance({ currentUser }: GovernanceProps) {
                             </div>
                         )}
 
-                        {/* ── MATRIZ ────────────────────────────────────── */}
+                        {/* ── MATRIZ F3.3 ───────────────────────────────── */}
                         {tab === 'matriz' && (
                             <div className="space-y-4">
-                                {/* Cabecera + botón nueva regla */}
+
+                                {/* ── Cabecera ── */}
                                 <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
                                     <div className="px-5 py-3.5 border-b border-gray-100 bg-gray-50/60 flex items-center justify-between">
                                         <div>
                                             <h2 className="font-semibold text-gray-800 text-sm">Matriz de Autorización</h2>
-                                            <p className="text-[11px] text-gray-400 mt-0.5">Define qué rol debe aprobar según monto o categoría de proceso</p>
+                                            <p className="text-[11px] text-gray-400 mt-0.5">Umbrales, aprobadores, doble control, escalamiento y normativa</p>
                                         </div>
                                         {isAdmin && !showMatrizForm && (
-                                            <button onClick={openNuevaRegla} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">
-                                                <Plus className="w-3.5 h-3.5" /> Nueva regla
-                                            </button>
+                                            <div className="flex items-center gap-2">
+                                                <button onClick={pedirSugerenciaIA} disabled={iaLoading}
+                                                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-violet-50 text-violet-700 border border-violet-200 rounded-lg hover:bg-violet-100 transition-colors disabled:opacity-50">
+                                                    {iaLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                                                    Sugerencias IA
+                                                </button>
+                                                <button onClick={openNuevaRegla}
+                                                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">
+                                                    <Plus className="w-3.5 h-3.5" /> Nueva regla
+                                                </button>
+                                            </div>
                                         )}
                                     </div>
 
-                                    {/* Formulario inline crear/editar */}
-                                    {showMatrizForm && (
-                                        <div className="px-5 py-4 bg-indigo-50/50 border-b border-indigo-100">
-                                            <p className="text-xs font-semibold text-indigo-700 mb-3">{editingRegla ? 'Editar regla' : 'Nueva regla de autorización'}</p>
-                                            <div className="grid grid-cols-2 gap-3">
-                                                <div className="col-span-2">
-                                                    <label className="block text-[11px] text-gray-500 mb-1">Nombre de la regla *</label>
-                                                    <input value={reglaForm.nombre} onChange={e => setReglaForm(f => ({ ...f, nombre: e.target.value }))}
-                                                        placeholder="Ej: Siniestros mayores a $10,000"
-                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-[11px] text-gray-500 mb-1">Categoría (opcional)</label>
-                                                    <input value={reglaForm.categoria} onChange={e => setReglaForm(f => ({ ...f, categoria: e.target.value }))}
-                                                        placeholder="Ej: siniestro, pago, contrato"
-                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-[11px] text-gray-500 mb-1">Rol aprobador *</label>
-                                                    <select value={reglaForm.rol_aprobador} onChange={e => setReglaForm(f => ({ ...f, rol_aprobador: e.target.value }))}
-                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white">
-                                                        {ROLES_ASIGNABLES.map(r => (
-                                                            <option key={r} value={r}>{ROL_META[r]?.label ?? r}</option>
+                                    {/* Sugerencias IA */}
+                                    {iaSugerencia && (
+                                        <div className="px-5 py-3 bg-violet-50 border-b border-violet-100">
+                                            <div className="flex items-start justify-between gap-2">
+                                                <div className="flex items-start gap-2">
+                                                    <Sparkles className="w-3.5 h-3.5 text-violet-500 mt-0.5 flex-shrink-0" />
+                                                    <div className="space-y-1.5">
+                                                        {iaSugerencia.split('\n\n').map((s, i) => (
+                                                            <p key={i} className="text-[11px] text-violet-800">{s}</p>
                                                         ))}
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <label className="block text-[11px] text-gray-500 mb-1">Umbral monto mínimo</label>
-                                                    <div className="flex gap-2">
-                                                        <select value={reglaForm.moneda} onChange={e => setReglaForm(f => ({ ...f, moneda: e.target.value }))}
-                                                            className="text-sm px-2 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white w-24">
-                                                            {['USD', 'EUR', 'VES'].map(c => <option key={c}>{c}</option>)}
-                                                        </select>
-                                                        <input type="number" min={0} value={reglaForm.umbral_monto} onChange={e => setReglaForm(f => ({ ...f, umbral_monto: Number(e.target.value) }))}
-                                                            className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
                                                     </div>
                                                 </div>
-                                                <div>
-                                                    <label className="block text-[11px] text-gray-500 mb-1">Nivel de escalamiento</label>
-                                                    <input type="number" min={1} max={5} value={reglaForm.nivel} onChange={e => setReglaForm(f => ({ ...f, nivel: Number(e.target.value) }))}
+                                                <button onClick={() => setIaSugerencia(null)} className="text-violet-400 hover:text-violet-600 flex-shrink-0">
+                                                    <X className="w-3.5 h-3.5" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* ── Formulario crear/editar ── */}
+                                    {showMatrizForm && (
+                                        <div className="px-5 py-4 bg-indigo-50/40 border-b border-indigo-100">
+                                            <p className="text-xs font-semibold text-indigo-700 mb-4">
+                                                {editingRegla ? '✏️ Editar regla' : '➕ Nueva regla de autorización'}
+                                            </p>
+                                            <div className="grid grid-cols-2 gap-3">
+
+                                                {/* Nombre */}
+                                                <div className="col-span-2">
+                                                    <label className="block text-[11px] font-medium text-gray-500 mb-1">Nombre de la regla *</label>
+                                                    <input value={reglaForm.nombre} onChange={e => setReglaForm(f => ({ ...f, nombre: e.target.value }))}
+                                                        placeholder="Ej: Pagos patrimoniales mayores a USD 10.000"
                                                         className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
                                                 </div>
+
+                                                {/* Categoría */}
+                                                <div>
+                                                    <label className="block text-[11px] font-medium text-gray-500 mb-1">Categoría del proceso</label>
+                                                    <input value={reglaForm.categoria} onChange={e => setReglaForm(f => ({ ...f, categoria: e.target.value }))}
+                                                        placeholder="siniestro / pago / contrato / aml"
+                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                </div>
+
+                                                {/* Rol aprobador */}
+                                                <div>
+                                                    <label className="block text-[11px] font-medium text-gray-500 mb-1">Rol aprobador *</label>
+                                                    <select value={reglaForm.rol_aprobador} onChange={e => setReglaForm(f => ({ ...f, rol_aprobador: e.target.value }))}
+                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white">
+                                                        {ROLES_ASIGNABLES.map(r => <option key={r} value={r}>{ROL_META[r]?.label ?? r}</option>)}
+                                                    </select>
+                                                </div>
+
+                                                {/* Operador + umbral */}
+                                                <div>
+                                                    <label className="block text-[11px] font-medium text-gray-500 mb-1">Condición de monto</label>
+                                                    <div className="flex gap-2">
+                                                        <select value={reglaForm.moneda} onChange={e => setReglaForm(f => ({ ...f, moneda: e.target.value }))}
+                                                            className="text-sm px-2 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white w-20">
+                                                            {['USD','EUR','VES'].map(c => <option key={c}>{c}</option>)}
+                                                        </select>
+                                                        <select value={reglaForm.operador} onChange={e => setReglaForm(f => ({ ...f, operador: e.target.value }))}
+                                                            className="text-sm px-2 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white w-20">
+                                                            {[['>=','≥'],['>', '>'],['<=','≤'],['<','<'],['==','='],['entre','Entre']].map(([v,l]) => <option key={v} value={v}>{l}</option>)}
+                                                        </select>
+                                                        <input type="number" min={0} value={reglaForm.umbral_monto}
+                                                            onChange={e => setReglaForm(f => ({ ...f, umbral_monto: Number(e.target.value) }))}
+                                                            placeholder="Mínimo" className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                        {reglaForm.operador === 'entre' && (
+                                                            <input type="number" min={0} value={reglaForm.umbral_max ?? ''}
+                                                                onChange={e => setReglaForm(f => ({ ...f, umbral_max: Number(e.target.value) || null }))}
+                                                                placeholder="Máximo" className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {/* Nivel + doble control */}
+                                                <div>
+                                                    <label className="block text-[11px] font-medium text-gray-500 mb-1">Nivel de escalamiento</label>
+                                                    <div className="flex gap-2">
+                                                        <input type="number" min={1} max={5} value={reglaForm.nivel}
+                                                            onChange={e => setReglaForm(f => ({ ...f, nivel: Number(e.target.value) }))}
+                                                            className="w-20 text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                        <div className="flex-1">
+                                                            <label className="block text-[11px] font-medium text-gray-500 mb-1">Aprobadores requeridos</label>
+                                                            <select value={reglaForm.aprobadores_multiples}
+                                                                onChange={e => setReglaForm(f => ({ ...f, aprobadores_multiples: Number(e.target.value) }))}
+                                                                className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 bg-white">
+                                                                <option value={1}>1 aprobador</option>
+                                                                <option value={2}>2 — doble control</option>
+                                                                <option value={3}>3 — triple control</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                {/* Escalamiento horas */}
+                                                <div>
+                                                    <label className="block text-[11px] font-medium text-gray-500 mb-1">SLA de aprobación (horas)</label>
+                                                    <input type="number" min={1} value={reglaForm.escalamiento_horas}
+                                                        onChange={e => setReglaForm(f => ({ ...f, escalamiento_horas: Number(e.target.value) }))}
+                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                    <p className="text-[10px] text-gray-400 mt-1">Si no responden en este tiempo el flujo escala al nivel superior</p>
+                                                </div>
+
+                                                {/* Condición extra */}
+                                                <div className="col-span-2">
+                                                    <label className="block text-[11px] font-medium text-gray-500 mb-1">Condición adicional (opcional)</label>
+                                                    <input value={reglaForm.condicion_extra}
+                                                        onChange={e => setReglaForm(f => ({ ...f, condicion_extra: e.target.value }))}
+                                                        placeholder="Ej: solo si país = Venezuela  /  solo si ramo = patrimonial"
+                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                </div>
+
+                                                {/* Referencia regulatoria */}
+                                                <div className="col-span-2">
+                                                    <label className="block text-[11px] font-medium text-gray-500 mb-1">Referencia normativa</label>
+                                                    <input value={reglaForm.descripcion_regulatoria}
+                                                        onChange={e => setReglaForm(f => ({ ...f, descripcion_regulatoria: e.target.value }))}
+                                                        placeholder="Ej: SUDEBAN Circular SIB-II-GGIBPV-12, OFAC 50% Ownership Rule"
+                                                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                </div>
+
+                                                {/* Automático */}
+                                                <div className="col-span-2 flex items-center gap-3 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5">
+                                                    <input type="checkbox" id="aplica_auto" checked={reglaForm.aplica_automatico}
+                                                        onChange={e => setReglaForm(f => ({ ...f, aplica_automatico: e.target.checked }))}
+                                                        className="w-4 h-4 accent-amber-500" />
+                                                    <label htmlFor="aplica_auto" className="text-[11px] text-amber-800 cursor-pointer">
+                                                        <strong>El Agente IA puede decidir automáticamente</strong> sin requerir aprobador humano (F3.1 — disponible próximamente)
+                                                    </label>
+                                                </div>
                                             </div>
-                                            <div className="flex items-center gap-2 mt-3">
+
+                                            <div className="flex items-center gap-2 mt-4">
                                                 <button onClick={guardarRegla} disabled={savingRegla}
                                                     className="px-4 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors">
-                                                    {savingRegla ? 'Guardando...' : editingRegla ? 'Actualizar' : 'Crear regla'}
+                                                    {savingRegla ? 'Guardando...' : editingRegla ? 'Actualizar regla' : 'Crear regla'}
                                                 </button>
                                                 <button onClick={cancelarReglaForm} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors">
                                                     Cancelar
@@ -560,75 +763,203 @@ export function Governance({ currentUser }: GovernanceProps) {
                                         </div>
                                     )}
 
-                                    {/* Tabla de reglas */}
+                                    {/* ── Lista de reglas ── */}
                                     {matriz.length === 0 && !showMatrizForm ? (
                                         <div className="py-12 text-center">
                                             <ShieldCheck className="w-8 h-8 text-gray-200 mx-auto mb-2" />
-                                            <p className="text-sm text-gray-400">Sin reglas de aprobación configuradas</p>
-                                            <p className="text-[11px] text-gray-300 mt-1">Haz clic en "Nueva regla" para definir umbrales y aprobadores</p>
+                                            <p className="text-sm text-gray-400">Sin reglas de autorización configuradas</p>
+                                            <p className="text-[11px] text-gray-300 mt-1">Haz clic en "Nueva regla" o en "Sugerencias IA" para comenzar</p>
                                         </div>
                                     ) : matriz.length > 0 && (
-                                        <table className="w-full text-sm">
-                                            <thead>
-                                                <tr className="text-[10px] text-gray-400 uppercase tracking-wider border-b border-gray-100">
-                                                    <th className="text-left px-5 py-2 font-bold">Regla</th>
-                                                    <th className="text-left px-3 py-2 font-bold">Categoría</th>
-                                                    <th className="text-left px-3 py-2 font-bold">Umbral</th>
-                                                    <th className="text-left px-3 py-2 font-bold">Aprobador</th>
-                                                    <th className="text-center px-3 py-2 font-bold">Niv.</th>
-                                                    <th className="text-center px-3 py-2 font-bold">Estado</th>
-                                                    {isAdmin && <th className="px-3 py-2" />}
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                {(matriz as MatrizRegla[]).map((m) => (
-                                                    <tr key={m.id} className={`border-b border-gray-50 ${!m.activa ? 'opacity-50' : ''}`}>
-                                                        <td className="px-5 py-3 font-medium text-gray-800">{m.nombre}</td>
-                                                        <td className="px-3 py-3 text-gray-500 text-xs">{m.categoria || <span className="text-gray-300">—</span>}</td>
-                                                        <td className="px-3 py-3 text-gray-600 text-xs">
-                                                            {m.umbral_monto > 0 ? `${m.moneda} ${Number(m.umbral_monto).toLocaleString()}` : <span className="text-gray-400">Cualquier monto</span>}
-                                                        </td>
-                                                        <td className="px-3 py-3">
-                                                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                                                                style={{ backgroundColor: `${ROL_META[m.rol_aprobador as Role]?.color ?? '#94a3b8'}18`, color: ROL_META[m.rol_aprobador as Role]?.color ?? '#64748b' }}>
-                                                                {ROL_META[m.rol_aprobador as Role]?.label ?? m.rol_aprobador}
-                                                            </span>
-                                                        </td>
-                                                        <td className="px-3 py-3 text-center text-gray-500 text-xs">{m.nivel}</td>
-                                                        <td className="px-3 py-3 text-center">
-                                                            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${m.activa ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-400'}`}>
-                                                                {m.activa ? 'Activa' : 'Inactiva'}
-                                                            </span>
-                                                        </td>
-                                                        {isAdmin && (
-                                                            <td className="px-3 py-3">
-                                                                <div className="flex items-center justify-end gap-1">
-                                                                    <button onClick={() => toggleRegla(m)} title={m.activa ? 'Desactivar' : 'Activar'}
-                                                                        className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-indigo-600 transition-colors">
-                                                                        {m.activa ? <ToggleRight className="w-4 h-4 text-emerald-500" /> : <ToggleLeft className="w-4 h-4" />}
-                                                                    </button>
-                                                                    <button onClick={() => openEditarRegla(m)} title="Editar"
-                                                                        className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-indigo-600 transition-colors">
-                                                                        <Pencil className="w-3.5 h-3.5" />
-                                                                    </button>
-                                                                    <button onClick={() => eliminarRegla(m)} title="Eliminar"
-                                                                        className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
-                                                                        <Trash2 className="w-3.5 h-3.5" />
-                                                                    </button>
+                                        <div className="divide-y divide-gray-50">
+                                            {(matriz as MatrizRegla[]).map((m) => {
+                                                const expanded = expandedRegla === m.id;
+                                                const tasaExito = (m.aprobaciones_count + m.rechazos_count) > 0
+                                                    ? Math.round(m.aprobaciones_count / (m.aprobaciones_count + m.rechazos_count) * 100) : null;
+                                                return (
+                                                    <div key={m.id} className={`${!m.activa ? 'opacity-50' : ''}`}>
+                                                        {/* Fila principal */}
+                                                        <div className="px-5 py-3 flex items-center gap-3 hover:bg-gray-50/60">
+                                                            <button onClick={() => setExpandedRegla(expanded ? null : m.id)}
+                                                                className="text-gray-400 hover:text-indigo-600 flex-shrink-0">
+                                                                {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                                            </button>
+                                                            <div className="flex-1 min-w-0">
+                                                                <div className="flex items-center gap-2 flex-wrap">
+                                                                    <span className="font-medium text-gray-800 text-sm">{m.nombre}</span>
+                                                                    {m.categoria && <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{m.categoria}</span>}
+                                                                    {m.aplica_automatico && <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-semibold">IA auto</span>}
+                                                                    {m.aprobadores_multiples >= 2 && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-semibold">Doble control</span>}
                                                                 </div>
-                                                            </td>
+                                                                <div className="flex items-center gap-3 mt-0.5 text-[11px] text-gray-400 flex-wrap">
+                                                                    <span>{m.moneda} {m.operador === 'entre'
+                                                                        ? `${Number(m.umbral_monto).toLocaleString()} – ${Number(m.umbral_max).toLocaleString()}`
+                                                                        : `${m.operador} ${Number(m.umbral_monto).toLocaleString()}`}</span>
+                                                                    <span>·</span>
+                                                                    <span style={{ color: ROL_META[m.rol_aprobador as Role]?.color ?? '#64748b' }}>
+                                                                        {ROL_META[m.rol_aprobador as Role]?.label ?? m.rol_aprobador}
+                                                                    </span>
+                                                                    <span>· SLA {m.escalamiento_horas}h</span>
+                                                                    {m.veces_activada > 0 && <span>· {m.veces_activada} activaciones</span>}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-center gap-2 flex-shrink-0">
+                                                                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${m.activa ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-400'}`}>
+                                                                    {m.activa ? 'Activa' : 'Inactiva'}
+                                                                </span>
+                                                                {isAdmin && (
+                                                                    <>
+                                                                        <button onClick={() => toggleRegla(m)} title={m.activa ? 'Desactivar' : 'Activar'}
+                                                                            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-indigo-600 transition-colors">
+                                                                            {m.activa ? <ToggleRight className="w-4 h-4 text-emerald-500" /> : <ToggleLeft className="w-4 h-4" />}
+                                                                        </button>
+                                                                        <button onClick={() => openEditarRegla(m)} title="Editar"
+                                                                            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-indigo-600 transition-colors">
+                                                                            <Pencil className="w-3.5 h-3.5" />
+                                                                        </button>
+                                                                        <button onClick={() => eliminarRegla(m)} title="Eliminar"
+                                                                            className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-500 transition-colors">
+                                                                            <Trash2 className="w-3.5 h-3.5" />
+                                                                        </button>
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Detalle expandido */}
+                                                        {expanded && (
+                                                            <div className="px-5 pb-4 pt-1 bg-gray-50/50 border-t border-gray-100">
+                                                                <div className="grid grid-cols-3 gap-4">
+                                                                    {/* Métricas */}
+                                                                    <div className="bg-white rounded-xl border border-gray-100 p-3 space-y-2">
+                                                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1">
+                                                                            <TrendingUp className="w-3 h-3" /> Métricas de uso
+                                                                        </p>
+                                                                        <div className="grid grid-cols-2 gap-2 text-center">
+                                                                            <div>
+                                                                                <p className="text-lg font-bold text-gray-800">{m.veces_activada}</p>
+                                                                                <p className="text-[10px] text-gray-400">Activaciones</p>
+                                                                            </div>
+                                                                            <div>
+                                                                                <p className="text-lg font-bold text-emerald-600">{tasaExito !== null ? `${tasaExito}%` : '—'}</p>
+                                                                                <p className="text-[10px] text-gray-400">Tasa aprobación</p>
+                                                                            </div>
+                                                                            <div>
+                                                                                <p className="text-base font-bold text-emerald-500">{m.aprobaciones_count}</p>
+                                                                                <p className="text-[10px] text-gray-400">Aprobados</p>
+                                                                            </div>
+                                                                            <div>
+                                                                                <p className="text-base font-bold text-red-400">{m.rechazos_count}</p>
+                                                                                <p className="text-[10px] text-gray-400">Rechazados</p>
+                                                                            </div>
+                                                                        </div>
+                                                                        {m.tiempo_promedio_hs != null && (
+                                                                            <div className="flex items-center gap-1 text-[11px] text-gray-500 border-t border-gray-50 pt-2">
+                                                                                <Clock className="w-3 h-3" />
+                                                                                Tiempo promedio: <strong>{m.tiempo_promedio_hs.toFixed(1)}h</strong>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+
+                                                                    {/* Configuración */}
+                                                                    <div className="bg-white rounded-xl border border-gray-100 p-3 space-y-2">
+                                                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Configuración</p>
+                                                                        <div className="space-y-1.5 text-[11px]">
+                                                                            <div className="flex justify-between"><span className="text-gray-400">Aprobadores</span><span className="font-medium">{m.aprobadores_multiples} requerido{m.aprobadores_multiples > 1 ? 's' : ''}</span></div>
+                                                                            <div className="flex justify-between"><span className="text-gray-400">Nivel escalamiento</span><span className="font-medium">{m.nivel}</span></div>
+                                                                            <div className="flex justify-between"><span className="text-gray-400">SLA</span><span className="font-medium">{m.escalamiento_horas}h</span></div>
+                                                                            <div className="flex justify-between"><span className="text-gray-400">Agente IA</span><span className={`font-medium ${m.aplica_automatico ? 'text-amber-600' : 'text-gray-400'}`}>{m.aplica_automatico ? 'Automático' : 'Manual'}</span></div>
+                                                                            {m.condicion_extra && <div><span className="text-gray-400">Condición extra: </span><span className="font-medium">{m.condicion_extra}</span></div>}
+                                                                        </div>
+                                                                    </div>
+
+                                                                    {/* Normativa */}
+                                                                    <div className="bg-white rounded-xl border border-gray-100 p-3 space-y-2">
+                                                                        <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1">
+                                                                            <BookOpen className="w-3 h-3" /> Normativa
+                                                                        </p>
+                                                                        {m.descripcion_regulatoria ? (
+                                                                            <p className="text-[11px] text-gray-600 leading-relaxed">{m.descripcion_regulatoria}</p>
+                                                                        ) : (
+                                                                            <p className="text-[11px] text-gray-300 italic">Sin referencia regulatoria</p>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
                                                         )}
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     )}
 
                                     <div className="px-5 py-3 bg-amber-50/50 border-t border-amber-100 flex items-start gap-2">
                                         <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
                                         <p className="text-[11px] text-amber-700">
-                                            <strong>Segregación de funciones activa:</strong> quien ejecuta un flujo no puede aprobarlo. El nodo de Aprobación usa el rol definido aquí para seleccionar al aprobador.
+                                            <strong>Segregación de funciones activa:</strong> quien ejecuta un flujo no puede aprobarlo.
                                         </p>
+                                    </div>
+                                </div>
+
+                                {/* ── Simulador de reglas ── */}
+                                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                                    <div className="px-5 py-3.5 border-b border-gray-100 bg-gray-50/60 flex items-center gap-2">
+                                        <FlaskConical className="w-4 h-4 text-indigo-500" />
+                                        <h3 className="font-semibold text-gray-800 text-sm">Simulador de reglas</h3>
+                                        <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full font-medium">¿Qué regla aplica?</span>
+                                    </div>
+                                    <div className="px-5 py-4">
+                                        <div className="flex items-end gap-3 flex-wrap">
+                                            <div>
+                                                <label className="block text-[11px] text-gray-500 mb-1">Monto a verificar</label>
+                                                <input type="number" value={simuladorVal} onChange={e => setSimuladorVal(e.target.value)}
+                                                    placeholder="Ej: 15000"
+                                                    className="text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 w-40" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[11px] text-gray-500 mb-1">Categoría (opcional)</label>
+                                                <input value={simuladorCat} onChange={e => setSimuladorCat(e.target.value)}
+                                                    placeholder="siniestro / pago"
+                                                    className="text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300 w-44" />
+                                            </div>
+                                            <button onClick={simularReglas}
+                                                className="px-4 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">
+                                                Simular
+                                            </button>
+                                            {simuladorResult !== null && (
+                                                <button onClick={() => setSimuladorResult(null)} className="text-xs text-gray-400 hover:text-gray-600">
+                                                    Limpiar
+                                                </button>
+                                            )}
+                                        </div>
+
+                                        {simuladorResult !== null && (
+                                            <div className="mt-4">
+                                                {simuladorResult.length === 0 ? (
+                                                    <div className="flex items-center gap-2 text-sm text-gray-500 bg-gray-50 rounded-xl px-4 py-3">
+                                                        <CheckCircle className="w-4 h-4 text-emerald-400" />
+                                                        Ninguna regla activa aplica a estos parámetros — el proceso puede continuar sin aprobación.
+                                                    </div>
+                                                ) : (
+                                                    <div className="space-y-2">
+                                                        <p className="text-xs font-semibold text-gray-600">{simuladorResult.length} regla{simuladorResult.length > 1 ? 's aplican' : ' aplica'} — se usa la de mayor nivel:</p>
+                                                        {simuladorResult.map((r, i) => (
+                                                            <div key={r.id} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border ${i === 0 ? 'border-indigo-200 bg-indigo-50' : 'border-gray-100 bg-gray-50 opacity-60'}`}>
+                                                                {i === 0 && <span className="text-[10px] font-bold bg-indigo-600 text-white px-1.5 py-0.5 rounded">APLICA</span>}
+                                                                <div className="flex-1 min-w-0">
+                                                                    <p className="text-sm font-medium text-gray-800">{r.nombre}</p>
+                                                                    <p className="text-[11px] text-gray-400">
+                                                                        Aprobador: <strong style={{ color: ROL_META[r.rol_aprobador as Role]?.color }}>{ROL_META[r.rol_aprobador as Role]?.label ?? r.rol_aprobador}</strong>
+                                                                        {r.aprobadores_multiples >= 2 && <span className="ml-2 text-blue-600 font-semibold">· Doble control</span>}
+                                                                        <span className="ml-2">· SLA {r.escalamiento_horas}h</span>
+                                                                    </p>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             </div>
