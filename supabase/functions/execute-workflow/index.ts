@@ -320,22 +320,49 @@ async function executeNode(
                 throw new Error('El nodo Verificar OFAC requiere configurar "nombre" o "documento" a verificar');
             }
 
-            const rg = createClient(RG_URL, RG_KEY);
-            let query = rg
-                .from('listas_restrictivas')
-                .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
-                .in('tipo_lista', tiposLista)
-                .eq('activo', true);
+            // Limpiar URL: eliminar trailing slash para evitar path inválido
+            const rgUrl = RG_URL.replace(/\/$/, '');
+            const rg = createClient(rgUrl, RG_KEY);
+
+            let hits: any[] = [];
+            let rgErr: any = null;
 
             if (documento) {
-                // Búsqueda exacta por documento (más precisa)
-                query = query.eq('documento', documento);
+                // Búsqueda exacta por documento
+                const res = await rg
+                    .from('listas_restrictivas')
+                    .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
+                    .in('tipo_lista', tiposLista)
+                    .eq('activo', true)
+                    .eq('documento', documento)
+                    .limit(10);
+                hits  = res.data ?? [];
+                rgErr = res.error;
             } else if (nombre) {
-                // Búsqueda full-text en nombre (índice GIN)
-                query = query.textSearch('nombre', nombre, { type: 'websearch', config: 'spanish' });
+                // Búsqueda parcial con ilike — más robusta que textSearch en todos los entornos
+                const palabras = nombre.trim().split(/\s+/);
+                const palabraMasFuerte = palabras.reduce((a, b) => b.length > a.length ? b : a, palabras[0]);
+                const res = await rg
+                    .from('listas_restrictivas')
+                    .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
+                    .in('tipo_lista', tiposLista)
+                    .eq('activo', true)
+                    .ilike('nombre', `%${palabraMasFuerte}%`)
+                    .limit(20);
+                // Post-filtrar: al menos 2 palabras del nombre deben coincidir
+                const resData = res.data ?? [];
+                const nombreLower = nombre.toLowerCase();
+                hits = resData.filter((r: any) => {
+                    const rl = (r.nombre ?? '').toLowerCase();
+                    return palabras.filter(p => p.length > 2 && rl.includes(p.toLowerCase())).length >= Math.min(2, palabras.length);
+                });
+                // Si no hay coincidencias con 2 palabras, usar resultado ilike directo
+                if (hits.length === 0 && resData.length > 0) {
+                    hits = resData.filter((r: any) => (r.nombre ?? '').toLowerCase().includes(nombreLower));
+                }
+                rgErr = res.error;
             }
 
-            const { data: hits, error: rgErr } = await query.limit(10);
             if (rgErr) throw new Error(`RiskGuard listas: ${rgErr.message}`);
 
             const enLista = (hits ?? []).length > 0;
