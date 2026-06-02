@@ -791,6 +791,23 @@ serve(async (req) => {
         // 5. Ejecutar nodos en secuencia
         const context: Record<string, any> = { ...restoredContext };
         const skippedNodes = new Set<string>();
+
+        // Al reanudar: reconstruir qué ramas fueron descartadas por nodos Decisión ya completados.
+        // Sin esto, al reanudar el flujo el set skippedNodes empieza vacío y la rama perdida ejecuta igual.
+        if (action === 'resume') {
+            for (const completedId of completedNodeIds) {
+                const completedNode = (nodes ?? []).find((n: any) => n.id === completedId);
+                if (completedNode?.category !== 'decision') continue;
+                const decisionResult = restoredContext[completedId];
+                if (!decisionResult?.branch) continue;
+                const losingBranch = decisionResult.branch === 'true' ? 'false' : 'true';
+                for (const c of (connections ?? [])) {
+                    if (c.source_node_id === completedId && c.branch === losingBranch) {
+                        skippedNodes.add(c.target_node_id);
+                    }
+                }
+            }
+        }
         let hasError    = false;
         let errorMessage = '';
         let paused      = false;
