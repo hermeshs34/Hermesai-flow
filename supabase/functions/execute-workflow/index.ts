@@ -293,12 +293,64 @@ async function executeNode(
             return { siniestros: siniestros ?? [], count: siniestros?.length ?? 0 };
         }
 
-        // ── Score AML ─────────────────────────────────────────────────────
+        // ── Verificación Listas Restrictivas (OFAC/PEP/ONU/UE) ───────────────
         case 'processor:aml': {
-            const score = Math.floor(Math.random() * 100);
+            const RG_URL = Deno.env.get('RISKGUARD_SUPABASE_URL');
+            const RG_KEY = Deno.env.get('RISKGUARD_SERVICE_ROLE_KEY');
+
+            // Parámetros del nodo: nombre y/o documento a verificar
+            const nombre    = cfg.nombre    ? resolveValue(String(cfg.nombre),    context) : null;
+            const documento = cfg.documento ? resolveValue(String(cfg.documento), context) : null;
+            const tiposLista: string[] = cfg.listas ?? ['OFAC', 'PEP', 'ONU', 'UE', 'LOCAL', 'INTERPOL'];
+
+            // Sin credenciales RiskGuard → mock (entorno dev / secrets no configurados)
+            if (!RG_URL || !RG_KEY) {
+                const score = Math.floor(Math.random() * 100);
+                return {
+                    en_lista:   false,
+                    hits:       [],
+                    aml_score:  score,
+                    nivel:      score >= 70 ? 'alto' : score >= 40 ? 'medio' : 'bajo',
+                    fuente:     'mock',
+                    timestamp:  new Date().toISOString(),
+                };
+            }
+
+            if (!nombre && !documento) {
+                throw new Error('El nodo Verificar OFAC requiere configurar "nombre" o "documento" a verificar');
+            }
+
+            const rg = createClient(RG_URL, RG_KEY);
+            let query = rg
+                .from('listas_restrictivas')
+                .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
+                .in('tipo_lista', tiposLista)
+                .eq('activo', true);
+
+            if (documento) {
+                // Búsqueda exacta por documento (más precisa)
+                query = query.eq('documento', documento);
+            } else if (nombre) {
+                // Búsqueda full-text en nombre (índice GIN)
+                query = query.textSearch('nombre', nombre, { type: 'websearch', config: 'spanish' });
+            }
+
+            const { data: hits, error: rgErr } = await query.limit(10);
+            if (rgErr) throw new Error(`RiskGuard listas: ${rgErr.message}`);
+
+            const enLista = (hits ?? []).length > 0;
+            // Score: 100 si está en lista, 0 si no
+            const amlScore = enLista ? 100 : 0;
+
             return {
-                aml_score:  score,
-                nivel:      score >= 70 ? 'alto' : score >= 40 ? 'medio' : 'bajo',
+                en_lista:   enLista,
+                hits:       hits ?? [],
+                hit_count:  (hits ?? []).length,
+                aml_score:  amlScore,
+                nivel:      enLista ? 'alto' : 'bajo',
+                fuente:     'riskguard',
+                nombre_buscado:    nombre ?? null,
+                documento_buscado: documento ?? null,
                 timestamp:  new Date().toISOString(),
             };
         }
