@@ -60,21 +60,24 @@ function resolveValue(expr: string, context: Record<string, any>): any {
             // {{summary}} → tabla HTML con todos los datos del contexto
             if (path === 'summary') return buildContextSummary(context);
 
-            // {{previous.campo}} o {{previous.array.0.campo}} → último nodo ejecutado
+            // {{previous.campo}} o {{previous.array.0.campo}}
+            // Busca hacia atrás en todos los nodos del contexto hasta encontrar el campo.
+            // Esto permite que un email post-aprobación resuelva datos del nodo AML anterior.
             if (path.startsWith('previous.')) {
-                const field   = path.slice(9); // quitar "previous."
+                const field   = path.slice(9);
                 const nodeIds = Object.keys(context).filter(k => k !== '__lastNodeId');
-                const lastId  = nodeIds[nodeIds.length - 1];
-                if (!lastId) return '';
-                const nodeData = context[lastId];
-                // Traversar path anidado: hits.0.tipo_lista → nodeData.hits[0].tipo_lista
-                let val: any = nodeData;
-                for (const segment of field.split('.')) {
-                    if (val === null || val === undefined) return '';
-                    // Soporte de índice numérico para arrays
-                    val = Array.isArray(val) ? val[Number(segment)] : val[segment];
+                for (let i = nodeIds.length - 1; i >= 0; i--) {
+                    const nodeData = context[nodeIds[i]];
+                    if (!nodeData || typeof nodeData !== 'object') continue;
+                    let val: any = nodeData;
+                    let found = true;
+                    for (const segment of field.split('.')) {
+                        if (val === null || val === undefined) { found = false; break; }
+                        val = Array.isArray(val) ? val[Number(segment)] : val[segment];
+                    }
+                    if (found && val !== null && val !== undefined && val !== '') return val;
                 }
-                return val ?? '';
+                return '';
             }
 
             const parts = path.split('.');

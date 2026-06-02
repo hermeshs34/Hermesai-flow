@@ -174,6 +174,14 @@ function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void })
                 set('body', OFAC_EMAIL_TEMPLATE);
             },
         },
+        {
+            id: 'sin_coincidencia',
+            label: '✅ Sin Coincidencia',
+            apply: () => {
+                set('subject', '✅ Verificación sin observaciones — {{previous.nombre_buscado}}');
+                set('body', NO_COINCIDENCIA_TEMPLATE);
+            },
+        },
     ];
 
     return (
@@ -509,6 +517,26 @@ function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => vo
         </div>
     );
 }
+
+const NO_COINCIDENCIA_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff">
+  <div style="background:linear-gradient(135deg,#14532d,#16a34a);padding:28px 24px;border-radius:12px 12px 0 0;text-align:center">
+    <h1 style="color:#fff;margin:0;font-size:20px;font-weight:700">✅ Verificación Sin Observaciones</h1>
+    <p style="color:#bbf7d0;margin:8px 0 0;font-size:13px">Verificación OFAC/PEP/ONU — HermesAI Flow</p>
+  </div>
+  <div style="padding:24px;background:#f8fafc">
+    <p style="color:#374151;font-size:14px">La persona verificada <strong>no aparece</strong> en las listas restrictivas consultadas.</p>
+    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:8px;border:1px solid #e5e7eb;margin:16px 0">
+      <tr style="background:#f0fdf4"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Nombre verificado</td><td style="padding:12px 16px;font-size:13px;font-weight:700;color:#15803d">{{previous.nombre_buscado}}</td></tr>
+      <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Documento</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.documento_buscado}}</td></tr>
+      <tr style="background:#f0fdf4"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Resultado</td><td style="padding:12px 16px;font-size:13px;font-weight:700;color:#15803d">Sin coincidencias</td></tr>
+      <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Fecha verificación</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.timestamp}}</td></tr>
+    </table>
+    <div style="background:#dcfce7;border-left:4px solid #16a34a;padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:16px">
+      <p style="margin:0;font-size:13px;color:#14532d">El proceso puede continuar sin restricciones.</p>
+    </div>
+    <p style="color:#9ca3af;font-size:11px;text-align:center">HermesAI Flow · Automatización Inteligente de Procesos</p>
+  </div>
+</div>`;
 
 const OFAC_EMAIL_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff">
   <div style="background:linear-gradient(135deg,#7f1d1d,#dc2626);padding:28px 24px;border-radius:12px 12px 0 0;text-align:center">
