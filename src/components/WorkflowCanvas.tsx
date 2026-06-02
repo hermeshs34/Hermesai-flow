@@ -276,6 +276,16 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         setConfigPanelOpen(true);
     }, [nodes, connections]);
 
+    const handleToggleBranch = useCallback((connId: string) => {
+        setConnections(prev => prev.map(c => {
+            if (c.id !== connId) return c;
+            // Ciclo: null → 'true' → 'false' → 'true' ...
+            const next = c.branch == null ? 'true' : c.branch === 'true' ? 'false' : 'true';
+            toast.info(next === 'true' ? '✅ Rama SI' : '❌ Rama NO');
+            return { ...c, branch: next as 'true' | 'false' };
+        }));
+    }, []);
+
     const handleSaveNodeConfig = useCallback((nodeId: string, config: any) => {
         setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config } : n));
         setConfigPanelOpen(false);
@@ -474,6 +484,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                 connection={conn}
                                 nodes={nodes}
                                 onDelete={handleDeleteConnection}
+                                onToggleBranch={handleToggleBranch}
                             />
                         ))}
 

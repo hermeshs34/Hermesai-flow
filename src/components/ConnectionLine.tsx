@@ -1,12 +1,13 @@
 import { WorkflowConnection, WorkflowNodeData } from '../types/workflow';
 
 interface ConnectionLineProps {
-    connection: WorkflowConnection;
-    nodes:      WorkflowNodeData[];
-    onDelete?:  (connectionId: string) => void;
+    connection:       WorkflowConnection;
+    nodes:            WorkflowNodeData[];
+    onDelete?:        (connectionId: string) => void;
+    onToggleBranch?:  (connectionId: string) => void;
 }
 
-export function ConnectionLine({ connection, nodes, onDelete }: ConnectionLineProps) {
+export function ConnectionLine({ connection, nodes, onDelete, onToggleBranch }: ConnectionLineProps) {
     const sourceNode = nodes.find(n => n.id === connection.sourceId);
     const targetNode = nodes.find(n => n.id === connection.targetId);
 
@@ -25,9 +26,12 @@ export function ConnectionLine({ connection, nodes, onDelete }: ConnectionLinePr
     const path      = `M ${start.x} ${start.y} C ${midX} ${start.y}, ${midX} ${end.y}, ${end.x} ${end.y}`;
     const isDecision = sourceNode.category === 'decision';
 
-    const color = isDecision
-        ? connection.branch === 'false' ? '#ef4444' : '#22c55e'
-        : '#6366f1';
+    // null branch = sin etiquetar → naranja advertencia
+    const branchColor = connection.branch === 'true'  ? '#22c55e'
+                      : connection.branch === 'false' ? '#ef4444'
+                      : '#f59e0b'; // null → advertencia
+
+    const color = isDecision ? branchColor : '#6366f1';
 
     const labelX = midX;
     const labelY = (start.y + end.y) / 2;
@@ -69,25 +73,33 @@ export function ConnectionLine({ connection, nodes, onDelete }: ConnectionLinePr
                 style={{ pointerEvents: 'none' }}
             />
 
-            {/* Etiqueta SI / NO */}
+            {/* Etiqueta SI / NO — clic para intercambiar */}
             {isDecision && (
-                <>
+                <g
+                    style={{ pointerEvents: onToggleBranch ? 'all' : 'none', cursor: onToggleBranch ? 'pointer' : 'default' }}
+                    onClick={e => { e.stopPropagation(); onToggleBranch?.(connection.id); }}
+                >
                     <rect
-                        x={labelX - 14} y={labelY - 10}
-                        width="28" height="18" rx="4"
-                        fill={connection.branch === 'false' ? '#fef2f2' : '#f0fdf4'}
-                        stroke={color} strokeWidth="1"
-                        style={{ pointerEvents: 'none' }}
+                        x={labelX - 16} y={labelY - 10}
+                        width="32" height="20" rx="5"
+                        fill={connection.branch === 'false' ? '#fef2f2' : connection.branch === 'true' ? '#f0fdf4' : '#fffbeb'}
+                        stroke={color} strokeWidth="1.5"
                     />
                     <text
                         x={labelX} y={labelY + 4}
                         textAnchor="middle" fontSize="10"
                         fontWeight="700" fill={color}
-                        style={{ pointerEvents: 'none' }}
                     >
-                        {connection.branch === 'false' ? 'NO' : 'SI'}
+                        {connection.branch === 'true' ? 'SI' : connection.branch === 'false' ? 'NO' : '?'}
                     </text>
-                </>
+                    {/* Tooltip: mostrar "clic para cambiar" */}
+                    {onToggleBranch && connection.branch == null && (
+                        <title>Sin rama asignada — haz clic para asignar SI o NO</title>
+                    )}
+                    {onToggleBranch && connection.branch != null && (
+                        <title>Rama {connection.branch === 'true' ? 'SI ✅' : 'NO ❌'} — clic para intercambiar</title>
+                    )}
+                </g>
             )}
 
             {/* Botón × en el punto medio — visible al hacer hover */}
