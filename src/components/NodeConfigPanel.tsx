@@ -156,10 +156,24 @@ const BCV_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;m
 </div>`;
 
 function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
-    const applyBcvTemplate = () => {
-        set('subject', '📊 Tasa BCV del día — {{previous.bcv_rate}} Bs/USD');
-        set('body', BCV_TEMPLATE);
-    };
+    const PLANTILLAS = [
+        {
+            id: 'bcv',
+            label: '📊 Tasa BCV',
+            apply: () => {
+                set('subject', '📊 Tasa BCV del día — {{previous.bcv_rate}} Bs/USD');
+                set('body', BCV_TEMPLATE);
+            },
+        },
+        {
+            id: 'ofac',
+            label: '⚠️ Alerta OFAC',
+            apply: () => {
+                set('subject', '⚠️ Alerta Listas Restrictivas — {{previous.nombre_buscado}}');
+                set('body', OFAC_EMAIL_TEMPLATE);
+            },
+        },
+    ];
 
     return (
         <div className="space-y-4">
@@ -172,19 +186,22 @@ function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void })
             <div>
                 <div className="flex items-center justify-between mb-1">
                     <label className="block text-sm font-semibold text-gray-700">Cuerpo del mensaje</label>
-                    <button
-                        type="button"
-                        onClick={applyBcvTemplate}
-                        className="text-xs px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg transition-colors font-medium"
-                    >
-                        📊 Usar plantilla BCV
-                    </button>
+                    <div className="flex gap-1.5">
+                        {PLANTILLAS.map(p => (
+                            <button key={p.id} type="button" onClick={p.apply}
+                                className="text-xs px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg transition-colors font-medium">
+                                {p.label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
                 <Textarea value={cfg.body ?? ''} onChange={v => set('body', v)}
-                    placeholder="Hola,&#10;&#10;Tasa BCV hoy: {{previous.bcv_rate}}&#10;&#10;O usa el botón 'Plantilla BCV' arriba para un diseño profesional."
+                    placeholder="Selecciona una plantilla arriba o escribe el mensaje."
                     rows={6} />
                 <p className="text-xs text-gray-400 mt-1">
-                    Variables disponibles: <code className="bg-gray-100 px-1 rounded">{'{{previous.bcv_rate}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{previous.timestamp}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{summary}}'}</code>
+                    Variables: <code className="bg-gray-100 px-1 rounded">{'{{previous.bcv_rate}}'}</code>{' '}
+                    <code className="bg-gray-100 px-1 rounded">{'{{previous.en_lista}}'}</code>{' '}
+                    <code className="bg-gray-100 px-1 rounded">{'{{previous.nombre_buscado}}'}</code>
                 </p>
             </div>
             <Field label="Remitente (opcional)" hint="Dejar vacío usa: HermesAI Flow <onboarding@resend.dev>">
@@ -431,19 +448,151 @@ function ReporteGerencialForm({ cfg, set }: { cfg: any; set: (k: string, v: any)
 }
 
 function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    const ROLES = [
+        { value: 'admin',            label: 'Administrador' },
+        { value: 'supervisor',       label: 'Supervisor' },
+        { value: 'autorizador',      label: 'Autorizador' },
+        { value: 'gerente_riesgos',  label: 'Gerente de Riesgos' },
+        { value: 'cumplimiento',     label: 'Cumplimiento' },
+        { value: 'actuario',         label: 'Actuario' },
+    ];
+
+    const MOTIVOS_RAPIDOS = [
+        { label: '🔍 OFAC/PEP', value: 'Persona {{previous.nombre_buscado}} encontrada en lista {{previous.hits.0.tipo_lista}}. Motivo: {{previous.hits.0.motivo}}. Revisar antes de continuar.' },
+        { label: '💰 Monto alto', value: 'Transacción de alto monto requiere autorización. Monto: {{previous.monto}}. Revisar políticas internas.' },
+        { label: '🚨 Siniestro', value: 'Siniestro {{previous.id}} requiere revisión manual. Monto reclamado: {{previous.monto_reclamado}}.' },
+        { label: '📋 General',   value: 'Este paso requiere revisión y aprobación antes de continuar el proceso.' },
+    ];
+
     return (
         <div className="space-y-4">
             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
                 <UserCheck className="w-4 h-4 inline mr-1.5" />
                 El flujo pausará aquí y esperará aprobación manual antes de continuar.
             </div>
-            <Field label="Aprobador requerido" hint="Rol o nombre del responsable de aprobar">
-                <Input value={cfg.approver ?? ''} onChange={v => set('approver', v)} placeholder="Ej: supervisor, gerente_riesgos" />
+
+            <Field label="Rol aprobador" hint="Quién debe aprobar este paso">
+                <Select value={cfg.approver ?? 'admin'} onChange={v => set('approver', v)} options={ROLES} />
             </Field>
-            <Field label="Motivo / instrucción" hint="Qué debe revisar el aprobador. Acepta variables {{previous.campo}}">
+
+            <Field label="Horas para aprobar" hint="Si nadie aprueba en este tiempo, el flujo se cancela automáticamente">
+                <div className="flex gap-2 items-center">
+                    <Input value={String(cfg.horasVence ?? '48')} onChange={v => set('horasVence', v)} type="number" placeholder="48" />
+                    <span className="text-sm text-gray-500 whitespace-nowrap">horas</span>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">
+                    {cfg.horasVence
+                        ? `Vence en ${cfg.horasVence}h — ${cfg.horasVence <= 24 ? '⚠ Urgente' : cfg.horasVence <= 72 ? 'Normal' : '📅 Plazo largo'}`
+                        : 'Por defecto: 48 horas'}
+                </p>
+            </Field>
+
+            <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Instrucción al aprobador</label>
+                <p className="text-xs text-gray-400 mb-2">Atajos rápidos — haz clic para insertar:</p>
+                <div className="grid grid-cols-2 gap-1.5 mb-2">
+                    {MOTIVOS_RAPIDOS.map(m => (
+                        <button key={m.label} type="button" onClick={() => set('reason', m.value)}
+                            className="text-left text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 text-gray-600 transition-colors">
+                            {m.label}
+                        </button>
+                    ))}
+                </div>
                 <Textarea value={cfg.reason ?? ''} onChange={v => set('reason', v)}
-                    placeholder="Revisar tasa BCV: {{previous.bcv_rate}} Bs/USD antes de continuar." rows={3} />
+                    placeholder="Selecciona un atajo arriba o escribe la instrucción al aprobador." rows={3} />
+                <p className="text-xs text-gray-400 mt-1">
+                    Variables: <code className="bg-gray-100 px-1 rounded">{'{{previous.nombre_buscado}}'}</code>{' '}
+                    <code className="bg-gray-100 px-1 rounded">{'{{previous.hits.0.tipo_lista}}'}</code>
+                </p>
+            </div>
+        </div>
+    );
+}
+
+const OFAC_EMAIL_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff">
+  <div style="background:linear-gradient(135deg,#7f1d1d,#dc2626);padding:28px 24px;border-radius:12px 12px 0 0;text-align:center">
+    <h1 style="color:#fff;margin:0;font-size:20px;font-weight:700">⚠️ Alerta Listas Restrictivas</h1>
+    <p style="color:#fca5a5;margin:8px 0 0;font-size:13px">Verificación OFAC/PEP/ONU — HermesAI Flow</p>
+  </div>
+  <div style="padding:24px;background:#f8fafc">
+    <p style="color:#374151;font-size:14px">Se detectó una coincidencia en las listas restrictivas:</p>
+    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:8px;border:1px solid #e5e7eb;margin:16px 0">
+      <tr style="background:#fef2f2"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Nombre buscado</td><td style="padding:12px 16px;font-size:13px;font-weight:700;color:#dc2626">{{previous.nombre_buscado}}</td></tr>
+      <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Lista</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.hits.0.tipo_lista}}</td></tr>
+      <tr style="background:#fef2f2"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Nombre en lista</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.hits.0.nombre}}</td></tr>
+      <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">País</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.hits.0.pais}}</td></tr>
+      <tr style="background:#fef2f2"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Motivo</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.hits.0.motivo}}</td></tr>
+    </table>
+    <div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:16px">
+      <p style="margin:0;font-size:13px;color:#92400e"><strong>Acción requerida:</strong> Este proceso requiere revisión y aprobación antes de continuar.</p>
+    </div>
+    <p style="color:#9ca3af;font-size:11px;text-align:center">HermesAI Flow · Automatización Inteligente de Procesos</p>
+  </div>
+</div>`;
+
+function AmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    const LISTAS_DISPONIBLES = ['OFAC', 'PEP', 'ONU', 'UE', 'LOCAL', 'INTERPOL'];
+    const listasSeleccionadas: string[] = cfg.listas ?? ['OFAC', 'PEP', 'ONU', 'UE'];
+
+    const toggleLista = (lista: string) => {
+        const nuevas = listasSeleccionadas.includes(lista)
+            ? listasSeleccionadas.filter(l => l !== lista)
+            : [...listasSeleccionadas, lista];
+        set('listas', nuevas.length > 0 ? nuevas : ['OFAC']);
+    };
+
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-sm text-red-800">
+                <Shield className="w-4 h-4 inline mr-1.5" />
+                Consulta las listas OFAC, PEP, ONU y UE en RiskGuard. Devuelve si la persona está o no en lista.
+            </div>
+
+            <Field label="Nombre de la persona a verificar" hint="Nombre completo tal como aparece en los documentos">
+                <Input value={cfg.nombre ?? ''} onChange={v => set('nombre', v)}
+                    placeholder="Ej: Juan Carlos Pérez García" />
             </Field>
+
+            <Field label="Cédula / RIF / Pasaporte (opcional)" hint="Búsqueda exacta por documento — más precisa que por nombre">
+                <Input value={cfg.documento ?? ''} onChange={v => set('documento', v)}
+                    placeholder="Ej: V-12345678 ó J-123456789" />
+            </Field>
+
+            <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">Listas a consultar</label>
+                <p className="text-xs text-gray-400 mb-2">Selecciona las listas que deseas verificar:</p>
+                <div className="flex flex-wrap gap-2">
+                    {LISTAS_DISPONIBLES.map(lista => (
+                        <button key={lista} type="button" onClick={() => toggleLista(lista)}
+                            className={`text-xs px-3 py-1.5 rounded-full border font-semibold transition-colors ${
+                                listasSeleccionadas.includes(lista)
+                                    ? 'bg-red-600 text-white border-red-600'
+                                    : 'bg-white text-gray-500 border-gray-200 hover:border-red-300'
+                            }`}>
+                            {lista}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500 space-y-1">
+                <p className="font-semibold text-gray-600">El nodo devuelve estos datos para usar en Decisión y Email:</p>
+                <div className="grid grid-cols-2 gap-1 mt-1">
+                    {[
+                        ['en_lista', 'true / false'],
+                        ['hit_count', 'número de coincidencias'],
+                        ['nombre_buscado', 'nombre consultado'],
+                        ['hits.0.tipo_lista', 'OFAC / PEP / ONU...'],
+                        ['hits.0.nombre', 'nombre en la lista'],
+                        ['hits.0.motivo', 'razón de inclusión'],
+                    ].map(([k, v]) => (
+                        <div key={k}>
+                            <code className="bg-gray-200 px-1 rounded text-indigo-700">{`{{previous.${k}}}`}</code>
+                            <span className="text-gray-400 ml-1">{v}</span>
+                        </div>
+                    ))}
+                </div>
+            </div>
         </div>
     );
 }
@@ -493,6 +642,7 @@ const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, titl
     bcv:          (c, s) => <BcvForm cfg={c} set={s} />,
     delay:        (c, s) => <DelayForm cfg={c} set={s} />,
     aprobacion:   (c, s) => <AprobacionForm cfg={c} set={s} />,
+    aml:          (c, s) => <AmlForm cfg={c} set={s} />,
     // category 'indicadores' cubre tanto Leer Indicadores como Alerta KPI Crítico
     indicadores:  (c, s, title) => title.includes('lerta') || title.includes('Alerta')
         ? <IndicadorCriticoForm cfg={c} set={s} />
