@@ -95,7 +95,17 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [form, setForm] = useState<{ name: string; email: string; role: Role }>({ name: '', email: '', role: 'operador' });
     const [tempPass, setTempPass] = useState<string | null>(null);
 
-    const isAdmin = authService.hasPermission(currentUser, 'manage_users');
+    const isAdmin    = authService.hasPermission(currentUser, 'manage_users');
+    const canApprove = authService.hasPermission(currentUser, 'approve_tasks');
+
+    // Roles regulatorios (AML/CFT) — el admin NO puede aprobar sus tareas (segregación de funciones)
+    const ROLES_REGULATORIOS = ['cumplimiento'];
+    const canResolve = (tarea: TareaAprobacion) => {
+        if (ROLES_REGULATORIOS.includes(tarea.rol_aprobador)) {
+            return currentUser.role === tarea.rol_aprobador;
+        }
+        return isAdmin || currentUser.role === tarea.rol_aprobador;
+    };
 
     // ── Handlers Matriz ──────────────────────────────────────────────────────
     const openNuevaRegla = () => {
@@ -367,8 +377,8 @@ export function Governance({ currentUser }: GovernanceProps) {
         } finally { setSavingId(null); }
     };
 
-    // Acceso denegado para no-admin
-    if (!isAdmin) {
+    // Sin ningún permiso relevante — bloquear completamente
+    if (!isAdmin && !canApprove) {
         return (
             <div className="h-full flex items-center justify-center bg-gray-50">
                 <div className="text-center max-w-sm">
@@ -377,7 +387,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                     </div>
                     <h2 className="text-lg font-bold text-gray-800">Acceso restringido</h2>
                     <p className="text-sm text-gray-500 mt-1">
-                        El módulo de Gobierno solo está disponible para el rol <strong>Administrador</strong>.
+                        El módulo de Gobierno no está disponible para tu rol.
                         Tu rol actual es <strong>{ROL_META[currentUser.role]?.label ?? currentUser.role}</strong>.
                     </p>
                 </div>
@@ -390,12 +400,18 @@ export function Governance({ currentUser }: GovernanceProps) {
         u.email.toLowerCase().includes(search.toLowerCase())
     );
 
-    const TABS: { id: Tab; label: string; icon: typeof Users; badge?: number }[] = [
-        { id: 'usuarios',      label: 'Usuarios y Roles',      icon: Users },
-        { id: 'aprobaciones',  label: 'Bandeja de Aprobación', icon: ClipboardCheck, badge: aprobaciones.length },
-        { id: 'matriz',        label: 'Matriz de Aprobación',  icon: ShieldCheck },
-        { id: 'auditoria',     label: 'Auditoría',             icon: ScrollText },
+    const ALL_TABS: { id: Tab; label: string; icon: typeof Users; badge?: number; adminOnly?: boolean }[] = [
+        { id: 'usuarios',      label: 'Usuarios y Roles',      icon: Users,          adminOnly: true },
+        { id: 'aprobaciones',  label: 'Bandeja de Aprobación', icon: ClipboardCheck, badge: aprobaciones.filter(t => isAdmin || currentUser.role === t.rol_aprobador).length },
+        { id: 'matriz',        label: 'Matriz de Aprobación',  icon: ShieldCheck,    adminOnly: true },
+        { id: 'auditoria',     label: 'Auditoría',             icon: ScrollText,     adminOnly: true },
     ];
+    const TABS = ALL_TABS.filter(t => !t.adminOnly || isAdmin);
+    // Redirigir a aprobaciones si el tab activo no está disponible para este rol
+    const efectiveTab = TABS.find(t => t.id === tab) ? tab : 'aprobaciones';
+    const misBandeja = isAdmin
+        ? aprobaciones
+        : aprobaciones.filter(t => currentUser.role === t.rol_aprobador);
 
     return (
         <div className="h-full overflow-y-auto bg-[#f0f2f5]">
@@ -417,7 +433,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                             key={id}
                             onClick={() => setTab(id)}
                             className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
-                                tab === id ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 hover:text-gray-700'
+                                efectiveTab === id ? 'bg-indigo-600 text-white shadow' : 'text-gray-500 hover:text-gray-700'
                             }`}
                         >
                             <Icon className="w-4 h-4" /> {label}
@@ -435,7 +451,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                 ) : (
                     <>
                         {/* ── USUARIOS ──────────────────────────────────── */}
-                        {tab === 'usuarios' && (
+                        {efectiveTab === 'usuarios' && (
                             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
                                 <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
                                     <h2 className="font-semibold text-gray-800 text-sm">{users.length} usuarios</h2>
@@ -517,17 +533,17 @@ export function Governance({ currentUser }: GovernanceProps) {
                         )}
 
                         {/* ── BANDEJA DE APROBACIONES ───────────────────── */}
-                        {tab === 'aprobaciones' && (
+                        {efectiveTab === 'aprobaciones' && (
                             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
                                 <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
                                     <div>
                                         <h2 className="font-semibold text-gray-800 text-sm">Bandeja de Aprobaciones</h2>
                                         <p className="text-xs text-gray-400 mt-0.5">Flujos pausados esperando tu autorización</p>
                                     </div>
-                                    <span className="text-xs text-gray-500">{aprobaciones.length} pendiente{aprobaciones.length !== 1 ? 's' : ''}</span>
+                                    <span className="text-xs text-gray-500">{misBandeja.length} pendiente{misBandeja.length !== 1 ? 's' : ''}</span>
                                 </div>
 
-                                {aprobaciones.length === 0 ? (
+                                {misBandeja.length === 0 ? (
                                     <div className="flex flex-col items-center justify-center py-16 text-gray-400">
                                         <CheckCircle className="w-10 h-10 mb-3 text-emerald-300" />
                                         <p className="text-sm font-medium">Sin aprobaciones pendientes</p>
@@ -535,7 +551,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                                     </div>
                                 ) : (
                                     <div className="divide-y divide-gray-100">
-                                        {aprobaciones.map(tarea => (
+                                        {misBandeja.map(tarea => (
                                             <div key={tarea.id} className="px-5 py-4 hover:bg-gray-50/50 transition-colors">
                                                 <div className="flex items-start justify-between gap-4">
                                                     <div className="flex-1 min-w-0">
@@ -567,22 +583,29 @@ export function Governance({ currentUser }: GovernanceProps) {
                                                         />
                                                     </div>
                                                     <div className="flex flex-col gap-2 shrink-0">
-                                                        <button
-                                                            onClick={() => resolveApproval(tarea, 'aprobado')}
-                                                            disabled={resolvingId === tarea.id}
-                                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50"
-                                                        >
-                                                            {resolvingId === tarea.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
-                                                            Aprobar
-                                                        </button>
-                                                        <button
-                                                            onClick={() => resolveApproval(tarea, 'rechazado')}
-                                                            disabled={resolvingId === tarea.id}
-                                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 border border-red-200"
-                                                        >
-                                                            <XCircle className="w-3 h-3" />
-                                                            Rechazar
-                                                        </button>
+                                                        {canResolve(tarea) ? (<>
+                                                            <button
+                                                                onClick={() => resolveApproval(tarea, 'aprobado')}
+                                                                disabled={resolvingId === tarea.id}
+                                                                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition-colors disabled:opacity-50"
+                                                            >
+                                                                {resolvingId === tarea.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                                                                Aprobar
+                                                            </button>
+                                                            <button
+                                                                onClick={() => resolveApproval(tarea, 'rechazado')}
+                                                                disabled={resolvingId === tarea.id}
+                                                                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-semibold rounded-lg transition-colors disabled:opacity-50 border border-red-200"
+                                                            >
+                                                                <XCircle className="w-3 h-3" />
+                                                                Rechazar
+                                                            </button>
+                                                        </>) : (
+                                                            <div className="flex items-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 font-medium">
+                                                                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                                                                Solo rol {tarea.rol_aprobador}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 </div>
                                             </div>
@@ -593,7 +616,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                         )}
 
                         {/* ── MATRIZ F3.3 ───────────────────────────────── */}
-                        {tab === 'matriz' && (
+                        {efectiveTab === 'matriz' && (
                             <div className="space-y-4">
 
                                 {/* ── Cabecera ── */}
@@ -966,7 +989,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                         )}
 
                         {/* ── AUDITORÍA ─────────────────────────────────── */}
-                        {tab === 'auditoria' && (
+                        {efectiveTab === 'auditoria' && (
                             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
                                 <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
                                     <h2 className="font-semibold text-gray-800 text-sm">Registro de auditoría — inmutable</h2>

@@ -80,8 +80,9 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePas
     const initials = currentUser?.name
         ?.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase() ?? 'HS';
 
-    // Gobierno solo visible para quien tiene permiso manage_users (admin)
-    const canGovern = authService.hasPermission(currentUser ?? null, 'manage_users');
+    // Gobierno visible para admin (manage_users) Y para roles que aprueban tareas (approve_tasks)
+    const canGovern = authService.hasPermission(currentUser ?? null, 'manage_users')
+        || authService.hasPermission(currentUser ?? null, 'approve_tasks');
     const navItems = canGovern
         ? [...NAV, { id: 'governance' as ViewType, label: 'Gobierno', icon: ShieldCheck, badge: null }]
         : NAV;
