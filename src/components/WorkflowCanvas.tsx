@@ -263,10 +263,18 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         setConnectingFrom(null);
     }, [connectingFrom, nodes]);
 
+    const [prevNodeToConfig, setPrevNodeToConfig] = useState<WorkflowNodeData | null>(null);
+
     const handleConfigureNode = useCallback((nodeId: string) => {
         const node = nodes.find(n => n.id === nodeId);
-        if (node) { setNodeToConfig(node); setConfigPanelOpen(true); }
-    }, [nodes]);
+        if (!node) return;
+        // Detectar nodo anterior — buscar conexión cuyo target es este nodo
+        const incomingConn = connections.find(c => c.targetId === nodeId);
+        const prevNode = incomingConn ? nodes.find(n => n.id === incomingConn.sourceId) ?? null : null;
+        setPrevNodeToConfig(prevNode);
+        setNodeToConfig(node);
+        setConfigPanelOpen(true);
+    }, [nodes, connections]);
 
     const handleSaveNodeConfig = useCallback((nodeId: string, config: any) => {
         setNodes(prev => prev.map(n => n.id === nodeId ? { ...n, config } : n));
@@ -508,8 +516,9 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             {/* Panel de configuración */}
             <NodeConfigPanel
                 node={nodeToConfig}
+                prevNode={prevNodeToConfig}
                 isOpen={configPanelOpen}
-                onClose={() => { setConfigPanelOpen(false); setNodeToConfig(null); }}
+                onClose={() => { setConfigPanelOpen(false); setNodeToConfig(null); setPrevNodeToConfig(null); }}
                 onSave={handleSaveNodeConfig}
             />
         </div>

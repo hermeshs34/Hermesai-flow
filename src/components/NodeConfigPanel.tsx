@@ -8,10 +8,11 @@ import {
 import type { WorkflowNodeData } from '../types/workflow';
 
 interface Props {
-    node:    WorkflowNodeData | null;
-    isOpen:  boolean;
-    onClose: () => void;
-    onSave:  (nodeId: string, config: Record<string, any>) => void;
+    node:     WorkflowNodeData | null;
+    prevNode: WorkflowNodeData | null;
+    isOpen:   boolean;
+    onClose:  () => void;
+    onSave:   (nodeId: string, config: Record<string, any>) => void;
 }
 
 // ── Campo genérico ────────────────────────────────────────────────────────────
@@ -652,11 +653,51 @@ const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, titl
     reporte:      (c, s) => <ReporteGerencialForm cfg={c} set={s} />,
 };
 
+// ── Auto-completado por contexto del nodo anterior ───────────────────────────
+function getAutoDefaults(node: WorkflowNodeData, prevNode: WorkflowNodeData | null): Record<string, any> {
+    if (!prevNode) return {};
+    const defaults: Record<string, any> = {};
+
+    // Aprobación después de OFAC → pre-llenar rol y motivo
+    if (node.category === 'aprobacion' && prevNode.category === 'aml') {
+        if (!node.config?.approver) defaults.approver = 'admin';
+        if (!node.config?.horasVence) defaults.horasVence = '48';
+        if (!node.config?.reason)
+            defaults.reason = 'Persona {{previous.nombre_buscado}} encontrada en lista {{previous.hits.0.tipo_lista}}. Motivo: {{previous.hits.0.motivo}}. Revisar antes de continuar.';
+    }
+
+    // Decisión después de OFAC → pre-llenar condición
+    if (node.category === 'decision' && prevNode.category === 'aml') {
+        if (!node.config?.left)     defaults.left     = '{{previous.en_lista}}';
+        if (!node.config?.operator) defaults.operator = '==';
+        if (!node.config?.right)    defaults.right    = 'true';
+    }
+
+    // Email después de OFAC → pre-llenar asunto y plantilla
+    if (node.category === 'email' && prevNode.category === 'aml') {
+        if (!node.config?.subject)
+            defaults.subject = '⚠️ Alerta Listas Restrictivas — {{previous.nombre_buscado}}';
+    }
+
+    // Email después de aprobación → pre-llenar asunto
+    if (node.category === 'email' && prevNode.category === 'aprobacion') {
+        if (!node.config?.subject)
+            defaults.subject = '✅ Proceso aprobado — {{previous.nombre_buscado}}';
+    }
+
+    return defaults;
+}
+
 // ── Componente principal ──────────────────────────────────────────────────────
-const NodeConfigPanel: React.FC<Props> = ({ node, isOpen, onClose, onSave }) => {
+const NodeConfigPanel: React.FC<Props> = ({ node, prevNode, isOpen, onClose, onSave }) => {
     const [cfg, setCfg] = useState<Record<string, any>>({});
 
-    useEffect(() => { if (node) setCfg(node.config ?? {}); }, [node]);
+    useEffect(() => {
+        if (node) {
+            const autoDefaults = getAutoDefaults(node, prevNode);
+            setCfg({ ...autoDefaults, ...(node.config ?? {}) });
+        }
+    }, [node, prevNode]);
 
     if (!isOpen || !node) return null;
 
@@ -697,7 +738,17 @@ const NodeConfigPanel: React.FC<Props> = ({ node, isOpen, onClose, onSave }) => 
                 </div>
 
                 {/* Body */}
-                <div className="flex-1 overflow-y-auto px-5 py-4">
+                <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                    {/* Banner de auto-completado */}
+                    {prevNode && Object.keys(getAutoDefaults(node, prevNode)).length > 0 && (
+                        <div className="flex items-start gap-2 p-3 bg-indigo-50 border border-indigo-100 rounded-lg text-xs text-indigo-700">
+                            <Zap className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-indigo-500" />
+                            <span>
+                                <strong>Auto-completado</strong> — detecté que el nodo anterior es <strong>{prevNode.title}</strong>.
+                                Los campos han sido pre-llenados con las variables correctas. Puedes editarlos si necesitas cambiarlos.
+                            </span>
+                        </div>
+                    )}
                     {formNode}
                 </div>
 
