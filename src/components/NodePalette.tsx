@@ -4,7 +4,7 @@ import {
     Shield, Search, TrendingUp, Lock, Bell, Package,
     ShoppingCart, UserCheck, Database, ArrowUpRight,
     AlertTriangle, Timer, ChevronDown, ChevronRight,
-    BarChart2, Activity, PieChart, BookOpen, Gauge,
+    BarChart2, Activity, PieChart, BookOpen, Gauge, BrainCircuit,
 } from 'lucide-react';
 
 export interface NodeType {
@@ -34,6 +34,7 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
             { id: 'webhook-trigger', type: 'trigger',   category: 'webhook',  title: 'Webhook Entrante',   description: 'Recibir llamadas HTTP de sistemas externos',icon: Zap,          color: '#f59e0b' },
             { id: 'email-output',    type: 'output',    category: 'email',    title: 'Enviar Email',       description: 'Enviar correo vía Resend API',             icon: Mail,         color: '#ec4899' },
             { id: 'decision',        type: 'processor', category: 'decision', title: 'Decisión (Si/No)',   description: 'Bifurcar flujo según condición evaluada',  icon: GitBranch,    color: '#8b5cf6' },
+            { id: 'agente-ia',       type: 'processor', category: 'agente',   title: 'Agente IA',          description: 'Claude analiza contexto y decide o genera texto', icon: BrainCircuit, color: '#7c3aed' },
             { id: 'delay',           type: 'processor', category: 'delay',    title: 'Espera',             description: 'Pausar N segundos antes del siguiente nodo',icon: Timer,        color: '#64748b' },
             { id: 'log-message',     type: 'output',    category: 'log',      title: 'Registrar Log',      description: 'Guardar mensaje en historial de ejecución',icon: FileText,     color: '#94a3b8' },
         ],

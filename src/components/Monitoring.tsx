@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
     Activity, AlertCircle, CheckCircle, Clock,
-    RefreshCw, Filter, Loader2, ChevronDown, ChevronRight,
+    RefreshCw, Filter, Loader2, ChevronDown, ChevronRight, RotateCcw,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
+import { toast } from 'sonner';
 
 interface RunRow {
     id:           string;
@@ -127,6 +128,7 @@ export function Monitoring() {
     const [filterStatus, setFilterStatus] = useState('all');
     const [loading,      setLoading]      = useState(true);
     const [logsLoading,  setLogsLoading]  = useState(false);
+    const [retrying,     setRetrying]     = useState(false);
 
     const loadRuns = useCallback(async () => {
         setLoading(true);
@@ -152,6 +154,22 @@ export function Monitoring() {
             setLoading(false);
         }
     }, []);
+
+    const handleRetry = useCallback(async (run: RunRow) => {
+        setRetrying(true);
+        try {
+            const { error } = await supabase.functions.invoke('execute-workflow', {
+                body: { workflowId: run.workflow_id, triggeredBy: 'retry' },
+            });
+            if (error) throw error;
+            toast.success('Flujo reiniciado correctamente');
+            setTimeout(() => loadRuns(), 1500);
+        } catch (e: any) {
+            toast.error(`Error al reintentar: ${e.message}`);
+        } finally {
+            setRetrying(false);
+        }
+    }, [loadRuns]);
 
     useEffect(() => { loadRuns(); }, [loadRuns]);
 
@@ -331,9 +349,23 @@ export function Monitoring() {
                                         {' · Disparado por: '}{selectedRun.triggered_by}
                                     </p>
                                 </div>
-                                <span className={`text-xs font-bold px-3 py-1 rounded-full ${STATUS_BADGE[selectedRun.status]}`}>
-                                    {selectedRun.status.toUpperCase()}
-                                </span>
+                                <div className="flex items-center gap-2">
+                                    {selectedRun.status === 'error' && (
+                                        <button
+                                            onClick={() => handleRetry(selectedRun)}
+                                            disabled={retrying}
+                                            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-lg transition-colors disabled:opacity-50"
+                                        >
+                                            {retrying
+                                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                : <RotateCcw className="w-3.5 h-3.5" />}
+                                            Reintentar
+                                        </button>
+                                    )}
+                                    <span className={`text-xs font-bold px-3 py-1 rounded-full ${STATUS_BADGE[selectedRun.status]}`}>
+                                        {selectedRun.status.toUpperCase()}
+                                    </span>
+                                </div>
                             </div>
                         </div>
 

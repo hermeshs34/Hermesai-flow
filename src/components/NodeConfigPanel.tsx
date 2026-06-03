@@ -3,7 +3,7 @@ import {
     X, Mail, Clock, GitBranch, FileText, Timer,
     Shield, TrendingUp, Bell, Package, UserCheck,
     Database, Play, Zap, AlertTriangle, CheckCircle,
-    Info,
+    Info, BrainCircuit,
 } from 'lucide-react';
 import type { WorkflowNodeData } from '../types/workflow';
 
@@ -644,6 +644,103 @@ function GenericForm({ cfg, set, nodeTitle }: { cfg: any; set: (k: string, v: an
     );
 }
 
+function AgenteIAForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    const modo = cfg.modo ?? 'analisis';
+
+    const EJEMPLOS_PROMPT: { label: string; value: string }[] = [
+        { label: '🔍 Analizar siniestro',    value: 'Analiza este siniestro y determina si es de alto riesgo. Datos: ramo={{previous.ramo}}, monto={{previous.monto_reclamado}}, estado={{previous.estado}}. Responde en JSON con campos: riesgo (alto/medio/bajo), justificacion, accion_recomendada.' },
+        { label: '⚖️ Evaluar riesgo OFAC',   value: 'Evalúa el resultado de la verificación OFAC. Persona: {{previous.nombre_buscado}}, en_lista={{previous.en_lista}}, hits={{previous.hit_count}}. Responde en JSON con: decision (aprobar/rechazar/revisar), justificacion.' },
+        { label: '📊 Resumen ejecutivo',     value: 'Genera un resumen ejecutivo de los indicadores de gestión. Datos: {{previous.resumen}}. El resumen debe ser en español, máximo 3 párrafos, con los puntos críticos y recomendaciones.' },
+        { label: '💡 Sugerir controles',     value: 'Basado en el riesgo detectado (nivel={{previous.nivel}}, categoria={{previous.categoria}}), sugiere 3 controles preventivos concretos. Responde en JSON con array "controles": [{nombre, descripcion, responsable}].' },
+    ];
+
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-violet-50 border border-violet-200 rounded-lg text-sm text-violet-800 flex items-start gap-2">
+                <BrainCircuit className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <span>Claude analiza los datos del flujo y genera un resultado estructurado que los nodos siguientes pueden usar.</span>
+            </div>
+
+            <Field label="Modo" hint="Análisis: genera texto/JSON libre. Decisión: devuelve SI/NO para bifurcar el flujo.">
+                <Select
+                    value={modo}
+                    onChange={v => set('modo', v)}
+                    options={[
+                        { value: 'analisis',  label: '📊 Análisis — genera texto o JSON' },
+                        { value: 'decision',  label: '⚖️ Decisión — devuelve SI / NO' },
+                    ]}
+                />
+            </Field>
+
+            {modo === 'decision' && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700">
+                    En modo Decisión el nodo actúa como un nodo SI/NO: conecta dos salidas (rama SI y rama NO) y Claude decide cuál tomar basándose en el prompt.
+                </div>
+            )}
+
+            <Field label="Modelo" hint="Sonnet para análisis rápidos, Opus para razonamiento complejo">
+                <Select
+                    value={cfg.modelo ?? 'claude-sonnet-4-6'}
+                    onChange={v => set('modelo', v)}
+                    options={[
+                        { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 — Rápido y preciso' },
+                        { value: 'claude-opus-4-8',   label: 'Claude Opus 4.8 — Máximo razonamiento' },
+                    ]}
+                />
+            </Field>
+
+            <Field label="Prompt" hint="Instrucción para Claude. Usa {{previous.campo}} para datos del flujo.">
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                    {EJEMPLOS_PROMPT.map(e => (
+                        <button
+                            key={e.label}
+                            type="button"
+                            onClick={() => set('prompt', e.value)}
+                            className="text-[10px] px-2 py-0.5 bg-violet-100 hover:bg-violet-200 text-violet-700 rounded-full transition-colors"
+                        >
+                            {e.label}
+                        </button>
+                    ))}
+                </div>
+                <Textarea
+                    value={cfg.prompt ?? ''}
+                    onChange={v => set('prompt', v)}
+                    placeholder={'Analiza los datos del paso anterior y responde en JSON con los campos relevantes.\n\nUsa {{previous.campo}} para referenciar datos del flujo.'}
+                    rows={6}
+                />
+            </Field>
+
+            <Field label="Campo resultado" hint="Nombre del campo donde guardar la respuesta (para usar como {{previous.campo}} en nodos siguientes)">
+                <Input
+                    value={cfg.campo_resultado ?? 'analisis_ia'}
+                    onChange={v => set('campo_resultado', v)}
+                    placeholder="analisis_ia"
+                />
+            </Field>
+
+            {modo === 'decision' && (
+                <Field label="Condición SI" hint="Texto que Claude debe incluir en su respuesta para tomar la rama SI (no distingue mayúsculas)">
+                    <Input
+                        value={cfg.condicion_si ?? 'aprobar'}
+                        onChange={v => set('condicion_si', v)}
+                        placeholder='aprobar'
+                    />
+                    <p className="text-[11px] text-gray-400 mt-1">Si la respuesta de Claude contiene este texto → rama SI. De lo contrario → rama NO.</p>
+                </Field>
+            )}
+
+            <Field label="Contexto del sistema" hint="Instrucciones de rol para Claude (opcional)">
+                <Textarea
+                    value={cfg.system_prompt ?? ''}
+                    onChange={v => set('system_prompt', v)}
+                    placeholder="Eres un analista experto en seguros y reaseguros venezolanos, con conocimiento de normativa SUDEASEG y SUDEBAN."
+                    rows={3}
+                />
+            </Field>
+        </div>
+    );
+}
+
 // ── Mapa de ícono por categoría ───────────────────────────────────────────────
 const ICON_MAP: Record<string, React.ComponentType<any>> = {
     cron:         Clock,
@@ -660,6 +757,7 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
     inventario:   Package,
     aprobacion:   UserCheck,
     erp:          Database,
+    agente:       BrainCircuit,
 };
 
 const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, title: string) => React.ReactNode> = {
@@ -672,6 +770,7 @@ const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, titl
     delay:        (c, s) => <DelayForm cfg={c} set={s} />,
     aprobacion:   (c, s) => <AprobacionForm cfg={c} set={s} />,
     aml:          (c, s) => <AmlForm cfg={c} set={s} />,
+    agente:       (c, s) => <AgenteIAForm cfg={c} set={s} />,
     // category 'indicadores' cubre tanto Leer Indicadores como Alerta KPI Crítico
     indicadores:  (c, s, title) => title.includes('lerta') || title.includes('Alerta')
         ? <IndicadorCriticoForm cfg={c} set={s} />
