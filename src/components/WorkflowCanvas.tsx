@@ -1,9 +1,10 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { toast } from 'sonner';
 import { WorkflowNode }    from './WorkflowNode';
-import { NodePalette }     from './NodePalette';
-import { ConnectionLine }  from './ConnectionLine';
-import NodeConfigPanel     from './NodeConfigPanel';
+import { NodePalette }       from './NodePalette';
+import { ConnectionLine }    from './ConnectionLine';
+import NodeConfigPanel       from './NodeConfigPanel';
+import { DesignAssistant }   from './DesignAssistant';
 import { WorkflowService } from '../services/workflow.service';
 import { GovernanceService } from '../services/governance.service';
 import { supabase }        from '../core/supabase';
@@ -13,7 +14,7 @@ import type { NodeType }   from './NodePalette';
 import type { User }       from '../core/user.types';
 import {
     Play, Trash2, Plus, ChevronDown,
-    CheckCircle, Loader2, PanelLeftOpen, AlertTriangle, X,
+    CheckCircle, Loader2, PanelLeftOpen, AlertTriangle, X, BrainCircuit,
 } from 'lucide-react';
 
 // Campos requeridos por categoría de nodo — vacíos = plantilla incompleta
@@ -66,6 +67,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     // ── Estado de operaciones ──────────────────────────────────────────────
     const [saving,          setSaving]         = useState(false);
     const [executing,       setExecuting]      = useState(false);
+    const [showAssistant,   setShowAssistant]  = useState(false);
     const [bannerDismissed, setBannerDismissed]= useState(false);
     const canvasRef               = useRef<HTMLDivElement>(null);
     const saveTimer               = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -418,6 +420,19 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                         </button>
 
                         <button
+                            onClick={() => setShowAssistant(v => !v)}
+                            className={`flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg transition-colors ${
+                                showAssistant
+                                    ? 'bg-violet-600 text-white'
+                                    : 'bg-violet-50 text-violet-700 hover:bg-violet-100'
+                            }`}
+                            title="Asistente de Diseño IA"
+                        >
+                            <BrainCircuit className="w-4 h-4" />
+                            Asistente
+                        </button>
+
+                        <button
                             onClick={handleExecute}
                             disabled={!activeWorkflowId || executing}
                             className="flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-40 transition-colors font-semibold"
@@ -532,6 +547,15 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                 onClose={() => { setConfigPanelOpen(false); setNodeToConfig(null); setPrevNodeToConfig(null); }}
                 onSave={handleSaveNodeConfig}
             />
+
+            {/* Asistente de Diseño IA (F3.2) */}
+            {showAssistant && (
+                <DesignAssistant
+                    nodes={nodes}
+                    connections={connections}
+                    onClose={() => setShowAssistant(false)}
+                />
+            )}
         </div>
     );
 }
