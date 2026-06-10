@@ -24,9 +24,13 @@ const SUGERENCIAS = [
 
 function buildCanvasContext(nodes: WorkflowNodeData[], connections: WorkflowConnection[]): string {
     if (nodes.length === 0) return 'El canvas está vacío — no hay nodos aún.';
-    const nodeDesc = nodes.map(n =>
-        `• [${n.id.slice(0, 6)}] ${n.title} (categoría: ${n.category})`
-    ).join('\n');
+    const nodeDesc = nodes.map(n => {
+        const configKeys = Object.entries(n.config ?? {})
+            .filter(([, v]) => v !== '' && v !== null && v !== undefined)
+            .map(([k, v]) => `    ${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`)
+            .join('\n');
+        return `• [${n.id.slice(0, 6)}] ${n.title} (categoría: ${n.category})${configKeys ? '\n' + configKeys : ''}`;
+    }).join('\n');
     const connDesc = connections.length > 0
         ? connections.map(c => {
             const src = nodes.find(n => n.id === c.sourceId)?.title ?? c.sourceId.slice(0, 6);
@@ -43,7 +47,8 @@ const SYSTEM = `Eres el Asistente de Diseño de HermesAI Flow, un sistema de flu
 Tu función es ayudar al usuario a diseñar flujos de trabajo claros y correctos. Conoces todos los tipos de nodos disponibles:
 - **Triggers**: Inicio Manual, Programado (Cron), Webhook Entrante, Alerta Siniestro, Alerta KPI Crítico, Alerta por Umbral
 - **Procesadores**: Decisión SI/NO, Agente IA (análisis o decisión), Aprobación Humana, Verificar OFAC/ONU, Score AML, Tasa BCV, Calcular Reserva IBNR, Escalar Reaseguro, Semáforo de Gestión, Datos EE.FF., Espera, Control de Calidad
-- **Salidas**: Enviar Email, Registrar Log, Reporte SUDEASEG, Reporte SUDEBAN, Reporte Gerencial, Congelar Operación, Notificar Ajustador, Actualizar ERP/WMS
+- **Procesadores**: Decisión SI/NO, Agente IA (análisis o decisión), Aprobación Humana, Verificar OFAC/ONU, Score AML, Tasa BCV, Calcular Reserva IBNR, Escalar Reaseguro, Semáforo de Gestión, Datos EE.FF., Espera, Control de Calidad, Congelar Operación (procesador — puede encadenar hacia Email u otras salidas)
+- **Salidas**: Enviar Email, Registrar Log, Reporte SUDEASEG, Reporte SUDEBAN, Reporte Gerencial, Notificar Ajustador, Actualizar ERP/WMS
 
 Reglas de diseño importantes:
 1. Todo flujo debe tener exactamente 1 nodo Trigger al inicio.

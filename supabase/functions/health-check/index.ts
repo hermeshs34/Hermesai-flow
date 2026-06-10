@@ -35,12 +35,21 @@ serve(async (req) => {
 
     const results: SystemResult[] = [];
 
-    // ── BCV ──────────────────────────────────────────────────────────────
+    // ── BCV — intenta pydolarve, hace fallback a dolarapi.com ────────────
     results.push(await ping('Tasa BCV', async () => {
-        const r = await fetch('https://pydolarve.org/api/v1/dollar?page=bcv', { signal: AbortSignal.timeout(8000) });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const d = await r.json();
-        if (!d?.monitors?.usd) throw new Error('Respuesta inesperada de pydolarve');
+        // Fuente primaria
+        try {
+            const r = await fetch('https://pydolarve.org/api/v1/dollar?page=bcv', { signal: AbortSignal.timeout(6000) });
+            if (r.ok) {
+                const d = await r.json();
+                if (d?.monitors?.usd?.price) return; // OK
+            }
+        } catch { /* fallback */ }
+        // Fuente secundaria
+        const r2 = await fetch('https://ve.dolarapi.com/v1/dolares/oficial', { signal: AbortSignal.timeout(6000) });
+        if (!r2.ok) throw new Error(`HTTP ${r2.status}`);
+        const d2 = await r2.json();
+        if (!d2?.promedio && !d2?.price) throw new Error('Respuesta inesperada de dolarapi');
     }));
 
     // ── Indicadores ──────────────────────────────────────────────────────

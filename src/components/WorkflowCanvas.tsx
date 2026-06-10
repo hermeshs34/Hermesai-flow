@@ -15,7 +15,224 @@ import type { User }       from '../core/user.types';
 import {
     Play, Trash2, Plus, ChevronDown,
     CheckCircle, Loader2, PanelLeftOpen, AlertTriangle, X, BrainCircuit,
+    ShieldCheck, XCircle, Zap, Undo2, Redo2,
 } from 'lucide-react';
+
+// ── Checklist pre-ejecución ───────────────────────────────────────────────────
+interface CheckItem {
+    id:      string;
+    label:   string;
+    detail?: string;
+    status:  'ok' | 'warn' | 'error';
+}
+
+function buildChecklist(
+    nodes: WorkflowNodeData[],
+    connections: WorkflowConnection[],
+    workflowName: string,
+    saved: boolean,
+): CheckItem[] {
+    const items: CheckItem[] = [];
+
+    // 1. Flujo guardado
+    items.push({
+        id: 'saved', label: 'Flujo guardado',
+        detail: saved ? 'Todos los cambios están guardados' : 'Hay cambios sin guardar — espera al auto-guardado',
+        status: saved ? 'ok' : 'warn',
+    });
+
+    // 2. Nombre definido
+    items.push({
+        id: 'name', label: 'Nombre del flujo',
+        detail: workflowName.trim() ? `"${workflowName}"` : 'El flujo no tiene nombre',
+        status: workflowName.trim() ? 'ok' : 'warn',
+    });
+
+    // 3. Al menos un nodo trigger
+    const triggers = nodes.filter(n => n.type === 'trigger');
+    items.push({
+        id: 'trigger', label: 'Nodo de inicio (trigger)',
+        detail: triggers.length > 0
+            ? `${triggers.map(t => t.title).join(', ')}`
+            : 'Sin trigger — el flujo no sabe cuándo arrancar',
+        status: triggers.length > 0 ? 'ok' : 'error',
+    });
+
+    // 4. Al menos un nodo de salida
+    const outputs = nodes.filter(n => n.type === 'output');
+    items.push({
+        id: 'output', label: 'Nodo de salida',
+        detail: outputs.length > 0
+            ? `${outputs.map(o => o.title).join(', ')}`
+            : 'Sin salida — el flujo no produce resultado',
+        status: outputs.length > 0 ? 'ok' : 'warn',
+    });
+
+    // 5. Nodos conectados (ninguno huérfano)
+    if (nodes.length > 1) {
+        const connectedIds = new Set<string>();
+        connections.forEach(c => { connectedIds.add(c.sourceId); connectedIds.add(c.targetId); });
+        const orphans = nodes.filter(n => !connectedIds.has(n.id));
+        items.push({
+            id: 'connections', label: 'Nodos conectados',
+            detail: orphans.length === 0
+                ? `${connections.length} conexión${connections.length !== 1 ? 'es' : ''} correctas`
+                : `${orphans.length} nodo${orphans.length !== 1 ? 's' : ''} sin conectar: ${orphans.map(o => `"${o.title}"`).join(', ')}`,
+            status: orphans.length === 0 ? 'ok' : 'warn',
+        });
+    }
+
+    // 6. Campos requeridos (email to, aprobador, etc.)
+    const missing = getMissingFieldsChecklist(nodes);
+    items.push({
+        id: 'fields', label: 'Campos obligatorios',
+        detail: missing.length === 0
+            ? 'Todos los campos requeridos están completos'
+            : `Faltan: ${missing.join(' · ')}`,
+        status: missing.length === 0 ? 'ok' : 'error',
+    });
+
+    return items;
+}
+
+function getMissingFieldsChecklist(nodes: WorkflowNodeData[]): string[] {
+    const REQUIRED: Record<string, { field: string; label: string }[]> = {
+        email:      [{ field: 'to',       label: 'Destinatario email'   }],
+        reporte:    [{ field: 'to',       label: 'Destinatario reporte' }],
+        aprobacion: [{ field: 'approver', label: 'Aprobador'            }],
+        eeff:       [{ field: 'company',  label: 'Empresa EE.FF.'       }],
+    };
+    const missing: string[] = [];
+    for (const node of nodes) {
+        for (const req of REQUIRED[node.category] ?? []) {
+            if (!String(node.config?.[req.field] ?? '').trim())
+                missing.push(`"${node.title}" → ${req.label}`);
+        }
+    }
+    return missing;
+}
+
+interface ChecklistModalProps {
+    workflowName: string;
+    items:        CheckItem[];
+    onConfirm:    () => void;
+    onCancel:     () => void;
+    executing:    boolean;
+}
+
+function ChecklistModal({ workflowName, items, onConfirm, onCancel, executing }: ChecklistModalProps) {
+    const hasError = items.some(i => i.status === 'error');
+    const hasWarn  = items.some(i => i.status === 'warn');
+    const allOk    = !hasError && !hasWarn;
+
+    const headerColor = hasError
+        ? 'from-red-600 to-rose-600'
+        : hasWarn
+        ? 'from-amber-500 to-orange-500'
+        : 'from-emerald-600 to-teal-600';
+
+    const headerIcon = hasError ? XCircle : hasWarn ? AlertTriangle : ShieldCheck;
+    const HeaderIcon = headerIcon;
+
+    const headerTitle = hasError
+        ? 'Problemas críticos detectados'
+        : hasWarn
+        ? 'Advertencias — revisa antes de ejecutar'
+        : '¡Todo listo para ejecutar!';
+
+    const ICON: Record<CheckItem['status'], React.ReactNode> = {
+        ok:    <CheckCircle className="w-4 h-4 text-emerald-500 flex-shrink-0" />,
+        warn:  <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0" />,
+        error: <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />,
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+
+                {/* Header con color de estado */}
+                <div className={`bg-gradient-to-r ${headerColor} px-6 py-5 text-white`}>
+                    <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                            <HeaderIcon className="w-6 h-6 flex-shrink-0" />
+                            <div>
+                                <p className="font-bold text-base leading-tight">{headerTitle}</p>
+                                <p className="text-white/80 text-xs mt-0.5 truncate">Flujo: {workflowName}</p>
+                            </div>
+                        </div>
+                        <button onClick={onCancel} className="text-white/70 hover:text-white transition-colors flex-shrink-0">
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Checklist */}
+                <div className="px-5 py-4 space-y-2.5 max-h-72 overflow-y-auto">
+                    {items.map(item => (
+                        <div key={item.id} className={`flex items-start gap-3 p-3 rounded-xl border ${
+                            item.status === 'error' ? 'bg-red-50 border-red-100' :
+                            item.status === 'warn'  ? 'bg-amber-50 border-amber-100' :
+                                                      'bg-emerald-50 border-emerald-100'
+                        }`}>
+                            {ICON[item.status]}
+                            <div className="min-w-0">
+                                <p className={`text-sm font-semibold ${
+                                    item.status === 'error' ? 'text-red-800' :
+                                    item.status === 'warn'  ? 'text-amber-800' : 'text-emerald-800'
+                                }`}>{item.label}</p>
+                                {item.detail && (
+                                    <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{item.detail}</p>
+                                )}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Resumen + acciones */}
+                <div className="px-5 py-4 border-t border-gray-100 bg-gray-50/60">
+                    <div className="flex items-center justify-between gap-2 mb-3 text-xs text-gray-500">
+                        <div className="flex items-center gap-3">
+                            <span className="flex items-center gap-1 text-emerald-600 font-medium">
+                                <CheckCircle className="w-3 h-3" /> {items.filter(i => i.status === 'ok').length} OK
+                            </span>
+                            {hasWarn && (
+                                <span className="flex items-center gap-1 text-amber-600 font-medium">
+                                    <AlertTriangle className="w-3 h-3" /> {items.filter(i => i.status === 'warn').length} advertencia{items.filter(i => i.status === 'warn').length !== 1 ? 's' : ''}
+                                </span>
+                            )}
+                            {hasError && (
+                                <span className="flex items-center gap-1 text-red-600 font-medium">
+                                    <XCircle className="w-3 h-3" /> {items.filter(i => i.status === 'error').length} error{items.filter(i => i.status === 'error').length !== 1 ? 'es' : ''}
+                                </span>
+                            )}
+                        </div>
+                        {hasError && <span className="text-red-500 text-[10px]">Corrige los errores antes de ejecutar</span>}
+                    </div>
+                    <div className="flex gap-2">
+                        <button onClick={onCancel}
+                            className="flex-1 px-4 py-2 text-sm font-semibold border border-gray-200 rounded-xl text-gray-600 hover:bg-gray-100 transition-colors">
+                            Revisar flujo
+                        </button>
+                        <button
+                            onClick={onConfirm}
+                            disabled={hasError || executing}
+                            className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl text-white transition-colors disabled:opacity-40 ${
+                                allOk ? 'bg-emerald-600 hover:bg-emerald-700' :
+                                hasWarn ? 'bg-amber-500 hover:bg-amber-600' :
+                                'bg-gray-300 cursor-not-allowed'
+                            }`}
+                        >
+                            {executing
+                                ? <><Loader2 className="w-4 h-4 animate-spin" /> Ejecutando...</>
+                                : <><Zap className="w-4 h-4" /> {hasWarn ? 'Ejecutar de todas formas' : 'Ejecutar ahora'}</>
+                            }
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
 
 // Campos requeridos por categoría de nodo — vacíos = plantilla incompleta
 const REQUIRED_FIELDS: Record<string, { field: string; label: string }[]> = {
@@ -53,10 +270,45 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     const [showWfDropdown,     setShowWfDropdown]    = useState(false);
     const [creatingWorkflow,   setCreatingWorkflow]  = useState(false);
     const [newWfName,          setNewWfName]         = useState('');
+    const [wfSearch,           setWfSearch]          = useState('');
+    const [wfDateFilter,       setWfDateFilter]      = useState<'all' | '7d' | '30d' | 'never'>('all');
+    const [showChecklist,      setShowChecklist]     = useState(false);
+    const [checkItems,         setCheckItems]        = useState<CheckItem[]>([]);
 
     // ── Canvas ─────────────────────────────────────────────────────────────
     const [nodes,              setNodes]             = useState<WorkflowNodeData[]>([]);
     const [connections,        setConnections]       = useState<WorkflowConnection[]>([]);
+
+    // ── Undo / Redo ────────────────────────────────────────────────────────
+    type Snapshot = { nodes: WorkflowNodeData[]; connections: WorkflowConnection[] };
+    const undoStack = useRef<Snapshot[]>([]);
+    const redoStack = useRef<Snapshot[]>([]);
+    const nodesRef  = useRef(nodes);
+    const connsRef  = useRef(connections);
+    useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+    useEffect(() => { connsRef.current = connections; }, [connections]);
+
+    const pushHistory = useCallback(() => {
+        undoStack.current.push({ nodes: nodesRef.current, connections: connsRef.current });
+        if (undoStack.current.length > 50) undoStack.current.shift();
+        redoStack.current = [];
+    }, []);
+
+    const handleUndo = useCallback(() => {
+        const snap = undoStack.current.pop();
+        if (!snap) return;
+        redoStack.current.push({ nodes: nodesRef.current, connections: connsRef.current });
+        setNodes(snap.nodes);
+        setConnections(snap.connections);
+    }, []);
+
+    const handleRedo = useCallback(() => {
+        const snap = redoStack.current.pop();
+        if (!snap) return;
+        undoStack.current.push({ nodes: nodesRef.current, connections: connsRef.current });
+        setNodes(snap.nodes);
+        setConnections(snap.connections);
+    }, []);
     const [selectedNode,       setSelectedNode]      = useState<string | null>(null);
     const [draggedNodeType,    setDraggedNodeType]   = useState<NodeType | null>(null);
     const [showPalette,        setShowPalette]       = useState(true);
@@ -108,6 +360,18 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         }
     }, [currentUser.organizationId]);
 
+    // ── Undo / Redo — atajo de teclado ────────────────────────────────────
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if (!e.ctrlKey && !e.metaKey) return;
+            if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+            if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); }
+            if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) { e.preventDefault(); handleRedo(); }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [handleUndo, handleRedo]);
+
     // ── Auto-guardar con debounce (1.5s) ──────────────────────────────────
     useEffect(() => {
         if (!activeWorkflowId) return;
@@ -152,11 +416,18 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         }
     };
 
-    // ── Ejecutar flujo via Edge Function ──────────────────────────────────
-    const handleExecute = async () => {
+    // ── Abrir checklist pre-ejecución ─────────────────────────────────────
+    const handleExecute = () => {
         if (!activeWorkflowId) { toast.error('Selecciona un flujo primero'); return; }
         if (nodes.length === 0) { toast.error('Agrega al menos un nodo al flujo'); return; }
+        const items = buildChecklist(nodes, connections, workflowName, !saving);
+        setCheckItems(items);
+        setShowChecklist(true);
+    };
 
+    // ── Ejecutar flujo tras confirmar checklist ────────────────────────────
+    const handleConfirmExecute = async () => {
+        setShowChecklist(false);
         setExecuting(true);
         const toastId = toast.loading('Ejecutando flujo...');
         try {
@@ -164,21 +435,15 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                 body: {
                     workflowId:     activeWorkflowId,
                     organizationId: currentUser.organizationId,
-                    triggeredBy:    'manual',
+                    triggeredBy:    currentUser.email ?? 'manual',
                 },
             });
             if (error) throw error;
             if (data?.paused) {
-                toast.success(
-                    '⏸ Flujo pausado — tarea enviada a la Bandeja de Aprobación',
-                    { id: toastId, duration: 6000 }
-                );
+                toast.success('⏸ Flujo pausado — tarea enviada a la Bandeja de Aprobación', { id: toastId, duration: 6000 });
             } else if (data?.success) {
                 GovernanceService.log(currentUser, 'ejecutar', 'workflow', { entidadId: activeWorkflowId, descripcion: `Ejecutado "${workflowName}" — ${data.logs} pasos en ${data.duration}ms` });
-                toast.success(
-                    `Flujo completado — ${data.logs} pasos en ${data.duration}ms`,
-                    { id: toastId }
-                );
+                toast.success(`Flujo completado — ${data.logs} pasos en ${data.duration}ms`, { id: toastId });
             } else {
                 toast.error(`Error: ${data?.error ?? 'fallo desconocido'}`, { id: toastId });
             }
@@ -192,7 +457,8 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     // ── Limpiar canvas ─────────────────────────────────────────────────────
     const handleClearCanvas = async () => {
         if (!activeWorkflowId) return;
-        if (!confirm('¿Limpiar todos los nodos del canvas? Esta acción no se puede deshacer.')) return;
+        if (!confirm('¿Limpiar todos los nodos del canvas?')) return;
+        pushHistory();
         setNodes([]);
         setConnections([]);
     };
@@ -216,9 +482,10 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             connections: [],
             status:      'idle',
         };
+        pushHistory();
         setNodes(prev => [...prev, newNode]);
         setDraggedNodeType(null);
-    }, [draggedNodeType]);
+    }, [draggedNodeType, pushHistory]);
 
     // ── Acciones de nodos ─────────────────────────────────────────────────
     const handleNodeMove   = useCallback((nodeId: string, pos: { x: number; y: number }) =>
@@ -227,13 +494,18 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     const handleNodeSelect = useCallback((nodeId: string) => setSelectedNode(nodeId), []);
 
     const handleNodeDelete = useCallback((nodeId: string) => {
+        pushHistory();
         setNodes(prev => prev.filter(n => n.id !== nodeId));
         setConnections(prev => prev.filter(c => c.sourceId !== nodeId && c.targetId !== nodeId));
         if (selectedNode === nodeId) setSelectedNode(null);
-    }, [selectedNode]);
+    }, [selectedNode, pushHistory]);
 
-    const handleDeleteConnection = useCallback((connId: string) =>
-        setConnections(prev => prev.filter(c => c.id !== connId)), []);
+    const handleDeleteConnection = useCallback((connId: string) => {
+        pushHistory();
+        setConnections(prev => prev.filter(c => c.id !== connId));
+    }, [pushHistory]);
+
+    const handleNodeMoveStart = useCallback(() => pushHistory(), [pushHistory]);
 
     const handleConnectionStart = useCallback((nodeId: string) => setConnectingFrom(nodeId), []);
 
@@ -242,6 +514,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             const src = nodes.find(n => n.id === connectingFrom);
             const tgt = nodes.find(n => n.id === nodeId);
             if (src && tgt && src.type !== 'output' && tgt.type !== 'trigger') {
+                pushHistory();
                 setConnections(prev => {
                     const exists = prev.some(c => c.sourceId === connectingFrom && c.targetId === nodeId);
                     if (exists) return prev;
@@ -340,8 +613,8 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                             </button>
 
                             {showWfDropdown && (
-                                <div className="absolute top-full left-0 mt-1 w-72 bg-white border border-gray-200 rounded-xl shadow-lg z-50">
-                                    {/* Crear nuevo — solo roles con manage_workflows */}
+                                <div className="absolute top-full left-0 mt-1 w-80 bg-white border border-gray-200 rounded-xl shadow-lg z-50">
+                                    {/* Crear nuevo */}
                                     {authService.hasPermission(currentUser, 'manage_workflows') && (
                                     <div className="p-2 border-b border-gray-100">
                                         <div className="flex gap-2">
@@ -359,38 +632,97 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                                 disabled={creatingWorkflow}
                                                 className="flex items-center gap-1 px-2.5 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-50"
                                             >
-                                                {creatingWorkflow
-                                                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                    : <Plus className="w-3.5 h-3.5" />}
+                                                {creatingWorkflow ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
                                                 Nuevo
                                             </button>
                                         </div>
                                     </div>
                                     )}
 
-                                    {/* Lista */}
-                                    <div className="max-h-60 overflow-y-auto">
-                                        {workflows.length === 0 ? (
-                                            <p className="text-sm text-gray-400 text-center py-4">
-                                                Sin flujos — crea el primero
-                                            </p>
-                                        ) : (
-                                            workflows.map(wf => (
+                                    {/* Búsqueda + filtro fecha */}
+                                    <div className="p-2 border-b border-gray-100 space-y-1.5">
+                                        <input
+                                            type="text"
+                                            placeholder="Buscar flujo..."
+                                            value={wfSearch}
+                                            onChange={e => setWfSearch(e.target.value)}
+                                            className="w-full text-xs px-2.5 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                                        />
+                                        <div className="flex gap-1">
+                                            {(['all', '7d', '30d', 'never'] as const).map(f => (
                                                 <button
-                                                    key={wf.id}
-                                                    onClick={() => selectWorkflow(wf)}
-                                                    className={`w-full text-left px-3 py-2.5 text-sm hover:bg-gray-50 transition-colors ${
-                                                        wf.id === activeWorkflowId ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-gray-700'
+                                                    key={f}
+                                                    onClick={() => setWfDateFilter(f)}
+                                                    className={`flex-1 text-[11px] py-1 rounded-md font-medium transition-colors ${
+                                                        wfDateFilter === f
+                                                            ? 'bg-indigo-600 text-white'
+                                                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                                                     }`}
                                                 >
-                                                    <div className="font-medium truncate">{wf.name}</div>
-                                                    <div className="text-xs text-gray-400 mt-0.5">
-                                                        {wf.executionCount ?? 0} ejecuciones ·{' '}
-                                                        {new Date(wf.createdAt).toLocaleDateString('es-VE')}
-                                                    </div>
+                                                    {f === 'all' ? 'Todos' : f === 'never' ? 'Sin ejec.' : `Últ. ${f}`}
                                                 </button>
-                                            ))
-                                        )}
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* Lista filtrada */}
+                                    <div className="max-h-64 overflow-y-auto">
+                                        {(() => {
+                                            const now = Date.now();
+                                            const filtered = workflows.filter(wf => {
+                                                const nameOk = wf.name.toLowerCase().includes(wfSearch.toLowerCase());
+                                                if (!nameOk) return false;
+                                                if (wfDateFilter === 'all') return true;
+                                                if (wfDateFilter === 'never') return !wf.lastRun;
+                                                const cutoff = wfDateFilter === '7d' ? 7 : 30;
+                                                if (!wf.lastRun) return false;
+                                                return (now - new Date(wf.lastRun).getTime()) <= cutoff * 86400000;
+                                            });
+                                            if (filtered.length === 0) return (
+                                                <p className="text-xs text-gray-400 text-center py-4">Sin resultados</p>
+                                            );
+                                            return filtered.map(wf => (
+                                                <div key={wf.id} className={`group flex items-center border-b border-gray-50 last:border-0 ${wf.id === activeWorkflowId ? 'bg-indigo-50' : 'hover:bg-gray-50'} transition-colors`}>
+                                                    <button
+                                                        onClick={() => selectWorkflow(wf)}
+                                                        className={`flex-1 text-left px-3 py-2.5 text-sm min-w-0 ${wf.id === activeWorkflowId ? 'text-indigo-700' : 'text-gray-700'}`}
+                                                    >
+                                                        <div className="font-medium truncate">{wf.name}</div>
+                                                        <div className="flex items-center justify-between mt-0.5">
+                                                            <span className="text-xs text-gray-400">{wf.executionCount ?? 0} ejecuciones</span>
+                                                            <span className="text-xs text-gray-400">
+                                                                {wf.lastRun ? `Últ. ${new Date(wf.lastRun).toLocaleDateString('es-VE')}` : 'Sin ejecuciones'}
+                                                            </span>
+                                                        </div>
+                                                    </button>
+                                                    {(authService.hasPermission(currentUser, 'manage_workflows')) && (
+                                                        <button
+                                                            onClick={async (e) => {
+                                                                e.stopPropagation();
+                                                                if (!confirm(`¿Eliminar el flujo "${wf.name}"? Esta acción no se puede deshacer.`)) return;
+                                                                try {
+                                                                    await WorkflowService.deleteWorkflow(wf.id, currentUser.organizationId);
+                                                                    setWorkflows(prev => prev.filter(w => w.id !== wf.id));
+                                                                    if (activeWorkflowId === wf.id) {
+                                                                        setActiveWorkflowId(null);
+                                                                        setWorkflowName('');
+                                                                        setNodes([]);
+                                                                        setConnections([]);
+                                                                    }
+                                                                    toast.success(`Flujo "${wf.name}" eliminado`);
+                                                                } catch {
+                                                                    toast.error('No se pudo eliminar el flujo');
+                                                                }
+                                                            }}
+                                                            title="Eliminar flujo"
+                                                            className="opacity-0 group-hover:opacity-100 p-2 mr-1 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-all flex-shrink-0"
+                                                        >
+                                                            <Trash2 className="w-3.5 h-3.5" />
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ));
+                                        })()}
                                     </div>
                                 </div>
                             )}
@@ -418,6 +750,25 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                             <Trash2 className="w-4 h-4" />
                             <span>Limpiar</span>
                         </button>
+
+                        <div className="flex items-center gap-1 border border-gray-200 rounded-lg bg-white px-1">
+                            <button
+                                onClick={handleUndo}
+                                disabled={undoStack.current.length === 0}
+                                className="p-1.5 rounded hover:bg-gray-100 disabled:opacity-30 text-gray-600 transition-colors"
+                                title="Deshacer (Ctrl+Z)"
+                            >
+                                <Undo2 className="w-4 h-4" />
+                            </button>
+                            <button
+                                onClick={handleRedo}
+                                disabled={redoStack.current.length === 0}
+                                className="p-1.5 rounded hover:bg-gray-100 disabled:opacity-30 text-gray-600 transition-colors"
+                                title="Rehacer (Ctrl+Y)"
+                            >
+                                <Redo2 className="w-4 h-4" />
+                            </button>
+                        </div>
 
                         <button
                             onClick={() => setShowAssistant(v => !v)}
@@ -512,6 +863,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                 canBeTarget={!!connectingFrom && connectingFrom !== node.id && node.type !== 'trigger'}
                                 onSelect={()   => handleNodeSelect(node.id)}
                                 onMove={handleNodeMove}
+                                onMoveStart={handleNodeMoveStart}
                                 onDelete={handleNodeDelete}
                                 onConnectionStart={handleConnectionStart}
                                 onConnectionEnd={handleConnectionEnd}
@@ -554,6 +906,17 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                     nodes={nodes}
                     connections={connections}
                     onClose={() => setShowAssistant(false)}
+                />
+            )}
+
+            {/* Checklist pre-ejecución */}
+            {showChecklist && (
+                <ChecklistModal
+                    workflowName={workflowName}
+                    items={checkItems}
+                    executing={executing}
+                    onConfirm={handleConfirmExecute}
+                    onCancel={() => setShowChecklist(false)}
                 />
             )}
         </div>

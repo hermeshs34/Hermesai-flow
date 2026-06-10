@@ -37,8 +37,14 @@ export function Settings() {
     const [notifErrors,  setNotifErrors]  = useState(true);
     const [notifSuccess, setNotifSuccess] = useState(false);
     const [saving,       setSaving]       = useState(false);
+    const [savingKpi,    setSavingKpi]    = useState(false);
     const [testingBcv,   setTestingBcv]   = useState(false);
     const [bcvResult,    setBcvResult]    = useState<string | null>(null);
+
+    // KPI params
+    const [kpiSlaMs,        setKpiSlaMs]       = useState(30000);
+    const [kpiMinTarea,     setKpiMinTarea]     = useState(15);
+    const [kpiCostoHora,    setKpiCostoHora]    = useState(25);
 
     const supabaseUrl  = import.meta.env.VITE_SUPABASE_URL as string ?? '';
     const projectRef   = supabaseUrl.split('//')[1]?.split('.')[0] ?? '—';
@@ -49,7 +55,7 @@ export function Settings() {
         if (!user?.organizationId) return;
         supabase
             .from('organizations')
-            .select('notif_email, notif_errors, notif_success')
+            .select('notif_email, notif_errors, notif_success, kpi_sla_ms, kpi_min_por_tarea, kpi_costo_hora_usd')
             .eq('id', user.organizationId)
             .single()
             .then(({ data }) => {
@@ -57,6 +63,9 @@ export function Settings() {
                     setNotifEmail(data.notif_email ?? '');
                     setNotifErrors(data.notif_errors ?? true);
                     setNotifSuccess(data.notif_success ?? false);
+                    setKpiSlaMs(data.kpi_sla_ms ?? 30000);
+                    setKpiMinTarea(data.kpi_min_por_tarea ?? 15);
+                    setKpiCostoHora(data.kpi_costo_hora_usd ?? 25);
                 }
             });
     }, []);
@@ -80,6 +89,28 @@ export function Settings() {
             toast.error(`Error al guardar: ${err.message}`);
         } finally {
             setSaving(false);
+        }
+    };
+
+    const handleSaveKpi = async () => {
+        setSavingKpi(true);
+        try {
+            const user = authService.getCurrentUser();
+            if (!user?.organizationId) throw new Error('Sin organización');
+            const { error } = await supabase
+                .from('organizations')
+                .update({
+                    kpi_sla_ms:          kpiSlaMs,
+                    kpi_min_por_tarea:   kpiMinTarea,
+                    kpi_costo_hora_usd:  kpiCostoHora,
+                })
+                .eq('id', user.organizationId);
+            if (error) throw new Error(error.message);
+            toast.success('Parámetros KPI guardados');
+        } catch (err: any) {
+            toast.error(`Error al guardar: ${err.message}`);
+        } finally {
+            setSavingKpi(false);
         }
     };
 
@@ -259,6 +290,69 @@ export function Settings() {
                         >
                             {saving ? 'Guardando...' : 'Guardar preferencias'}
                         </button>
+                    </div>
+                </Section>
+
+                {/* ── Parámetros KPI ──────────────────────────────────────── */}
+                <Section title="Parámetros KPI del Dashboard" icon={BarChart2}>
+                    <div className="space-y-5">
+                        <p className="text-xs text-gray-400">Estos valores afectan los KPIs del Centro de Comando: SLA, Ahorro Estimado y semáforos de rendimiento.</p>
+
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                            <div>
+                                <label className="block text-sm font-semibold text-gray-700 mb-1">
+                                    Umbral SLA (segundos)
+                                </label>
+                                <input
+                                    type="number" min={1} max={300}
+                                    value={Math.round(kpiSlaMs / 1000)}
+                                    onChange={e => setKpiSlaMs(Number(e.target.value) * 1000)}
+                                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                                />
+                                <p className="text-xs text-gray-400 mt-1">Ejecuciones bajo este tiempo cuentan como SLA cumplido</p>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-semibold text-gray-700 mb-1">
+                                    Minutos ahorrados / tarea
+                                </label>
+                                <input
+                                    type="number" min={1} max={480}
+                                    value={kpiMinTarea}
+                                    onChange={e => setKpiMinTarea(Number(e.target.value))}
+                                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                                />
+                                <p className="text-xs text-gray-400 mt-1">Tiempo manual estimado que reemplaza cada ejecución exitosa</p>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-semibold text-gray-700 mb-1">
+                                    Costo hora-hombre (USD)
+                                </label>
+                                <input
+                                    type="number" min={1} max={500}
+                                    value={kpiCostoHora}
+                                    onChange={e => setKpiCostoHora(Number(e.target.value))}
+                                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                                />
+                                <p className="text-xs text-gray-400 mt-1">Tarifa base para calcular el ahorro en USD</p>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-1">
+                            <p className="text-xs text-gray-500">
+                                Preview: <span className="font-semibold text-indigo-600">
+                                    100 tareas exitosas = ${Math.round(100 * kpiMinTarea / 60 * kpiCostoHora).toLocaleString()} USD ahorrados
+                                </span>
+                            </p>
+                            <button
+                                onClick={handleSaveKpi}
+                                disabled={savingKpi}
+                                className="px-4 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                            >
+                                {savingKpi ? 'Guardando...' : 'Guardar parámetros'}
+                            </button>
+                        </div>
                     </div>
                 </Section>
 

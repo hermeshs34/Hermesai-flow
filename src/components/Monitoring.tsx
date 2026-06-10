@@ -2,21 +2,23 @@ import { useState, useEffect, useCallback } from 'react';
 import {
     Activity, AlertCircle, CheckCircle, Clock,
     RefreshCw, Filter, Loader2, ChevronDown, ChevronRight, RotateCcw,
+    Play, Zap, Mail, Database, GitBranch, Bot, BarChart2, FileText,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
 import { toast } from 'sonner';
 
 interface RunRow {
-    id:           string;
-    workflow_id:  string;
-    workflow_name?: string;
-    triggered_by: string;
-    status:       'running' | 'success' | 'error' | 'cancelled';
-    started_at:   string;
-    finished_at:  string | null;
-    duration_ms:  number | null;
-    logs_count:   number;
-    error_message:string | null;
+    id:              string;
+    workflow_id:     string;
+    workflow_name?:  string;
+    organization_id: string;
+    triggered_by:    string;
+    status:          'running' | 'success' | 'error' | 'cancelled';
+    started_at:      string;
+    finished_at:     string | null;
+    duration_ms:     number | null;
+    logs_count:      number;
+    error_message:   string | null;
 }
 
 interface LogRow {
@@ -62,73 +64,268 @@ function fmtDate(iso: string): string {
     });
 }
 
-// ── Entrada de log expandible ─────────────────────────────────────────────────
-function LogEntry({ log }: { log: LogRow }) {
-    const [open, setOpen] = useState(false);
+// ── Icono por tipo de nodo ────────────────────────────────────────────────────
+const NODE_TYPE_ICON: Record<string, React.ReactNode> = {
+    trigger:   <Play       className="w-3.5 h-3.5" />,
+    email:     <Mail       className="w-3.5 h-3.5" />,
+    agente:    <Bot        className="w-3.5 h-3.5" />,
+    decision:  <GitBranch  className="w-3.5 h-3.5" />,
+    datos:     <Database   className="w-3.5 h-3.5" />,
+    reporte:   <FileText   className="w-3.5 h-3.5" />,
+    bcv:       <BarChart2  className="w-3.5 h-3.5" />,
+    eeff:      <BarChart2  className="w-3.5 h-3.5" />,
+    default:   <Zap        className="w-3.5 h-3.5" />,
+};
 
-    const details = log.details
-        ? (typeof log.details === 'string' ? (() => { try { return JSON.parse(log.details); } catch { return null; } })() : log.details)
-        : null;
+function nodeIcon(nodeId: string | null, message: string): React.ReactNode {
+    const s = (nodeId ?? message ?? '').toLowerCase();
+    for (const [k, icon] of Object.entries(NODE_TYPE_ICON)) {
+        if (s.includes(k)) return icon;
+    }
+    return NODE_TYPE_ICON.default;
+}
 
-    const hasDetails = details && typeof details === 'object' && Object.keys(details).length > 0;
+function parseDetails(raw: string | null): Record<string, unknown> | null {
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw as Record<string, unknown>;
+    try { return JSON.parse(raw); } catch { return null; }
+}
 
-    const colorClass =
-        log.status === 'error'   ? 'bg-red-50 border-red-100 text-red-800' :
-        log.status === 'success' ? 'bg-green-50 border-green-100 text-green-800' :
-        log.status === 'warning' ? 'bg-yellow-50 border-yellow-100 text-yellow-800' :
-        'bg-gray-50 border-gray-100 text-gray-700';
+function fmtMs(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// ── Paso del timeline ─────────────────────────────────────────────────────────
+interface StepGroup {
+    nodeId:    string | null;
+    label:     string;
+    status:    string;
+    startedAt: string;
+    endedAt:   string;
+    durationMs: number | null;
+    logs:      LogRow[];
+}
+
+// Extrae el nombre legible del nodo desde el texto del mensaje
+// Ej: '✓ Nodo "Tasa BCV" completado (42ms)' → 'Tasa BCV'
+// Ej: '▶ Flujo "Monitor" iniciado (4 nodos)'  → 'Monitor (inicio)'
+function extractNodeName(message: string, nodeId: string | null): string {
+    const quoted = message.match(/[""]([^""]+)[""]/);
+    if (quoted) {
+        if (/inici[ao]/i.test(message))   return `${quoted[1]} (inicio)`;
+        if (/finaliz|complet|termin/i.test(message)) return `${quoted[1]} (fin)`;
+        return quoted[1];
+    }
+    if (/inici[ao]/i.test(message))  return 'Inicio del flujo';
+    if (/finaliz|complet/i.test(message)) return 'Fin del flujo';
+    // Evitar mostrar UUIDs — usar fragmento descriptivo del mensaje
+    if (nodeId && /^[0-9a-f-]{36}$/i.test(nodeId)) {
+        return message.replace(/^[✓✗▶⚠\s]+/, '').split('(')[0].trim().slice(0, 40) || 'Paso';
+    }
+    return nodeId ?? 'Sistema';
+}
+
+function groupLogsIntoSteps(logs: LogRow[]): StepGroup[] {
+    const byNode = new Map<string, LogRow[]>();
+    const order: string[] = [];
+
+    for (const log of logs) {
+        const key = log.node_id ?? `__system_${log.id}`;
+        if (!byNode.has(key)) { byNode.set(key, []); order.push(key); }
+        byNode.get(key)!.push(log);
+    }
+
+    return order.map(key => {
+        const group = byNode.get(key)!;
+        const first = group[0];
+        const last  = group[group.length - 1];
+        const hasError   = group.some(l => l.status === 'error');
+        const hasWaiting = group.some(l => l.status === 'esperando_aprobacion');
+        const status = hasError ? 'error' : hasWaiting ? 'esperando_aprobacion' : last.status;
+        const startMs = new Date(first.timestamp).getTime();
+        const endMs   = new Date(last.timestamp).getTime();
+        return {
+            nodeId:     first.node_id,
+            label:      extractNodeName(first.message, first.node_id),
+            status,
+            startedAt:  first.timestamp,
+            endedAt:    last.timestamp,
+            durationMs: endMs > startMs ? endMs - startMs : null,
+            logs:       group,
+        };
+    });
+}
+
+// ── Componente de un paso del timeline ───────────────────────────────────────
+function TimelineStep({ step, isLast }: { step: StepGroup; isLast: boolean }) {
+    const [open, setOpen] = useState(step.status === 'error');
+
+    const dotColor =
+        step.status === 'success'              ? 'bg-emerald-500 ring-emerald-100' :
+        step.status === 'error'                ? 'bg-red-500 ring-red-100' :
+        step.status === 'running'              ? 'bg-blue-500 ring-blue-100' :
+        step.status === 'esperando_aprobacion' ? 'bg-amber-400 ring-amber-100' :
+        'bg-gray-300 ring-gray-100';
+
+    const labelColor =
+        step.status === 'error'                ? 'text-red-700' :
+        step.status === 'esperando_aprobacion' ? 'text-amber-700' :
+        'text-gray-800';
+
+    const statusLabel: Record<string, string> = {
+        success:              'Completado',
+        error:                'Error',
+        running:              'En curso',
+        info:                 'Info',
+        warning:              'Aviso',
+        esperando_aprobacion: 'Esperando aprobación',
+        rechazado:            'Rechazado',
+    };
+
+    const lastLog = step.logs[step.logs.length - 1];
+    const errorMsg = step.logs.find(l => l.status === 'error')?.message;
 
     return (
-        <div className={`rounded-lg border ${colorClass}`}>
-            <div
-                className={`flex gap-3 p-2.5 ${hasDetails ? 'cursor-pointer select-none' : ''}`}
-                onClick={() => hasDetails && setOpen(o => !o)}
-            >
-                <span className="flex-shrink-0 text-gray-400 text-[10px] mt-0.5 w-16 text-right">
-                    {new Date(log.timestamp).toLocaleTimeString('es-VE')}
-                </span>
-                <span className="flex-shrink-0">{STATUS_ICON[log.status] ?? STATUS_ICON.info}</span>
-                <span className="flex-1 break-all">{log.message}</span>
-                {hasDetails && (
-                    open
-                        ? <ChevronDown className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 opacity-50" />
-                        : <ChevronRight className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 opacity-50" />
-                )}
+        <div className="flex gap-3">
+            {/* Línea y punto */}
+            <div className="flex flex-col items-center flex-shrink-0">
+                <div className={`w-7 h-7 rounded-full ring-4 flex items-center justify-center text-white flex-shrink-0 ${dotColor}`}>
+                    {step.status === 'running'
+                        ? <RefreshCw className="w-3 h-3 animate-spin" />
+                        : nodeIcon(step.nodeId, step.label)}
+                </div>
+                {!isLast && <div className="w-0.5 flex-1 bg-gray-200 mt-1 mb-1 min-h-[16px]" />}
             </div>
 
-            {open && hasDetails && (
-                <div className="px-3 pb-3 pt-0 border-t border-current border-opacity-10">
-                    <table className="w-full text-[11px] mt-2">
-                        <tbody>
-                            {Object.entries(details).map(([k, v]) => {
-                                if (['skipped','triggered','branch','evaluated','indicadores','alertas_activas','siniestros'].includes(k)) return null;
-                                const label = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-                                const val   = Array.isArray(v) ? `${(v as any[]).length} registros`
-                                            : typeof v === 'object' ? JSON.stringify(v)
-                                            : String(v ?? '—');
-                                return (
-                                    <tr key={k} className="border-b border-current border-opacity-10 last:border-0">
-                                        <td className="py-1 pr-3 opacity-60 w-40 font-medium">{label}</td>
-                                        <td className="py-1 font-semibold break-all">{val}</td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
-                </div>
-            )}
+            {/* Contenido del paso */}
+            <div className={`flex-1 pb-4 ${isLast ? '' : ''}`}>
+                <button
+                    className="w-full text-left cursor-pointer"
+                    onClick={() => setOpen(o => !o)}
+                >
+                    <div className="flex items-center justify-between gap-2">
+                        <span className={`font-semibold text-sm ${labelColor}`}>{step.label}</span>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                            {step.durationMs && (
+                                <span className="text-xs text-gray-400">{fmtMs(step.durationMs)}</span>
+                            )}
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                                step.status === 'success'              ? 'bg-emerald-100 text-emerald-700' :
+                                step.status === 'error'                ? 'bg-red-100 text-red-700' :
+                                step.status === 'running'              ? 'bg-blue-100 text-blue-700' :
+                                step.status === 'esperando_aprobacion' ? 'bg-amber-100 text-amber-700' :
+                                'bg-gray-100 text-gray-500'
+                            }`}>
+                                {statusLabel[step.status] ?? step.status}
+                            </span>
+                            {open
+                                ? <ChevronDown  className="w-3.5 h-3.5 text-gray-400" />
+                                : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />
+                            }
+                        </div>
+                    </div>
+
+                    {/* Mensaje principal (último log) */}
+                    <p className={`text-xs mt-0.5 ${step.status === 'error' ? 'text-red-600' : 'text-gray-500'}`}>
+                        {errorMsg ?? lastLog.message}
+                    </p>
+
+                    <p className="text-xs text-gray-400 mt-0.5">
+                        {new Date(step.startedAt).toLocaleTimeString('es-VE')}
+                    </p>
+                </button>
+
+                {/* Detalle expandible — siempre muestra todos los logs del paso */}
+                {open && (
+                    <div className="mt-2 space-y-1 pl-1">
+                        {step.logs.map(log => {
+                            const det = parseDetails(log.details);
+                            const SKIP = ['skipped','triggered','branch','evaluated','indicadores','alertas_activas','siniestros'];
+                            const entries = det
+                                ? Object.entries(det).filter(([k]) => !SKIP.includes(k))
+                                : [];
+                            return (
+                                <div key={log.id} className={`text-xs rounded-lg px-3 py-2 border ${
+                                    log.status === 'error'   ? 'bg-red-50 border-red-100' :
+                                    log.status === 'success' ? 'bg-emerald-50 border-emerald-100' :
+                                    log.status === 'warning' ? 'bg-amber-50 border-amber-100' :
+                                    'bg-gray-50 border-gray-100'
+                                }`}>
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <span className="text-gray-400">{new Date(log.timestamp).toLocaleTimeString('es-VE')}</span>
+                                        <span className="flex-1 text-gray-700">{log.message}</span>
+                                    </div>
+                                    {entries.length > 0 && (
+                                        <table className="w-full mt-1">
+                                            <tbody>
+                                                {entries.map(([k, v]) => (
+                                                    <tr key={k} className="border-t border-gray-100 first:border-0">
+                                                        <td className="py-0.5 pr-3 text-gray-400 w-36 font-medium">
+                                                            {k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                                                        </td>
+                                                        <td className="py-0.5 text-gray-700 font-semibold break-all">
+                                                            {Array.isArray(v) ? `${(v as unknown[]).length} registros`
+                                                             : typeof v === 'object' ? JSON.stringify(v)
+                                                             : String(v ?? '—')}
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ── Timeline completo ─────────────────────────────────────────────────────────
+function ExecutionTimeline({ logs, loading }: { logs: LogRow[]; loading: boolean }) {
+    if (loading) {
+        return (
+            <div className="p-4 space-y-4">
+                {[1, 2, 3, 4].map(i => (
+                    <div key={i} className="flex gap-3">
+                        <div className="skeleton w-7 h-7 rounded-full flex-shrink-0" />
+                        <div className="flex-1 space-y-2 pt-1">
+                            <div className="skeleton h-4 w-1/3 rounded" />
+                            <div className="skeleton h-3 w-2/3 rounded" />
+                        </div>
+                    </div>
+                ))}
+            </div>
+        );
+    }
+
+    if (logs.length === 0) {
+        return <p className="text-gray-400 text-sm text-center py-12">Sin pasos registrados</p>;
+    }
+
+    const steps = groupLogsIntoSteps(logs);
+
+    return (
+        <div className="p-4">
+            {steps.map((step, i) => (
+                <TimelineStep key={`${step.nodeId}-${i}`} step={step} isLast={i === steps.length - 1} />
+            ))}
         </div>
     );
 }
 
 export function Monitoring() {
-    const [runs,         setRuns]         = useState<RunRow[]>([]);
-    const [logs,         setLogs]         = useState<LogRow[]>([]);
-    const [selectedRun,  setSelectedRun]  = useState<RunRow | null>(null);
-    const [filterStatus, setFilterStatus] = useState('all');
-    const [loading,      setLoading]      = useState(true);
-    const [logsLoading,  setLogsLoading]  = useState(false);
-    const [retrying,     setRetrying]     = useState(false);
+    const [runs,          setRuns]          = useState<RunRow[]>([]);
+    const [logs,          setLogs]          = useState<LogRow[]>([]);
+    const [selectedRun,   setSelectedRun]   = useState<RunRow | null>(null);
+    const [approverEmail, setApproverEmail] = useState<string | null>(null);
+    const [filterStatus,  setFilterStatus]  = useState('all');
+    const [loading,       setLoading]       = useState(true);
+    const [logsLoading,   setLogsLoading]   = useState(false);
+    const [retrying,      setRetrying]      = useState(false);
 
     const loadRuns = useCallback(async () => {
         setLoading(true);
@@ -136,7 +333,7 @@ export function Monitoring() {
             const { data, error } = await supabase
                 .from('execution_runs')
                 .select(`
-                    id, workflow_id, triggered_by, status,
+                    id, workflow_id, organization_id, triggered_by, status,
                     started_at, finished_at, duration_ms, logs_count, error_message,
                     workflows(name)
                 `)
@@ -159,7 +356,11 @@ export function Monitoring() {
         setRetrying(true);
         try {
             const { error } = await supabase.functions.invoke('execute-workflow', {
-                body: { workflowId: run.workflow_id, triggeredBy: 'retry' },
+                body: {
+                    workflowId:     run.workflow_id,
+                    organizationId: run.organization_id,
+                    triggeredBy:    'retry',
+                },
             });
             if (error) throw error;
             toast.success('Flujo reiniciado correctamente');
@@ -189,21 +390,33 @@ export function Monitoring() {
 
     const loadLogs = async (run: RunRow) => {
         setSelectedRun(run);
+        setApproverEmail(null);
         setLogsLoading(true);
         try {
-            const { data } = await supabase
-                .from('execution_logs')
-                .select('id, workflow_id, node_id, status, message, executed_at, details_json')
-                .eq('execution_run_id', run.id)
-                .order('executed_at', { ascending: true });
+            const [logsRes, tareaRes] = await Promise.all([
+                supabase
+                    .from('execution_logs')
+                    .select('id, workflow_id, node_id, status, message, executed_at, details_json')
+                    .eq('execution_run_id', run.id)
+                    .order('executed_at', { ascending: true }),
+                supabase
+                    .from('tareas_aprobacion')
+                    .select('aprobador_id, profiles:aprobador_id(email)')
+                    .eq('execution_run_id', run.id)
+                    .eq('estado', 'aprobado')
+                    .limit(1)
+                    .maybeSingle(),
+            ]);
 
-            // Normalizar nombres de columna para el componente
-            const normalized = (data ?? []).map((r: any) => ({
+            const normalized = (logsRes.data ?? []).map((r: any) => ({
                 ...r,
                 timestamp: r.executed_at,
                 details:   r.details_json,
             }));
             setLogs(normalized);
+
+            const profile = (tareaRes.data as any)?.profiles;
+            setApproverEmail(profile?.email ?? null);
         } finally {
             setLogsLoading(false);
         }
@@ -342,12 +555,21 @@ export function Monitoring() {
                             <div className="flex items-center justify-between">
                                 <div>
                                     <h2 className="font-bold text-gray-900">{selectedRun.workflow_name}</h2>
-                                    <p className="text-xs text-gray-500 mt-0.5">
-                                        {fmtDate(selectedRun.started_at)}
-                                        {selectedRun.finished_at && ` → ${fmtDate(selectedRun.finished_at)}`}
-                                        {' · '}{fmt(selectedRun.duration_ms)}
-                                        {' · Disparado por: '}{selectedRun.triggered_by}
-                                    </p>
+                                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+                                        <span className="text-xs text-gray-500">
+                                            {fmtDate(selectedRun.started_at)}
+                                            {selectedRun.finished_at && ` → ${fmtDate(selectedRun.finished_at)}`}
+                                            {' · '}{fmt(selectedRun.duration_ms)}
+                                        </span>
+                                        <span className="text-xs text-gray-500">
+                                            👤 <span className="font-medium text-gray-700">{selectedRun.triggered_by}</span>
+                                        </span>
+                                        {approverEmail && (
+                                            <span className="text-xs text-emerald-600">
+                                                ✅ Aprobado por <span className="font-medium">{approverEmail}</span>
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
                                 <div className="flex items-center gap-2">
                                     {selectedRun.status === 'error' && (
@@ -369,17 +591,9 @@ export function Monitoring() {
                             </div>
                         </div>
 
-                        {/* Logs */}
-                        <div className="flex-1 overflow-y-auto p-4 space-y-1.5 font-mono text-xs">
-                            {logsLoading ? (
-                                <div className="flex items-center justify-center h-20">
-                                    <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
-                                </div>
-                            ) : logs.length === 0 ? (
-                                <p className="text-gray-400 text-center py-8">Sin logs registrados</p>
-                            ) : (
-                                logs.map(log => <LogEntry key={log.id} log={log} />)
-                            )}
+                        {/* Timeline visual de pasos */}
+                        <div className="flex-1 overflow-y-auto">
+                            <ExecutionTimeline logs={logs} loading={logsLoading} />
                         </div>
                     </>
                 )}

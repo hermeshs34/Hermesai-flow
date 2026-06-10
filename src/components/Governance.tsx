@@ -52,6 +52,8 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [tab,          setTab]         = useState<Tab>('usuarios');
     const [users,        setUsers]        = useState<ManagedUser[]>([]);
     const [audit,        setAudit]        = useState<AuditEntry[]>([]);
+    const [auditSearch,  setAuditSearch]  = useState('');
+    const [auditDateFilter, setAuditDateFilter] = useState<'all' | 'today' | '7d' | '30d'>('all');
     const [matriz,       setMatriz]       = useState<Record<string, unknown>[]>([]);
     const [aprobaciones, setAprobaciones] = useState<TareaAprobacion[]>([]);
     const [loading,      setLoading]      = useState(true);
@@ -769,7 +771,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                                                         onChange={e => setReglaForm(f => ({ ...f, aplica_automatico: e.target.checked }))}
                                                         className="w-4 h-4 accent-amber-500" />
                                                     <label htmlFor="aplica_auto" className="text-[11px] text-amber-800 cursor-pointer">
-                                                        <strong>El Agente IA puede decidir automáticamente</strong> sin requerir aprobador humano (F3.1 — disponible próximamente)
+                                                        <strong>El Agente IA puede decidir automáticamente</strong> sin requerir aprobador humano
                                                     </label>
                                                 </div>
                                             </div>
@@ -991,36 +993,97 @@ export function Governance({ currentUser }: GovernanceProps) {
                         {/* ── AUDITORÍA ─────────────────────────────────── */}
                         {efectiveTab === 'auditoria' && (
                             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-                                <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
-                                    <h2 className="font-semibold text-gray-800 text-sm">Registro de auditoría — inmutable</h2>
-                                    <span className="text-[10px] bg-violet-50 text-violet-700 px-2 py-0.5 rounded-full font-semibold">{audit.length} eventos</span>
+                                <div className="px-5 py-3.5 border-b border-gray-100 bg-gray-50/60 space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                        <h2 className="font-semibold text-gray-800 text-sm">Registro de auditoría — inmutable</h2>
+                                        <span className="text-xs bg-violet-50 text-violet-700 px-2 py-0.5 rounded-full font-semibold">{audit.length} eventos</span>
+                                    </div>
+                                    {/* Filtros */}
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            placeholder="Buscar usuario, acción, entidad..."
+                                            value={auditSearch}
+                                            onChange={e => setAuditSearch(e.target.value)}
+                                            className="flex-1 text-xs px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                                        />
+                                        <div className="flex gap-1">
+                                            {(['all', 'today', '7d', '30d'] as const).map(f => (
+                                                <button
+                                                    key={f}
+                                                    onClick={() => setAuditDateFilter(f)}
+                                                    className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
+                                                        auditDateFilter === f
+                                                            ? 'bg-indigo-600 text-white'
+                                                            : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                                                    }`}
+                                                >
+                                                    {f === 'all' ? 'Todos' : f === 'today' ? 'Hoy' : `Últ. ${f}`}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
                                 </div>
-                                {audit.length === 0 ? (
-                                    <div className="py-12 text-center">
-                                        <ScrollText className="w-8 h-8 text-gray-200 mx-auto mb-2" />
-                                        <p className="text-sm text-gray-400">Sin eventos registrados aún</p>
-                                        <p className="text-[11px] text-gray-300 mt-1">Las acciones sensibles (crear, aprobar, cambiar rol) quedarán registradas aquí</p>
-                                    </div>
-                                ) : (
-                                    <div className="divide-y divide-gray-50 max-h-[600px] overflow-y-auto">
-                                        {audit.map(a => {
-                                            const meta = ACCION_META[a.accion] ?? { label: a.accion, color: 'text-gray-500' };
-                                            return (
-                                                <div key={a.id} className="flex items-center gap-3 px-5 py-2.5 hover:bg-gray-50/60">
-                                                    <div className="flex-1 min-w-0">
-                                                        <p className="text-xs text-gray-700">
-                                                            <span className="font-semibold">{a.usuario_email ?? 'Sistema'}</span>{' '}
-                                                            <span className={`font-semibold ${meta.color}`}>{meta.label.toLowerCase()}</span>{' '}
-                                                            <span className="text-gray-500">{a.entidad}</span>
-                                                            {a.descripcion && <span className="text-gray-400"> — {a.descripcion}</span>}
-                                                        </p>
+                                {(() => {
+                                    const now = Date.now();
+                                    const filtered = audit.filter(a => {
+                                        const text = `${a.usuario_email ?? ''} ${a.accion} ${a.entidad} ${a.descripcion ?? ''}`.toLowerCase();
+                                        if (auditSearch && !text.includes(auditSearch.toLowerCase())) return false;
+                                        if (auditDateFilter === 'all') return true;
+                                        const t = new Date(a.created_at).getTime();
+                                        if (auditDateFilter === 'today') return (now - t) < 86400000;
+                                        if (auditDateFilter === '7d')    return (now - t) < 7 * 86400000;
+                                        if (auditDateFilter === '30d')   return (now - t) < 30 * 86400000;
+                                        return true;
+                                    });
+
+                                    if (filtered.length === 0) return (
+                                        <div className="py-12 text-center">
+                                            <ScrollText className="w-8 h-8 text-gray-200 mx-auto mb-2" />
+                                            <p className="text-sm text-gray-400">Sin eventos para los filtros seleccionados</p>
+                                        </div>
+                                    );
+
+                                    return (
+                                        <div className="divide-y divide-gray-50 max-h-[600px] overflow-y-auto">
+                                            {filtered.map(a => {
+                                                const meta = ACCION_META[a.accion] ?? { label: a.accion, color: 'text-gray-500' };
+                                                return (
+                                                    <div key={a.id} className="px-5 py-3 hover:bg-gray-50/60 transition-colors">
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div className="flex-1 min-w-0">
+                                                                <p className="text-xs text-gray-700">
+                                                                    <span className="font-semibold text-gray-900">{a.usuario_email ?? 'Sistema'}</span>{' '}
+                                                                    <span className={`font-semibold ${meta.color}`}>{meta.label.toLowerCase()}</span>{' '}
+                                                                    <span className="font-medium text-gray-600">{a.entidad}</span>
+                                                                </p>
+                                                                {a.descripcion && (
+                                                                    <p className="text-xs text-gray-500 mt-0.5">{a.descripcion}</p>
+                                                                )}
+                                                                {a.entidad_id && (
+                                                                    <p className="text-xs text-gray-400 mt-0.5 font-mono">ID: {a.entidad_id}</p>
+                                                                )}
+                                                            </div>
+                                                            <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+                                                                <span className="text-xs text-gray-400">{fmtDate(a.created_at)}</span>
+                                                                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded-full ${
+                                                                    a.accion === 'aprobar'   ? 'bg-emerald-50 text-emerald-600' :
+                                                                    a.accion === 'rechazar'  ? 'bg-red-50 text-red-600' :
+                                                                    a.accion === 'eliminar'  ? 'bg-red-50 text-red-500' :
+                                                                    a.accion === 'ejecutar'  ? 'bg-indigo-50 text-indigo-600' :
+                                                                    a.accion === 'login'     ? 'bg-gray-50 text-gray-400' :
+                                                                    'bg-blue-50 text-blue-600'
+                                                                }`}>
+                                                                    {meta.label}
+                                                                </span>
+                                                            </div>
+                                                        </div>
                                                     </div>
-                                                    <span className="text-[10px] text-gray-400 flex-shrink-0">{fmtDate(a.created_at)}</span>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
+                                                );
+                                            })}
+                                        </div>
+                                    );
+                                })()}
                             </div>
                         )}
                     </>

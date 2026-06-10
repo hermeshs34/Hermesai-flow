@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
     LayoutDashboard, Workflow, Activity,
     Settings as SettingsIcon, Zap, ChevronRight,
     LogOut, CheckCircle, AlertCircle, Clock, HelpCircle, ShieldCheck, KeyRound,
+    ListTodo,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
 import { authService } from '../core/auth.service';
@@ -44,6 +45,45 @@ const INIT: SystemHealth[] = [
     { name: 'Resend',      status: 'loading', latency_ms: null, message: 'Verificando...', last_check: '' },
 ];
 
+interface SidebarBadges { errors: number; pending: number; }
+
+const ROLES_REGULATORIOS_SIDEBAR = ['cumplimiento'];
+
+function useSidebarBadges(organizationId: string | undefined, role: string | undefined, isAdmin: boolean): SidebarBadges {
+    const [badges, setBadges] = useState<SidebarBadges>({ errors: 0, pending: 0 });
+
+    const fetch = useCallback(async () => {
+        const [errRes, pendRes] = await Promise.all([
+            supabase.from('execution_runs').select('id', { count: 'exact', head: true }).eq('status', 'error'),
+            organizationId
+                ? supabase.from('tareas_aprobacion').select('rol_aprobador')
+                    .eq('organization_id', organizationId).eq('estado', 'pendiente')
+                : Promise.resolve({ data: [], error: null }),
+        ]);
+
+        // Filtrar solo aprobaciones que puede resolver este usuario (igual que WorkQueue/Governance)
+        const tareas = (pendRes as { data: { rol_aprobador: string }[] | null }).data ?? [];
+        const pendingCount = tareas.filter(t => {
+            if (ROLES_REGULATORIOS_SIDEBAR.includes(t.rol_aprobador)) return role === t.rol_aprobador;
+            return isAdmin || role === t.rol_aprobador;
+        }).length;
+
+        setBadges({ errors: errRes.count ?? 0, pending: pendingCount });
+    }, [organizationId, role, isAdmin]);
+
+    useEffect(() => {
+        fetch();
+        const ch = supabase
+            .channel('sidebar-badges')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'execution_runs' }, fetch)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'tareas_aprobacion' }, fetch)
+            .subscribe();
+        return () => { supabase.removeChannel(ch); };
+    }, [fetch]);
+
+    return badges;
+}
+
 // Llama a la edge function health-check para obtener latencia y estado reales
 function useSystemHealth(): SystemHealth[] {
     const [health, setHealth] = useState<SystemHealth[]>(INIT);
@@ -68,25 +108,32 @@ function useSystemHealth(): SystemHealth[] {
     return health;
 }
 
-const NAV = [
-    { id: 'dashboard'  as ViewType, label: 'Dashboard',             icon: LayoutDashboard, badge: null },
-    { id: 'canvas'     as ViewType, label: 'Constructor de Flujos',  icon: Workflow,         badge: null },
-    { id: 'monitoring' as ViewType, label: 'Monitoreo',              icon: Activity,         badge: null },
-    { id: 'settings'   as ViewType, label: 'Configuración',          icon: SettingsIcon,     badge: null },
+const NAV_BASE = [
+    { id: 'dashboard'  as ViewType, label: 'Dashboard',            icon: LayoutDashboard, badgeKey: null             as null | 'errors' | 'pending' },
+    { id: 'workqueue'  as ViewType, label: 'Cola de Trabajo',      icon: ListTodo,         badgeKey: null             },
+    { id: 'canvas'     as ViewType, label: 'Constructor de Flujos', icon: Workflow,        badgeKey: null             },
+    { id: 'monitoring' as ViewType, label: 'Monitoreo',             icon: Activity,        badgeKey: 'errors'        as const },
+    { id: 'settings'   as ViewType, label: 'Configuración',         icon: SettingsIcon,    badgeKey: null             },
 ];
 
 export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePassword, currentUser, onLogout }: SidebarProps) {
-    const systems = useSystemHealth();
+    const systems  = useSystemHealth();
+    const isAdmin  = authService.hasPermission(currentUser ?? null, 'manage_users');
+    const badges   = useSidebarBadges(currentUser?.organizationId, currentUser?.role, isAdmin);
     const initials = currentUser?.name
         ?.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase() ?? 'HS';
 
-    // Gobierno visible para admin (manage_users) Y para roles que aprueban tareas (approve_tasks)
     const canGovern = authService.hasPermission(currentUser ?? null, 'manage_users')
         || authService.hasPermission(currentUser ?? null, 'approve_tasks');
+
     const navItems = canGovern
-        ? [...NAV, { id: 'governance' as ViewType, label: 'Gobierno', icon: ShieldCheck, badge: null }]
-        : NAV;
+        ? [...NAV_BASE, { id: 'governance' as ViewType, label: 'Gobierno', icon: ShieldCheck, badgeKey: 'pending' as const }]
+        : NAV_BASE;
+
     const rolMeta = currentUser ? ROL_META[currentUser.role] : null;
+
+    const badgeCount = (key: 'errors' | 'pending' | null) =>
+        key === 'errors' ? badges.errors : key === 'pending' ? badges.pending : 0;
 
     return (
         <div className="w-64 flex flex-col bg-[#0f1729] text-white flex-shrink-0">
@@ -99,20 +146,23 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePas
                     </div>
                     <div>
                         <p className="font-bold text-sm leading-tight">HermesAI Flow</p>
-                        <p className="text-[10px] text-indigo-300 leading-tight">Hub de Automatización</p>
+                        <p className="text-xs text-indigo-300 leading-tight">Hub de Automatización</p>
                     </div>
                 </div>
             </div>
 
             {/* Navegación */}
             <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-                <p className="text-[9px] font-semibold text-white/30 uppercase tracking-widest px-2 mb-2">Módulos</p>
-                {navItems.map(({ id, label, icon: Icon }) => {
+                <p className="text-xs font-semibold text-white/30 uppercase tracking-widest px-2 mb-2">Trabajo</p>
+                {navItems.map(({ id, label, icon: Icon, badgeKey }) => {
                     const active = currentView === id;
+                    const count  = badgeCount(badgeKey);
+                    const isError = badgeKey === 'errors';
                     return (
                         <button
                             key={id}
                             onClick={() => onViewChange(id)}
+                            title={label}
                             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all text-sm ${
                                 active
                                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/50'
@@ -120,15 +170,24 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePas
                             }`}
                         >
                             <Icon className="w-4 h-4 flex-shrink-0" />
-                            <span className="font-medium">{label}</span>
-                            {active && <ChevronRight className="w-3.5 h-3.5 ml-auto opacity-70" />}
+                            <span className="font-medium flex-1">{label}</span>
+                            {count > 0 && (
+                                <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded-full leading-none ${
+                                    isError
+                                        ? 'bg-red-500 text-white'
+                                        : 'bg-amber-400 text-amber-900'
+                                }`}>
+                                    {count > 99 ? '99+' : count}
+                                </span>
+                            )}
+                            {active && count === 0 && <ChevronRight className="w-3.5 h-3.5 opacity-70" />}
                         </button>
                     );
                 })}
 
                 {/* Sistemas conectados */}
                 <div className="mt-6 pt-4 border-t border-white/10">
-                    <p className="text-[9px] font-semibold text-white/30 uppercase tracking-widest px-2 mb-3">Sistemas</p>
+                    <p className="text-xs font-semibold text-white/30 uppercase tracking-widest px-2 mb-3">Sistemas</p>
                     <div className="space-y-1.5 px-2">
                         {systems.map(s => (
                             <div key={s.name}

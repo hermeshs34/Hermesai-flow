@@ -5,6 +5,7 @@ import {
     ShoppingCart, UserCheck, Database, ArrowUpRight,
     AlertTriangle, Timer, ChevronDown, ChevronRight,
     BarChart2, Activity, PieChart, BookOpen, Gauge, BrainCircuit,
+    MessageCircle,
 } from 'lucide-react';
 
 export interface NodeType {
@@ -33,6 +34,7 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
             { id: 'cron-trigger',    type: 'trigger',   category: 'cron',     title: 'Programado (Cron)',  description: 'Ejecutar en horario fijo (ej: 0 9 * * 1)', icon: Clock,        color: '#3b82f6' },
             { id: 'webhook-trigger', type: 'trigger',   category: 'webhook',  title: 'Webhook Entrante',   description: 'Recibir llamadas HTTP de sistemas externos',icon: Zap,          color: '#f59e0b' },
             { id: 'email-output',    type: 'output',    category: 'email',    title: 'Enviar Email',       description: 'Enviar correo vía Resend API',             icon: Mail,         color: '#ec4899' },
+            { id: 'whatsapp-output', type: 'output',    category: 'whatsapp', title: 'Enviar WhatsApp',    description: 'Enviar mensaje WhatsApp vía Twilio',       icon: MessageCircle, color: '#25d366' },
             { id: 'decision',        type: 'processor', category: 'decision', title: 'Decisión (Si/No)',   description: 'Bifurcar flujo según condición evaluada',  icon: GitBranch,    color: '#8b5cf6' },
             { id: 'agente-ia',       type: 'processor', category: 'agente',   title: 'Agente IA',          description: 'Claude analiza contexto y decide o genera texto', icon: BrainCircuit, color: '#7c3aed' },
             { id: 'delay',           type: 'processor', category: 'delay',    title: 'Espera',             description: 'Pausar N segundos antes del siguiente nodo',icon: Timer,        color: '#64748b' },
@@ -48,7 +50,7 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
             { id: 'calcular-reserva',        type: 'processor', category: 'actuarial',   title: 'Calcular Reserva IBNR',   description: 'Calcular reserva técnica con método Chain Ladder',   icon: TrendingUp,    color: '#10b981' },
             { id: 'escalar-reaseguro',       type: 'processor', category: 'reaseguro',   title: 'Escalar Reaseguro',       description: 'Si monto > XL → notificar reasegurador',            icon: ArrowUpRight,  color: '#f59e0b' },
             { id: 'notificar-ajustador',     type: 'output',    category: 'notificacion', title: 'Notificar Ajustador',    description: 'Email + WhatsApp al ajustador asignado',             icon: Bell,          color: '#6366f1' },
-            { id: 'reporte-sudeaseg',        type: 'output',    category: 'regulatorio',  title: 'Reporte SUDEASEG',       description: 'Generar informe regulatorio en formato SUDEASEG',    icon: FileText,      color: '#8b5cf6' },
+            { id: 'reporte-sudeaseg',        type: 'processor', category: 'regulatorio',  title: 'Reporte SUDEASEG',       description: 'Generar informe regulatorio en formato SUDEASEG',    icon: FileText,      color: '#8b5cf6' },
             { id: 'score-fraude',            type: 'processor', category: 'fraude',       title: 'Score Fraude',           description: 'Calcular score de fraude con motor determinístico',  icon: Shield,        color: '#ef4444' },
         ],
     },
@@ -59,8 +61,8 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
             { id: 'bcv-query',        type: 'processor', category: 'bcv',        title: 'Tasa BCV',              description: 'Obtener tasa de cambio oficial BCV del día',          icon: TrendingUp, color: '#f59e0b' },
             { id: 'aml-score',        type: 'processor', category: 'aml',        title: 'Score AML',             description: 'Calcular riesgo AML del cliente (PEP, OFAC, ONU)',    icon: Shield,     color: '#ef4444' },
             { id: 'verificar-ofac',   type: 'processor', category: 'aml',        title: 'Verificar OFAC/ONU',    description: 'Consultar listas restrictivas internacionales',        icon: Search,     color: '#dc2626' },
-            { id: 'congelar-op',      type: 'output',    category: 'operacion',  title: 'Congelar Operación',    description: 'Bloquear transacción sospechosa y notificar',         icon: Lock,       color: '#7c3aed' },
-            { id: 'reporte-sudeban',  type: 'output',    category: 'regulatorio',title: 'Reporte SUDEBAN',       description: 'Generar reporte regulatorio bancario mensual',        icon: FileText,   color: '#0ea5e9' },
+            { id: 'congelar-op',      type: 'processor', category: 'operacion',  title: 'Congelar Operación',    description: 'Bloquear transacción sospechosa y notificar',         icon: Lock,       color: '#7c3aed' },
+            { id: 'reporte-sudeban',  type: 'processor', category: 'regulatorio',title: 'Reporte SUDEBAN',       description: 'Generar reporte regulatorio bancario mensual',        icon: FileText,   color: '#0ea5e9' },
             { id: 'alerta-umbral',    type: 'trigger',   category: 'umbral',     title: 'Alerta por Umbral',     description: 'Disparar cuando valor supera umbral configurado',     icon: AlertTriangle, color: '#f59e0b' },
         ],
     },
@@ -72,7 +74,7 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
             { id: 'indicador-critico',   type: 'trigger',   category: 'indicadores',   title: 'Alerta KPI Crítico',      description: 'Disparar cuando hay indicadores en estado crítico/riesgo', icon: Activity,   color: '#ef4444' },
             { id: 'semaforo',            type: 'processor', category: 'semaforo',       title: 'Semáforo de Gestión',     description: 'Evaluar valor contra umbrales verde/amarillo/rojo',        icon: Gauge,      color: '#f59e0b' },
             { id: 'eeff-leer',           type: 'processor', category: 'eeff',           title: 'Datos EE.FF.',            description: 'Consultar indicadores del sistema Estados Financieros',    icon: PieChart,   color: '#10b981' },
-            { id: 'reporte-gerencial',   type: 'output',    category: 'reporte',        title: 'Reporte Gerencial',       description: 'Enviar informe ejecutivo HTML con KPIs y semáforo',        icon: BookOpen,   color: '#8b5cf6' },
+            { id: 'reporte-gerencial',   type: 'processor', category: 'reporte',        title: 'Reporte Gerencial',       description: 'Enviar informe ejecutivo HTML con KPIs y semáforo',        icon: BookOpen,   color: '#8b5cf6' },
         ],
     },
     {
@@ -80,9 +82,9 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
         color: '#f59e0b',
         nodes: [
             { id: 'check-stock',        type: 'trigger',   category: 'inventario',  title: 'Alerta de Stock',       description: 'Cuando stock < umbral mínimo configurado',           icon: Package,     color: '#ef4444' },
-            { id: 'generar-oc',         type: 'output',    category: 'compras',     title: 'Orden de Compra',       description: 'Generar OC automática al proveedor aprobado',        icon: ShoppingCart,color: '#10b981' },
+            { id: 'generar-oc',         type: 'processor', category: 'compras',     title: 'Orden de Compra',       description: 'Generar OC automática al proveedor aprobado',        icon: ShoppingCart,color: '#10b981' },
             { id: 'solicitar-aprob',    type: 'processor', category: 'aprobacion',  title: 'Solicitar Aprobación',  description: 'Pausar flujo hasta que gerencia apruebe/rechace',    icon: UserCheck,   color: '#3b82f6' },
-            { id: 'actualizar-erp',     type: 'output',    category: 'erp',         title: 'Actualizar ERP/WMS',    description: 'Sincronizar datos con sistema ERP o WMS',            icon: Database,    color: '#8b5cf6' },
+            { id: 'actualizar-erp',     type: 'processor', category: 'erp',         title: 'Actualizar ERP/WMS',    description: 'Sincronizar datos con sistema ERP o WMS',            icon: Database,    color: '#8b5cf6' },
             { id: 'notif-produccion',   type: 'output',    category: 'notificacion',title: 'Notificar Producción',  description: 'Alerta al jefe de planta con detalle de acción',     icon: Bell,        color: '#f59e0b' },
             { id: 'control-calidad',    type: 'processor', category: 'calidad',     title: 'Control de Calidad',    description: 'Verificar parámetros de calidad contra estándar',   icon: Shield,      color: '#22c55e' },
         ],

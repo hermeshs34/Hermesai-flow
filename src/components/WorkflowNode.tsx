@@ -14,6 +14,7 @@ interface WorkflowNodeProps {
     canBeTarget:        boolean;   // hay una conexión activa y este puede ser destino
     onSelect:           () => void;
     onMove:             (nodeId: string, pos: { x: number; y: number }) => void;
+    onMoveStart?:       () => void;
     onDelete:           (nodeId: string) => void;
     onConnectionStart?: (nodeId: string) => void;
     onConnectionEnd?:   (nodeId: string) => void;
@@ -56,7 +57,7 @@ const STATUS_EL: Record<string, React.ReactNode> = {
 
 export function WorkflowNode({
     node, isSelected, isConnecting, canBeTarget,
-    onSelect, onMove, onDelete, onConnectionStart, onConnectionEnd, onConfigure,
+    onSelect, onMove, onMoveStart, onDelete, onConnectionStart, onConnectionEnd, onConfigure,
 }: WorkflowNodeProps) {
     const [isDragging, setIsDragging] = useState(false);
     const dragOffset = useRef({ x: 0, y: 0 });
@@ -71,6 +72,7 @@ export function WorkflowNode({
         if (!nodeRef.current) return;
         const rect = nodeRef.current.getBoundingClientRect();
         dragOffset.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        onMoveStart?.();
         setIsDragging(true);
         onSelect();
         e.preventDefault();

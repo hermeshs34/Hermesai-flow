@@ -3,7 +3,7 @@ import {
     X, Mail, Clock, GitBranch, FileText, Timer,
     Shield, TrendingUp, Bell, Package, UserCheck,
     Database, Play, Zap, AlertTriangle, CheckCircle,
-    Info, BrainCircuit,
+    Info, BrainCircuit, MessageCircle,
 } from 'lucide-react';
 import type { WorkflowNodeData } from '../types/workflow';
 
@@ -73,44 +73,215 @@ function Select({ value, onChange, options }: {
     );
 }
 
-// ── Formularios por tipo de nodo ──────────────────────────────────────────────
+// ── Selector visual de programación ──────────────────────────────────────────
+
+const DIAS_SEMANA = [
+    { id: '1', label: 'L' }, { id: '2', label: 'M' }, { id: '3', label: 'X' },
+    { id: '4', label: 'J' }, { id: '5', label: 'V' }, { id: '6', label: 'S' },
+    { id: '0', label: 'D' },
+];
+
+const HORAS = Array.from({ length: 24 }, (_, i) => ({
+    value: String(i),
+    label: `${String(i).padStart(2, '0')}:00`,
+}));
+
+const DIAS_MES = Array.from({ length: 28 }, (_, i) => ({
+    value: String(i + 1),
+    label: `Día ${i + 1}`,
+}));
+
+type Frecuencia = 'manual' | 'diario' | 'semanal' | 'mensual' | 'avanzado';
+
+function cronToUI(cron: string): { frecuencia: Frecuencia; hora: string; dias: string[]; diaMes: string } {
+    if (!cron) return { frecuencia: 'diario', hora: '9', dias: ['1','2','3','4','5'], diaMes: '1' };
+    const parts = cron.split(' ');
+    if (parts.length !== 5) return { frecuencia: 'avanzado', hora: '9', dias: ['1','2','3','4','5'], diaMes: '1' };
+    const [, h, dom, , dow] = parts;
+    const hora = h.replace('*', '9');
+    if (dom !== '*') return { frecuencia: 'mensual', hora, dias: [], diaMes: dom };
+    if (dow === '*') return { frecuencia: 'diario', hora, dias: [], diaMes: '1' };
+    const dias = dow.split('-').length === 2
+        ? DIAS_SEMANA.slice(
+            DIAS_SEMANA.findIndex(d => d.id === dow.split('-')[0]),
+            DIAS_SEMANA.findIndex(d => d.id === dow.split('-')[1]) + 1
+          ).map(d => d.id)
+        : dow.split(',');
+    return { frecuencia: 'semanal', hora, dias, diaMes: '1' };
+}
+
+function uiToCron(frecuencia: Frecuencia, hora: string, dias: string[], diaMes: string): string {
+    const h = hora || '9';
+    if (frecuencia === 'manual')   return '';
+    if (frecuencia === 'diario')   return `0 ${h} * * *`;
+    if (frecuencia === 'mensual')  return `0 ${h} ${diaMes} * *`;
+    if (frecuencia === 'semanal') {
+        const sorted = [...dias].sort();
+        const dow = sorted.length === 5 && sorted.join(',') === '1,2,3,4,5'
+            ? '1-5' : sorted.join(',') || '1';
+        return `0 ${h} * * ${dow}`;
+    }
+    return '';
+}
 
 function CronForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
-    const presets = [
-        { label: 'Cada día a las 9am',           value: '0 9 * * *'     },
-        { label: 'Lunes a Viernes 9am',          value: '0 9 * * 1-5'   },
-        { label: 'Cada hora',                    value: '0 * * * *'     },
-        { label: 'Cada 30 minutos',              value: '*/30 * * * *'  },
-        { label: 'Primer día del mes 8am',       value: '0 8 1 * *'     },
-        { label: 'Lunes 7am (inicio semana)',    value: '0 7 * * 1'     },
+    const ui = cronToUI(cfg.cron ?? '0 9 * * 1-5');
+    const [frecuencia, setFrecuencia] = React.useState<Frecuencia>(ui.frecuencia);
+    const [hora,       setHora]       = React.useState(ui.hora);
+    const [dias,       setDias]       = React.useState<string[]>(ui.dias);
+    const [diaMes,     setDiaMes]     = React.useState(ui.diaMes);
+    const [showCron,   setShowCron]   = React.useState(false);
+
+    const apply = (f: Frecuencia, h: string, d: string[], dm: string) => {
+        const cron = uiToCron(f, h, d, dm);
+        set('cron', cron || '0 9 * * 1-5');
+    };
+
+    const handleFrecuencia = (f: Frecuencia) => {
+        setFrecuencia(f);
+        const defaultDias = f === 'semanal' ? ['1','2','3','4','5'] : dias;
+        if (f === 'semanal') setDias(defaultDias);
+        apply(f, hora, defaultDias, diaMes);
+    };
+
+    const handleHora = (h: string) => { setHora(h); apply(frecuencia, h, dias, diaMes); };
+    const handleDiaMes = (dm: string) => { setDiaMes(dm); apply(frecuencia, hora, dias, dm); };
+    const toggleDia = (id: string) => {
+        const next = dias.includes(id) ? dias.filter(d => d !== id) : [...dias, id];
+        if (next.length === 0) return;
+        setDias(next);
+        apply(frecuencia, hora, next, diaMes);
+    };
+
+    const resumen = () => {
+        if (frecuencia === 'manual')  return 'Solo manualmente (botón Ejecutar)';
+        const h = HORAS.find(x => x.value === hora)?.label ?? `${hora}:00`;
+        if (frecuencia === 'diario')  return `Todos los días a las ${h}`;
+        if (frecuencia === 'mensual') return `El día ${diaMes} de cada mes a las ${h}`;
+        if (frecuencia === 'semanal') {
+            const labels = DIAS_SEMANA.filter(d => dias.includes(d.id)).map(d =>
+                ['L','M','X','J','V'].includes(d.label)
+                    ? { L:'Lunes', M:'Martes', X:'Miércoles', J:'Jueves', V:'Viernes', S:'Sábado', D:'Domingo' }[d.label]
+                    : d.label
+            );
+            return `${labels.join(', ')} a las ${h}`;
+        }
+        return cfg.cron;
+    };
+
+    const FREQ_OPTIONS: { id: Frecuencia; icon: string; label: string }[] = [
+        { id: 'manual',   icon: '▶', label: 'Manual'    },
+        { id: 'diario',   icon: '📅', label: 'Diario'   },
+        { id: 'semanal',  icon: '📆', label: 'Semanal'  },
+        { id: 'mensual',  icon: '🗓', label: 'Mensual'  },
+        { id: 'avanzado', icon: '⚙', label: 'Avanzado' },
     ];
+
     return (
         <div className="space-y-4">
-            <Field label="Expresión Cron" hint="Formato: minuto hora día-mes mes día-semana">
-                <Input value={cfg.cron ?? '0 9 * * 1-5'} onChange={v => set('cron', v)} placeholder="0 9 * * 1-5" />
-            </Field>
+            {/* Frecuencia */}
             <div>
-                <p className="text-xs font-semibold text-gray-500 mb-2">Atajos rápidos:</p>
-                <div className="grid grid-cols-2 gap-1.5">
-                    {presets.map(p => (
+                <p className="text-xs font-semibold text-gray-600 mb-2">¿Con qué frecuencia?</p>
+                <div className="grid grid-cols-5 gap-1">
+                    {FREQ_OPTIONS.map(f => (
                         <button
-                            key={p.value}
-                            onClick={() => set('cron', p.value)}
-                            className={`text-left text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
-                                cfg.cron === p.value
-                                    ? 'border-indigo-400 bg-indigo-50 text-indigo-700 font-semibold'
-                                    : 'border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 text-gray-600'
+                            key={f.id}
+                            onClick={() => handleFrecuencia(f.id)}
+                            className={`flex flex-col items-center gap-1 py-2 px-1 rounded-lg border text-xs font-medium transition-colors ${
+                                frecuencia === f.id
+                                    ? 'border-indigo-400 bg-indigo-50 text-indigo-700'
+                                    : 'border-gray-200 text-gray-500 hover:border-indigo-300 hover:bg-indigo-50'
                             }`}
                         >
-                            {p.label}
-                            <span className="block font-mono opacity-60">{p.value}</span>
+                            <span className="text-base leading-none">{f.icon}</span>
+                            {f.label}
                         </button>
                     ))}
                 </div>
             </div>
+
+            {/* Hora */}
+            {frecuencia !== 'manual' && frecuencia !== 'avanzado' && (
+                <div>
+                    <p className="text-xs font-semibold text-gray-600 mb-2">¿A qué hora?</p>
+                    <select
+                        value={hora}
+                        onChange={e => handleHora(e.target.value)}
+                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                    >
+                        {HORAS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
+                    </select>
+                </div>
+            )}
+
+            {/* Días de semana */}
+            {frecuencia === 'semanal' && (
+                <div>
+                    <p className="text-xs font-semibold text-gray-600 mb-2">¿Qué días?</p>
+                    <div className="flex gap-1.5">
+                        {DIAS_SEMANA.map(d => (
+                            <button
+                                key={d.id}
+                                onClick={() => toggleDia(d.id)}
+                                className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                                    dias.includes(d.id)
+                                        ? 'bg-indigo-600 text-white border-indigo-600'
+                                        : 'border-gray-200 text-gray-500 hover:border-indigo-300'
+                                }`}
+                            >
+                                {d.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Día del mes */}
+            {frecuencia === 'mensual' && (
+                <div>
+                    <p className="text-xs font-semibold text-gray-600 mb-2">¿Qué día del mes?</p>
+                    <select
+                        value={diaMes}
+                        onChange={e => handleDiaMes(e.target.value)}
+                        className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                    >
+                        {DIAS_MES.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+                    </select>
+                </div>
+            )}
+
+            {/* Avanzado — campo cron directo */}
+            {frecuencia === 'avanzado' && (
+                <Field label="Expresión Cron" hint="minuto hora día-mes mes día-semana">
+                    <Input value={cfg.cron ?? '0 9 * * 1-5'} onChange={v => set('cron', v)} placeholder="0 9 * * 1-5" />
+                </Field>
+            )}
+
+            {/* Resumen en lenguaje natural */}
+            {frecuencia !== 'avanzado' && (
+                <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-lg">
+                    <p className="text-xs text-indigo-700 font-medium">
+                        📋 Este flujo se ejecutará: <strong>{resumen()}</strong>
+                    </p>
+                </div>
+            )}
+
+            {/* Toggle para ver/ocultar cron técnico */}
+            <button
+                onClick={() => setShowCron(s => !s)}
+                className="text-xs text-gray-400 hover:text-gray-600 underline"
+            >
+                {showCron ? 'Ocultar' : 'Ver'} expresión cron técnica
+            </button>
+            {showCron && (
+                <div className="font-mono text-xs bg-gray-100 rounded px-3 py-2 text-gray-600">
+                    {cfg.cron || '(sin programación)'}
+                </div>
+            )}
+
             <div className="p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700">
                 <Info className="w-3.5 h-3.5 inline mr-1" />
-                El cron se ejecuta automáticamente según el horario. Para probarlo ahora, usa el botón <strong>Ejecutar</strong> del canvas.
+                Para probar el flujo ahora, usa el botón <strong>Ejecutar</strong> en el canvas.
             </div>
         </div>
     );
@@ -219,6 +390,64 @@ function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void })
             <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-700">
                 <Info className="w-3.5 h-3.5 inline mr-1" />
                 El envío usa <strong>Resend API</strong>. Secret <code>RESEND_API_KEY</code> debe estar en Supabase → Settings → Edge Functions.
+            </div>
+        </div>
+    );
+}
+
+function WhatsAppForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    const PLANTILLAS = [
+        {
+            id: 'alerta',
+            label: '⚠️ Alerta',
+            apply: () => set('message',
+                '⚠️ *Alerta HermesAI Flow*\n\nSe detectó una condición que requiere tu atención:\n{{previous.motivo}}\n\nRevisa el sistema para más detalles.'),
+        },
+        {
+            id: 'aprobacion',
+            label: '✋ Aprobación',
+            apply: () => set('message',
+                '✋ *Aprobación pendiente — HermesAI Flow*\n\nTienes una tarea de aprobación esperando tu decisión.\nIngresa a la Cola de Trabajo para resolverla.'),
+        },
+        {
+            id: 'eeff',
+            label: '📊 Cifras EE.FF.',
+            apply: () => set('message',
+                '📊 *Resumen EE.FF. — {{previous.empresa}}*\nPeríodo: {{previous.periodo}}\n\n• Activos: {{previous.activos}} {{previous.moneda}}\n• Ingresos: {{previous.ingresos}}\n• Utilidad Neta: {{previous.utilidad_neta}}\n• Margen: {{previous.margen_pct}}'),
+        },
+    ];
+
+    return (
+        <div className="space-y-4">
+            <Field label="Número destino" hint="Formato internacional con +, ej: +584141234567">
+                <Input value={cfg.to ?? ''} onChange={v => set('to', v)} placeholder="+584141234567" />
+            </Field>
+            <div>
+                <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-semibold text-gray-700">Mensaje</label>
+                    <div className="flex gap-1.5">
+                        {PLANTILLAS.map(p => (
+                            <button key={p.id} type="button" onClick={p.apply}
+                                className="text-xs px-2.5 py-1 bg-green-50 hover:bg-green-100 text-green-700 border border-green-200 rounded-lg transition-colors font-medium">
+                                {p.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+                <Textarea value={cfg.message ?? ''} onChange={v => set('message', v)}
+                    placeholder="Escribe el mensaje o usa una plantilla. Soporta *negritas* y variables {{previous.campo}}."
+                    rows={6} />
+                <p className="text-xs text-gray-400 mt-1">
+                    Variables: <code className="bg-gray-100 px-1 rounded">{'{{previous.empresa}}'}</code>{' '}
+                    <code className="bg-gray-100 px-1 rounded">{'{{previous.utilidad_neta}}'}</code>{' '}
+                    <code className="bg-gray-100 px-1 rounded">{'{{previous.en_lista}}'}</code>
+                </p>
+            </div>
+            <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-700">
+                <Info className="w-3.5 h-3.5 inline mr-1" />
+                Envío vía <strong>Twilio WhatsApp API</strong>. Secrets requeridos en Supabase → Edge Functions:{' '}
+                <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, <code>TWILIO_WHATSAPP_FROM</code>.
+                En sandbox el destinatario debe unirse primero enviando el código <em>join</em> al número de Twilio.
             </div>
         </div>
     );
@@ -406,8 +635,22 @@ function EeffForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) 
             <Field label="Nombre del período (opcional)" hint="Ej: Enero 2025. Vacío = último período no cerrado">
                 <Input value={cfg.periodo ?? ''} onChange={v => set('periodo', v)} placeholder="Enero 2025" />
             </Field>
+            <div className="grid grid-cols-2 gap-3">
+                <Field label="Moneda del reporte" hint="Vacío = moneda original del sistema">
+                    <Select value={cfg.moneda_reporte ?? ''} onChange={v => set('moneda_reporte', v)} options={[
+                        { value: '',    label: 'Original (del sistema)' },
+                        { value: 'VES', label: 'Bolívares (VES)'        },
+                        { value: 'USD', label: 'Dólares (USD)'          },
+                        { value: 'EUR', label: 'Euros (EUR)'            },
+                    ]} />
+                </Field>
+                <Field label="Tasa de conversión" hint="Solo si cambia de moneda. Ej: 105.5 (VES→USD)">
+                    <Input value={String(cfg.tasa_conversion ?? '')} onChange={v => set('tasa_conversion', v)}
+                        placeholder="Ej: 105.50" type="number" />
+                </Field>
+            </div>
             <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500">
-                <strong>Retorna:</strong> <code>empresa</code>, <code>periodo</code>, <code>ingresos_total</code>, <code>egresos_total</code>, <code>utilidad_neta</code>, <code>margen_pct</code>
+                <strong>Retorna:</strong> <code>empresa</code>, <code>periodo</code>, <code>ingresos</code>, <code>gastos</code>, <code>utilidad_neta</code>, <code>margen_pct</code>, <code>periodos_disponibles</code>, <code>categorias_db</code>
             </div>
         </div>
     );
@@ -425,6 +668,40 @@ const REPORTE_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:640
   </div>
 </div>`;
 
+function ReporteSudeasegForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg text-sm text-purple-800 flex items-start gap-2">
+                <FileText className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                <span>Genera un reporte regulatorio estructurado con los datos del flujo. El resultado queda disponible para el nodo Email siguiente.</span>
+            </div>
+            <Field label="Tipo de reporte">
+                <Select value={cfg.tipo ?? 'SUDEASEG'} onChange={v => set('tipo', v)} options={[
+                    { value: 'SUDEASEG', label: 'SUDEASEG — Supervisión de Seguros' },
+                    { value: 'SUDEBAN',  label: 'SUDEBAN — Supervisión Bancaria'    },
+                ]} />
+            </Field>
+            <Field label="Período del reporte" hint="Ej: Mayo 2026, Q1 2026, Anual 2025">
+                <Input value={cfg.periodo ?? ''} onChange={v => set('periodo', v)} placeholder="Mayo 2026" />
+            </Field>
+            <Field label="Empresa / Entidad" hint="Nombre de la aseguradora o institución">
+                <Input value={cfg.empresa ?? ''} onChange={v => set('empresa', v)} placeholder="Ej: Seguros HermesAI C.A." />
+            </Field>
+            <Field label="Referencia del caso" hint="Número de caso, siniestro o expediente (opcional, acepta {{previous.campo}})">
+                <Input value={cfg.referencia ?? ''} onChange={v => set('referencia', v)} placeholder="{{previous.nombre_buscado}}" />
+            </Field>
+            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500 space-y-1">
+                <strong className="text-gray-700">Retorna para usar en Email/Log:</strong>
+                <div className="grid grid-cols-2 gap-1 mt-1">
+                    {['{{previous.reporte_texto}}','{{previous.tipo_reporte}}','{{previous.periodo}}','{{previous.referencia_caso}}'].map(f => (
+                        <code key={f} className="bg-white border border-gray-200 px-1.5 py-0.5 rounded text-[10px]">{f}</code>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function ReporteGerencialForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
     return (
         <div className="space-y-4">
@@ -432,14 +709,14 @@ function ReporteGerencialForm({ cfg, set }: { cfg: any; set: (k: string, v: any)
                 <Input value={cfg.to ?? ''} onChange={v => set('to', v)} placeholder="gerencia@empresa.com" type="email" />
             </Field>
             <Field label="Asunto">
-                <Input value={cfg.subject ?? ''} onChange={v => set('subject', v)} placeholder="📊 Reporte Semanal de Gestión — {{previous.label}}" />
+                <Input value={cfg.subject ?? ''} onChange={v => set('subject', v)} placeholder="📊 Reporte Gerencial — {{previous.empresa}} ({{previous.periodo}})" />
             </Field>
             <div>
                 <div className="flex items-center justify-between mb-1">
                     <label className="block text-sm font-semibold text-gray-700">Cuerpo del reporte</label>
                     <button
                         type="button"
-                        onClick={() => { set('subject', '📊 Reporte Gerencial — {{previous.label}}'); set('body', REPORTE_TEMPLATE); }}
+                        onClick={() => { set('subject', '📊 Reporte Gerencial — {{previous.empresa}} ({{previous.periodo}})'); set('body', REPORTE_TEMPLATE); }}
                         className="text-xs px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg transition-colors font-medium"
                     >
                         📊 Usar plantilla gerencial
@@ -449,7 +726,7 @@ function ReporteGerencialForm({ cfg, set }: { cfg: any; set: (k: string, v: any)
                     placeholder="Usa el botón para cargar la plantilla ejecutiva, o escribe el contenido manualmente."
                     rows={5} />
                 <p className="text-xs text-gray-400 mt-1">
-                    Variables: <code className="bg-gray-100 px-1 rounded">{'{{summary}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{previous.critical_count}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{previous.label}}'}</code>
+                    Variables: <code className="bg-gray-100 px-1 rounded">{'{{summary}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{previous.empresa}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{previous.periodo}}'}</code> <code className="bg-gray-100 px-1 rounded">{'{{previous.analisis_ia}}'}</code>
                 </p>
             </div>
         </div>
@@ -758,12 +1035,14 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
     aprobacion:   UserCheck,
     erp:          Database,
     agente:       BrainCircuit,
+    whatsapp:     MessageCircle,
 };
 
 const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, title: string) => React.ReactNode> = {
     cron:    (c, s)    => <CronForm cfg={c} set={s} />,
     manual:  ()        => <ManualTriggerForm />,
     email:   (c, s)    => <EmailForm cfg={c} set={s} />,
+    whatsapp:(c, s)    => <WhatsAppForm cfg={c} set={s} />,
     decision:(c, s)    => <DecisionForm cfg={c} set={s} />,
     log:     (c, s)    => <LogForm cfg={c} set={s} />,
     bcv:          (c, s) => <BcvForm cfg={c} set={s} />,
@@ -778,6 +1057,7 @@ const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, titl
     semaforo:     (c, s) => <SemaforoForm cfg={c} set={s} />,
     eeff:         (c, s) => <EeffForm cfg={c} set={s} />,
     reporte:      (c, s) => <ReporteGerencialForm cfg={c} set={s} />,
+    regulatorio:  (c, s) => <ReporteSudeasegForm cfg={c} set={s} />,
 };
 
 // ── Auto-completado por contexto del nodo anterior ───────────────────────────

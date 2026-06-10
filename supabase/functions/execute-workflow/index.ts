@@ -211,6 +211,59 @@ async function executeNode(
             return { sent: true, email_id: data.id, to, subject };
         }
 
+        // ── Enviar WhatsApp (Twilio) ─────────────────────────────────────
+        case 'output:whatsapp': {
+            const TWILIO_SID   = Deno.env.get('TWILIO_ACCOUNT_SID');
+            const TWILIO_TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN');
+            // Sandbox de Twilio: whatsapp:+14155238886 — en producción, número WA aprobado
+            const TWILIO_FROM  = Deno.env.get('TWILIO_WHATSAPP_FROM') ?? 'whatsapp:+14155238886';
+            if (!TWILIO_SID || !TWILIO_TOKEN)
+                throw new Error('TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN no configurados en Supabase Secrets');
+
+            const to      = resolveValue(cfg.to ?? '', context).trim();
+            let   message = resolveValue(cfg.message ?? '', context).trim();
+            if (!to) throw new Error('Nodo WhatsApp: campo "to" (número destino) requerido');
+
+            // Normalizar destino: aceptar "+58414..." o "whatsapp:+58414..."
+            const toWa = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
+            if (!toWa.match(/^whatsapp:\+\d{8,15}$/))
+                throw new Error(`Nodo WhatsApp: número inválido "${to}" — usar formato internacional +584141234567`);
+
+            if (!message) {
+                message = `📋 *HermesAI Flow*\nEl flujo se completó exitosamente.\n${new Date().toLocaleString('es-VE')}`;
+            }
+
+            const twilioRes = await fetch(
+                `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`,
+                {
+                    method:  'POST',
+                    headers: {
+                        Authorization:  'Basic ' + btoa(`${TWILIO_SID}:${TWILIO_TOKEN}`),
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        From: TWILIO_FROM.startsWith('whatsapp:') ? TWILIO_FROM : `whatsapp:${TWILIO_FROM}`,
+                        To:   toWa,
+                        Body: message.slice(0, 1600), // límite Twilio por mensaje
+                    }),
+                },
+            );
+            const twilioData = await twilioRes.json();
+            if (!twilioRes.ok) {
+                // Error 63015/21608: destinatario no unido al sandbox — mensaje claro para el usuario
+                const hint = twilioData?.code === 21608 || twilioData?.code === 63015
+                    ? ' (Sandbox: el destinatario debe enviar primero el código "join" al número de Twilio)'
+                    : '';
+                throw new Error(`Twilio API error ${twilioData?.code ?? twilioRes.status}: ${twilioData?.message ?? 'desconocido'}${hint}`);
+            }
+            return {
+                sent:        true,
+                whatsapp_sid: twilioData.sid,
+                to:          toWa.replace('whatsapp:', ''),
+                status:      twilioData.status, // queued | sent
+            };
+        }
+
         // ── Tasa BCV ─────────────────────────────────────────────────────
         case 'processor:bcv': {
             const ts = new Date().toISOString();
@@ -546,13 +599,31 @@ async function executeNode(
                 .eq('company_id', company.id)
                 .order('start_date', { ascending: false });
 
+            const MES_NUM: Record<string,string> = {
+                enero:'01',febrero:'02',marzo:'03',abril:'04',mayo:'05',junio:'06',
+                julio:'07',agosto:'08',septiembre:'09',octubre:'10',noviembre:'11',diciembre:'12',
+            };
             if (cfg.periodo?.trim()) {
-                periodQuery = periodQuery.ilike('period_name', `%${cfg.periodo.trim()}%`);
+                const periodoLower = cfg.periodo.trim().toLowerCase();
+                // Extraer mes: acepta "Enero", "Enero 2025", "enero", etc.
+                const primeraPalabra = periodoLower.split(/\s+/)[0];
+                const mesNum = MES_NUM[periodoLower] ?? MES_NUM[primeraPalabra];
+                // Extraer año si viene en el campo (ej: "Enero 2025" → año = "2025")
+                const añoMatch = cfg.periodo.trim().match(/\b(20\d{2})\b/);
+                const año = añoMatch ? añoMatch[1] : null;
+                if (mesNum) {
+                    // Buscar por número de mes y opcionalmente año en el period_name
+                    // Ej: "Enero 2025" → busca "01/01/2025"; "Enero" → busca "01/01/"
+                    const patron = año ? `%01/${mesNum}/${año}%` : `%01/${mesNum}/%`;
+                    periodQuery = periodQuery.ilike('period_name', patron);
+                } else {
+                    periodQuery = periodQuery.ilike('period_name', `%${cfg.periodo.trim()}%`);
+                }
             } else {
                 periodQuery = periodQuery.eq('is_closed', false);
             }
             const { data: periods } = await periodQuery.limit(1);
-            const period = periods?.[0];
+            let period = periods?.[0];
 
             if (!period) {
                 // Intentar con el período más reciente sin importar estado
@@ -564,36 +635,183 @@ async function executeNode(
                     .limit(1)
                     .maybeSingle();
                 if (!anyPeriod) return { empresa: company.name, periodo: 'Sin períodos cargados', timestamp: ts };
-                Object.assign(period ?? {}, anyPeriod);
+                period = anyPeriod;
             }
 
-            // ── Leer financial_entries por company_id + period_id ────────
-            // Columnas: company_id, period_id, account_code, account_name,
-            //           debit_amount, credit_amount, balance_amount,
-            //           entry_type, category
+            // ── Intentar leer tabla de resumen balance_sheet primero ─────
+            // balance_sheet no se usa en InsuranceModel — se lee directamente de financial_entries
+
+
+            // ── Leer financial_entries ordenando por id DESC para tomar último balance ──
             const { data: entries, error: entErr } = await eeff
                 .from('financial_entries')
-                .select('category, entry_type, balance_amount, debit_amount, credit_amount')
+                .select('*')
                 .eq('company_id', company.id)
                 .eq('period_id', (period as any)?.id ?? '')
+                .order('id', { ascending: false })
                 .limit(5000);
 
             if (entErr) throw new Error(`EE.FF. entries: ${entErr.message}`);
 
-            // Agrupar por categoría y sumar valores absolutos
-            const sums: Record<string, number> = {};
-            for (const e of entries ?? []) {
-                const cat = String(e.category || e.entry_type || 'otros').toLowerCase();
-                const val = Math.abs(Number(e.balance_amount ?? 0));
-                sums[cat] = (sums[cat] ?? 0) + val;
+            // ══════════════════════════════════════════════════════════════
+            // LÓGICA InsuranceModel (replica DataContext.tsx del sistema EE.FF.)
+            //
+            // El sistema EE.FF. importa dos fuentes para el mismo período:
+            //   - SUDEASEG/dot  (2.xxx)  → Activos del Balance General
+            //   - Profit Plus/dash (3xx-, 4xx-, 5xx-) → Gastos, Pasivos/Patrimonio, Ingresos
+            //
+            // Además de la clasificación por prefijo, aplica (validado vs SQL 10/06/2026,
+            // réplica de extractBalanceSheetData de DataContext.tsx):
+            //   0. DEDUP: filas idénticas (código+valor+nombre) se cuentan una sola vez
+            //      (financial_entries tiene duplicados exactos del doble import)
+            //   1. Consolidar por account_code: SUM CON SIGNO (no abs)
+            //   2. Excluir cuentas cuyo nombre contiene 'total'/'resumen'/'sub-total'
+            //   3. Filtrar cuentas HOJA: si un código tiene hijos con |saldo| > 0.01, se omite
+            //   4. InsuranceModel: Math.abs se aplica AL CLASIFICAR cada hoja.
+            //      '2' = Activos, '3' = Gastos, '4' = Pasivos/Patrimonio (409/410/411), '5' = Ingresos
+            // ══════════════════════════════════════════════════════════════
+
+            // Paso 0+1 — Dedup de filas idénticas y consolidación CON SIGNO por account_code
+            const consolidated = new Map<string, { balance: number; name: string; esTotal: boolean }>();
+            const seenRows = new Set<string>();
+            for (const e of (entries ?? []) as any[]) {
+                const code = String(e.account_code ?? '').trim();
+                if (!code) continue;
+                const bal  = Number(e.balance_amount ?? 0);
+                if (bal === 0) continue;
+                const name = String(e.account_name ?? '');
+                const hash = `${code}|${bal.toFixed(2)}|${name}`;
+                if (seenRows.has(hash)) continue; // duplicado exacto — ignorar
+                seenRows.add(hash);
+                const lname   = name.toLowerCase();
+                const esTotal = lname.includes('total') || lname.includes('resumen') || lname.includes('sub-total');
+                if (consolidated.has(code)) {
+                    const cur = consolidated.get(code)!;
+                    cur.balance += bal;
+                    cur.esTotal = cur.esTotal || esTotal;
+                } else {
+                    consolidated.set(code, { balance: bal, name, esTotal });
+                }
             }
 
-            const ingresos  = sums['ingresos']   ?? 0;
-            const gastos    = (sums['gastos']    ?? 0) + (sums['egresos'] ?? 0);
-            const pasivos   = sums['pasivos']    ?? 0;
-            const patrimonio= sums['patrimonio'] ?? 0;
-            const activos   = sums['activos']    ?? 0;
-            const utilidad  = ingresos - gastos;
+            // Paso 2 — Leaf filtering: cleanCode = quitar todos los no-alfanuméricos
+            // Si un código tiene hijos activos (children_sum > 0.01), se omite (es padre).
+            const cleanFn = (c: string) => c.replace(/[^a-zA-Z0-9]/g, '');
+            const allCleans = new Map<string, string>(); // code → cleanCode
+            for (const [code] of consolidated) allCleans.set(code, cleanFn(code));
+
+            const leafItems = new Map<string, number>(); // code → balance CON SIGNO
+            for (const [code, { balance, esTotal }] of consolidated) {
+                if (esTotal) continue; // totales explícitos por nombre — redundantes
+                const cc = allCleans.get(code)!;
+                // Suma de |saldo| de hijos directos y transitivos
+                let childrenSum = 0;
+                for (const [otherCode, otherClean] of allCleans) {
+                    if (otherCode === code) continue;
+                    if (otherClean.startsWith(cc) && otherClean.length > cc.length) {
+                        childrenSum += Math.abs(consolidated.get(otherCode)!.balance);
+                    }
+                }
+                // Strict leaf filter: excluir si tiene hijos con saldo significativo
+                if (childrenSum <= 0.01 && Math.abs(balance) > 0.01) {
+                    leafItems.set(code, balance);
+                }
+            }
+
+            // Paso 3 — InsuranceModel (BALANCE): clasificar 2/4 por prefijo de account_code
+            let activos = 0, pasivos = 0, patrimonio = 0;
+            let leafCount = 0;
+
+            for (const [code, balance] of leafItems) {
+                leafCount++;
+                const v       = Math.abs(balance);
+                const clean   = allCleans.get(code)!;
+                const name    = consolidated.get(code)?.name.toLowerCase() ?? '';
+
+                if (code.match(/^2[\.\-]/i) || code.match(/^2\d/)) {
+                    // 2.xxx → ACTIVOS (SUDEASEG). InsuranceModel.mapAccount suma |saldo|
+                    // de cada hoja (el neteo de contra-activos ya ocurrió al consolidar con signo).
+                    activos += v;
+                } else if (code.match(/^4[\.\-]/i) || code.match(/^4\d/)) {
+                    // 4xx- → PASIVOS o PATRIMONIO (Profit Plus)
+                    const isEquity = clean.startsWith('409') || clean.startsWith('410') || clean.startsWith('411') ||
+                        clean.startsWith('4409') || clean.startsWith('4410') || clean.startsWith('4411') ||
+                        name.includes('capital social') || name.includes('patrimonio') ||
+                        name.includes('reserva legal') || name.includes('superavit') ||
+                        name.includes('utilidad del ejercicio') || name.includes('utilidades no distribuidas') ||
+                        name.includes('resultado del ejercicio') || name.includes('perdida del ejercicio');
+                    if (isEquity) patrimonio += v; else pasivos += v;
+                }
+                // Grupos 3 y 5 se procesan en el motor P&L (pipeline separado, abajo)
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // MOTOR P&L (réplica exacta de extractIncomeStatementData — Seguros)
+            // Pipeline DISTINTO al del balance (validado vs SQL 10/06/2026,
+            // reproduce ingresos/costo/utilidad del sistema EE.FF. al céntimo):
+            //   - SIN dedup; consolidación CON SIGNO por código
+            //   - Excluye códigos terminados en '-' (totalizadores Profit Plus)
+            //   - Totalizador 80%: padre se excluye solo si sus hijos suman > 80% de su |saldo|
+            //   - Grupo 5: saldo < 0 → Ingresos; saldo > 0 → Costos Técnicos (reversiones)
+            //   - Grupo 3: técnico solo por prefijo 30/311/312/32/33/34/317+«técnico» → COGS;
+            //     resto → Gastos Admin (sin palabras clave adicionales)
+            // ══════════════════════════════════════════════════════════════
+            const consolidatedPL = new Map<string, { val: number; name: string }>();
+            for (const e of (entries ?? []) as any[]) {
+                const code = String(e.account_code ?? '').trim();
+                if (!code || code === '0') continue;
+                const val = Number(e.balance_amount ?? 0);
+                if (consolidatedPL.has(code)) {
+                    consolidatedPL.get(code)!.val += val;
+                } else {
+                    consolidatedPL.set(code, { val, name: String(e.account_name ?? '') });
+                }
+            }
+            const plCleans = new Map<string, string>();
+            for (const [code] of consolidatedPL) plCleans.set(code, cleanFn(code));
+
+            let ingresos = 0, costoVentas = 0, gastosOperativos = 0;
+            for (const [code, { val, name }] of consolidatedPL) {
+                if (code.endsWith('-')) continue;
+                if (Math.abs(val) <= 0.01) continue;
+                const cc = plCleans.get(code)!;
+                let hasChildren = false;
+                let childrenSum = 0;
+                for (const [otherCode, otherClean] of plCleans) {
+                    if (otherCode === code) continue;
+                    if (otherClean.startsWith(cc) && otherClean.length > cc.length) {
+                        hasChildren = true;
+                        childrenSum += Math.abs(consolidatedPL.get(otherCode)!.val);
+                    }
+                }
+                if (hasChildren && childrenSum > Math.abs(val) * 0.8) continue; // totalizador
+
+                const mainGroup = code.charAt(0);
+                const digits    = code.replace(/[^0-9]/g, '');
+                const lname     = name.toLowerCase();
+
+                if (mainGroup === '5') {
+                    if (val < 0) ingresos += Math.abs(val);
+                    else costoVentas += val; // reversiones positivas en G5 → costos técnicos
+                } else if (mainGroup === '3') {
+                    const isTechnical = digits.startsWith('30') || digits.startsWith('311') ||
+                        digits.startsWith('312') || digits.startsWith('32') ||
+                        digits.startsWith('33') || digits.startsWith('34') ||
+                        (digits.startsWith('317') && (lname.includes('tecnico') || lname.includes('técnico')));
+                    if (isTechnical) costoVentas += Math.abs(val);
+                    else gastosOperativos += Math.abs(val);
+                }
+            }
+
+            const gastos  = costoVentas + gastosOperativos;
+            const utilidad = ingresos - gastos;
+            if (activos === 0 && (pasivos + patrimonio) > 0) activos = pasivos + patrimonio;
+
+            // ── Conversión de moneda ───────────────────────────────────────
+            const monedaReporte  = (cfg.moneda_reporte ?? '').toUpperCase() || company.currency;
+            const tasaConversion = Number(cfg.tasa_conversion ?? 0);
+            const convertir = (n: number) =>
+                monedaReporte !== company.currency && tasaConversion > 0 ? n / tasaConversion : n;
 
             if (queryType === 'variacion') {
                 const { data: prevPeriods } = await eeff
@@ -604,36 +822,50 @@ async function executeNode(
                     .limit(2);
                 return {
                     empresa:          company.name,
-                    moneda:           company.currency,
+                    moneda:           monedaReporte,
                     periodo_actual:   prevPeriods?.[0]?.period_name ?? '—',
                     periodo_anterior: prevPeriods?.[1]?.period_name ?? '—',
-                    ingresos_total:   ingresos.toFixed(2),
-                    gastos_total:     gastos.toFixed(2),
-                    utilidad_neta:    utilidad.toFixed(2),
+                    ingresos_total:   convertir(ingresos).toFixed(2),
+                    gastos_total:     convertir(gastos).toFixed(2),
+                    utilidad_neta:    convertir(utilidad).toFixed(2),
                     timestamp:        ts,
                 };
             }
 
-            const fmt = (n: number) => n.toLocaleString('es-VE', { minimumFractionDigits: 2 });
+            const fmt = (n: number) => convertir(n).toLocaleString('es-VE', { minimumFractionDigits: 2 });
+
+            // Períodos disponibles para diagnóstico
+            const { data: allPeriods } = await eeff
+                .from('financial_periods')
+                .select('period_name, start_date, is_closed')
+                .eq('company_id', company.id)
+                .order('start_date', { ascending: false })
+                .limit(12);
+            const periodosDisponibles = (allPeriods ?? [])
+                .map((p: any) => `${p.period_name} (${p.is_closed ? 'cerrado' : 'abierto'})`)
+                .join(' | ');
 
             return {
-                empresa:        company.name,
-                moneda:         company.currency,
-                periodo:        (period as any)?.period_name ?? '—',
-                periodo_estado: (period as any)?.is_closed ? 'Cerrado' : 'Abierto',
-                entradas:       `${(entries ?? []).length} registros`,
-                activos:        fmt(activos),
-                pasivos:        fmt(pasivos),
-                patrimonio:     fmt(patrimonio),
-                ingresos:       fmt(ingresos),
-                gastos:         fmt(gastos),
-                utilidad_neta:  fmt(utilidad),
-                margen_pct:     ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
-                timestamp:      ts,
+                empresa:               company.name,
+                moneda:                monedaReporte,
+                periodo:               (period as any)?.period_name ?? '—',
+                periodo_estado:        (period as any)?.is_closed ? 'Cerrado' : 'Abierto',
+                activos:               fmt(activos),
+                pasivos:               fmt(pasivos),
+                patrimonio:            fmt(patrimonio),
+                ingresos:              fmt(ingresos),
+                costo_ventas:          fmt(costoVentas),
+                gastos_admin:          fmt(gastosOperativos),
+                gastos:                fmt(gastos),
+                utilidad_neta:         fmt(utilidad),
+                margen_pct:            ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
+                periodos_disponibles:  periodosDisponibles,
+                timestamp:             ts,
             };
         }
 
         // ── Reporte Gerencial (email formateado) ──────────────────────────
+        case 'processor:reporte':
         case 'output:reporte': {
             if (!deps.resendKey) throw new Error('RESEND_API_KEY no configurado');
             const to      = resolveValue(cfg.to ?? '', context);
@@ -670,6 +902,185 @@ async function executeNode(
         }
 
         // ── Nodo no implementado ──────────────────────────────────────────
+        // ── Agente IA (Claude) ────────────────────────────────────────────
+        case 'processor:agente': {
+            const ANTHROPIC_KEY = Deno.env.get('ANTHROPIC_API_KEY');
+            if (!ANTHROPIC_KEY) {
+                return { skipped: true, reason: 'ANTHROPIC_API_KEY no configurado en Supabase Secrets' };
+            }
+
+            const modo          = cfg.modo           ?? 'analisis';
+            const modelo        = cfg.modelo         ?? 'claude-sonnet-4-6';
+            const campoResult   = cfg.campo_resultado ?? 'analisis_ia';
+            const condicionSi   = (cfg.condicion_si  ?? 'aprobar').toLowerCase().trim();
+            const systemPrompt  = cfg.system_prompt  ?? 'Eres un analista experto en seguros, reaseguros y cumplimiento normativo venezolano (SUDEASEG, SUDEBAN, OFAC).';
+            const rawPrompt     = cfg.prompt ?? 'Analiza los datos disponibles y proporciona un análisis ejecutivo detallado.';
+            const userPrompt    = resolveValue(rawPrompt, context);
+
+            // Inyectar contexto del flujo si el prompt no usa {{previous.*}} explícitamente
+            const OMITIR_AI = new Set(['branch','evaluated','skipped','triggered','modelo','tokens_input','tokens_output']);
+            let contextBlock = '';
+            if (!rawPrompt.includes('{{previous.')) {
+                const lines: string[] = [];
+                for (const nodeData of Object.values(context)) {
+                    if (!nodeData || typeof nodeData !== 'object') continue;
+                    for (const [k, v] of Object.entries(nodeData as Record<string, any>)) {
+                        if (OMITIR_AI.has(k) || v === null || v === undefined || v === '') continue;
+                        const display = typeof v === 'object' ? JSON.stringify(v) : String(v);
+                        lines.push(`- ${k}: ${display}`);
+                    }
+                }
+                if (lines.length) contextBlock = `## Datos del Flujo\n${lines.join('\n')}\n\n## Tu tarea\n`;
+            }
+
+            const res = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'x-api-key':         ANTHROPIC_KEY,
+                    'anthropic-version': '2023-06-01',
+                    'content-type':      'application/json',
+                },
+                body: JSON.stringify({
+                    model:      modelo,
+                    max_tokens: cfg.max_tokens ?? 4096,
+                    system:     systemPrompt,
+                    messages:   [{ role: 'user', content: contextBlock + userPrompt }],
+                }),
+            });
+
+            if (!res.ok) {
+                const txt = await res.text();
+                throw new Error(`Anthropic API error: ${txt}`);
+            }
+
+            const data       = await res.json();
+            const respuesta  = data?.content?.[0]?.text ?? '';
+            const inputTokens  = data?.usage?.input_tokens  ?? 0;
+            const outputTokens = data?.usage?.output_tokens ?? 0;
+
+            const resultado: Record<string, any> = {
+                [campoResult]: respuesta,
+                modelo,
+                tokens_input:  inputTokens,
+                tokens_output: outputTokens,
+                timestamp:     new Date().toISOString(),
+            };
+
+            if (modo === 'decision') {
+                const decisionSi = respuesta.toLowerCase().includes(condicionSi);
+                resultado.branch      = decisionSi ? 'true' : 'false';
+                resultado.decision    = decisionSi ? 'SI' : 'NO';
+                resultado.condicion_evaluada = condicionSi;
+            }
+
+            return resultado;
+        }
+
+        // ── Reporte Regulatorio (SUDEASEG / SUDEBAN) ──────────────────────
+        case 'processor:regulatorio': {
+            const tipo       = cfg.tipo       ?? 'SUDEASEG';
+            const periodo    = resolveValue(cfg.periodo    ?? '', context) || new Date().toLocaleDateString('es-VE', { month: 'long', year: 'numeric' });
+            const empresa    = cfg.empresa    ?? 'Entidad no especificada';
+            const referencia = resolveValue(cfg.referencia ?? '', context);
+            const fechaHora  = new Date().toLocaleString('es-VE', { timeZone: 'America/Caracas' });
+
+            const OMITIR_REP = new Set(['branch','evaluated','skipped','triggered','timestamp','fuente','generado_por','modelo','tokens_input','tokens_output']);
+
+            // Consolidar deduplicando — el último valor de cada campo gana
+            const consolidated: Record<string, any> = {};
+            for (const [, nodeData] of Object.entries(context)) {
+                if (!nodeData || typeof nodeData !== 'object') continue;
+                for (const [k, v] of Object.entries(nodeData as Record<string, any>)) {
+                    if (OMITIR_REP.has(k) || v === null || v === undefined || v === '') continue;
+                    consolidated[k] = v;
+                }
+            }
+
+            // Construir filas HTML
+            const colorHeader  = tipo === 'SUDEASEG' ? '#7c3aed' : '#0369a1';
+            const enLista      = consolidated['en_lista'];
+            const alertaBanner = enLista === true
+                ? `<div style="background:#fef2f2;border-left:4px solid #dc2626;padding:12px 16px;margin-bottom:20px;border-radius:0 8px 8px 0">
+                     <p style="margin:0;color:#991b1b;font-weight:700;font-size:14px">⚠️ ALERTA — Sujeto identificado en listas restrictivas internacionales</p>
+                   </div>`
+                : `<div style="background:#f0fdf4;border-left:4px solid #16a34a;padding:12px 16px;margin-bottom:20px;border-radius:0 8px 8px 0">
+                     <p style="margin:0;color:#166534;font-weight:700;font-size:14px">✅ Sin coincidencias en listas restrictivas</p>
+                   </div>`;
+
+            let filas = '';
+            let bg = false;
+            for (const [k, v] of Object.entries(consolidated)) {
+                if (k === 'hits') continue; // se renderiza aparte
+                const label   = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                let display   = typeof v === 'boolean' ? (v ? '<span style="color:#dc2626;font-weight:700">Sí</span>' : '<span style="color:#16a34a;font-weight:700">No</span>')
+                              : Array.isArray(v)        ? `${v.length} registros`
+                              : typeof v === 'object'   ? JSON.stringify(v)
+                              : String(v);
+                if (k === 'nivel') {
+                    const c = v === 'alto' ? '#dc2626' : v === 'medio' ? '#d97706' : '#16a34a';
+                    display = `<span style="color:${c};font-weight:700;text-transform:uppercase">${v}</span>`;
+                }
+                filas += `<tr style="background:${bg ? '#f9fafb' : '#fff'}">
+                    <td style="padding:9px 16px;color:#6b7280;font-size:12px;width:42%;border-bottom:1px solid #f3f4f6">${label}</td>
+                    <td style="padding:9px 16px;color:#111827;font-size:13px;font-weight:600;border-bottom:1px solid #f3f4f6">${display}</td>
+                </tr>`;
+                bg = !bg;
+            }
+
+            // Tabla de hits
+            let hitsHtml = '';
+            const hits = consolidated['hits'];
+            if (Array.isArray(hits) && hits.length > 0) {
+                const hitRows = hits.map((h: any) =>
+                    `<tr>
+                        <td style="padding:8px 12px;font-size:12px;color:#111827;border-bottom:1px solid #fee2e2">${h.tipo_lista ?? '—'}</td>
+                        <td style="padding:8px 12px;font-size:12px;color:#111827;border-bottom:1px solid #fee2e2;font-weight:600">${h.nombre ?? '—'}</td>
+                        <td style="padding:8px 12px;font-size:11px;color:#6b7280;border-bottom:1px solid #fee2e2">${h.motivo ?? '—'}</td>
+                    </tr>`
+                ).join('');
+                hitsHtml = `
+                <h3 style="color:#991b1b;font-size:14px;margin:24px 0 8px">Coincidencias en Listas Restrictivas (${hits.length})</h3>
+                <table style="width:100%;border-collapse:collapse;background:#fff8f8;border:1px solid #fecaca;border-radius:8px;overflow:hidden">
+                    <thead>
+                        <tr style="background:#fee2e2">
+                            <th style="padding:8px 12px;text-align:left;font-size:11px;color:#991b1b;text-transform:uppercase">Lista</th>
+                            <th style="padding:8px 12px;text-align:left;font-size:11px;color:#991b1b;text-transform:uppercase">Nombre</th>
+                            <th style="padding:8px 12px;text-align:left;font-size:11px;color:#991b1b;text-transform:uppercase">Motivo</th>
+                        </tr>
+                    </thead>
+                    <tbody>${hitRows}</tbody>
+                </table>`;
+            }
+
+            const reporte_html = `<div style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
+  <div style="background:linear-gradient(135deg,${colorHeader},#1e3a5f);padding:28px 24px">
+    <p style="margin:0 0 4px;color:rgba(255,255,255,0.7);font-size:11px;text-transform:uppercase;letter-spacing:1px">${tipo} — INFORME REGULATORIO</p>
+    <h1 style="margin:0;color:#fff;font-size:20px;font-weight:700">${empresa}</h1>
+    <p style="margin:8px 0 0;color:rgba(255,255,255,0.8);font-size:13px">Período: ${periodo} &nbsp;·&nbsp; Emitido: ${fechaHora}</p>
+    ${referencia ? `<p style="margin:4px 0 0;color:rgba(255,255,255,0.7);font-size:12px">Referencia: ${referencia}</p>` : ''}
+  </div>
+  <div style="padding:24px">
+    ${alertaBanner}
+    <h3 style="color:#374151;font-size:14px;margin:0 0 8px">Datos del Caso</h3>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">${filas}</table>
+    ${hitsHtml}
+    <p style="color:#9ca3af;font-size:11px;margin-top:24px;text-align:center;border-top:1px solid #f3f4f6;padding-top:16px">
+      Generado automáticamente por <strong>HermesAI Flow</strong> · ${fechaHora}
+    </p>
+  </div>
+</div>`;
+
+            return {
+                reporte_html,
+                tipo_reporte:    tipo,
+                periodo,
+                empresa,
+                referencia_caso: referencia || 'N/A',
+                fecha_emision:   fechaHora,
+                generado_por:    'HermesAI Flow',
+            };
+        }
+
         default:
             return { skipped: true, reason: `Tipo "${nodeKey}" — implementación pendiente` };
     }
