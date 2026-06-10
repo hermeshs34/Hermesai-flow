@@ -1108,6 +1108,37 @@ serve(async (req) => {
 
         const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
+        // ── Autenticación del llamante ───────────────────────────────────────
+        // Llamadas internas (cron-runner) traen el service role key. Las del
+        // frontend traen el JWT del usuario: se valida contra Supabase Auth y
+        // se verifica que su perfil pertenezca a la organización del body —
+        // nunca se confía en organizationId/approverId sin esta verificación.
+        const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+        let callerUserId: string | null = null;
+        if (token !== SERVICE_ROLE_KEY) {
+            const { data: userData } = token
+                ? await supabase.auth.getUser(token)
+                : { data: { user: null } };
+            if (!userData?.user) {
+                return new Response(
+                    JSON.stringify({ error: 'No autenticado — sesión inválida o expirada' }),
+                    { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
+            callerUserId = userData.user.id;
+            const { data: callerProfile } = await supabase
+                .from('profiles')
+                .select('organization_id')
+                .eq('id', callerUserId)
+                .single();
+            if (!callerProfile || callerProfile.organization_id !== organizationId) {
+                return new Response(
+                    JSON.stringify({ error: 'No autorizado para esta organización' }),
+                    { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
+        }
+
         // 1. Cargar flujo
         const { data: workflow, error: wfErr } = await supabase
             .from('workflows')
@@ -1300,7 +1331,9 @@ serve(async (req) => {
                         execution_run_id: runId,
                         node_id:          node.id,
                         node_title:       node.title ?? 'Aprobación',
-                        solicitante_id:   approverId ?? null,
+                        // Identidad real del llamante (JWT); el approverId del body
+                        // solo se acepta en llamadas internas con service role key
+                        solicitante_id:   callerUserId ?? approverId ?? null,
                         rol_aprobador:    err.rolAprobador,
                         descripcion:      err.descripcion,
                         monto:            err.monto,

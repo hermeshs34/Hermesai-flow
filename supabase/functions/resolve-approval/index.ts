@@ -18,11 +18,11 @@ serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
 
     try {
-        const { tareaId, decision, comentario, approverId } = await req.json();
+        const { tareaId, decision, comentario, approverId: bodyApproverId } = await req.json();
 
-        if (!tareaId || !decision || !approverId) {
+        if (!tareaId || !decision) {
             return new Response(
-                JSON.stringify({ error: 'tareaId, decision y approverId son requeridos' }),
+                JSON.stringify({ error: 'tareaId y decision son requeridos' }),
                 { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
             );
         }
@@ -34,6 +34,32 @@ serve(async (req) => {
         }
 
         const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+
+        // ── Autenticación: el aprobador se deriva del JWT, nunca del body ───
+        // El approverId del body solo se acepta en llamadas internas que traen
+        // el service role key — desde el frontend la identidad sale del token.
+        const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+        let approverId: string;
+        if (token === SERVICE_ROLE_KEY) {
+            if (!bodyApproverId) {
+                return new Response(
+                    JSON.stringify({ error: 'approverId requerido en llamadas internas' }),
+                    { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
+            approverId = bodyApproverId;
+        } else {
+            const { data: userData } = token
+                ? await supabase.auth.getUser(token)
+                : { data: { user: null } };
+            if (!userData?.user) {
+                return new Response(
+                    JSON.stringify({ error: 'No autenticado — sesión inválida o expirada' }),
+                    { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
+            approverId = userData.user.id;
+        }
 
         // 1. Cargar la tarea
         const { data: tarea, error: tareaErr } = await supabase
@@ -50,7 +76,20 @@ serve(async (req) => {
             );
         }
 
-        // 2. Verificar SoD: el aprobador no puede ser quien SOLICITÓ/EJECUTÓ esta tarea
+        // 2a. El aprobador debe pertenecer a la organización de la tarea
+        const { data: aprobadorProfile } = await supabase
+            .from('profiles')
+            .select('organization_id')
+            .eq('id', approverId)
+            .single();
+        if (!aprobadorProfile || aprobadorProfile.organization_id !== tarea.organization_id) {
+            return new Response(
+                JSON.stringify({ error: 'No autorizado — el aprobador no pertenece a esta organización' }),
+                { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        // 2b. Verificar SoD: el aprobador no puede ser quien SOLICITÓ/EJECUTÓ esta tarea
         // (se compara con solicitante_id, no created_by — el diseñador puede ser el aprobador)
         if (tarea.solicitante_id && tarea.solicitante_id === approverId) {
             return new Response(

@@ -271,14 +271,15 @@ export function Governance({ currentUser }: GovernanceProps) {
         setResolvingId(tarea.id);
         try {
             const { data: { session } } = await supabase.auth.getSession();
-            const approverId = session?.user?.id;
-            if (!approverId) throw new Error('Sin sesión activa');
+            const approverId  = session?.user?.id;
+            const accessToken = session?.access_token;
+            if (!approverId || !accessToken) throw new Error('Sin sesión activa');
 
             const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/resolve-approval`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+                    'Authorization': `Bearer ${accessToken}`,
                 },
                 body: JSON.stringify({
                     tareaId:    tarea.id,
@@ -301,7 +302,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+                            'Authorization': `Bearer ${accessToken}`,
                         },
                         body: JSON.stringify({
                             workflowId:     result.workflowId,
