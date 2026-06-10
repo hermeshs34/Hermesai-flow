@@ -1,255 +1,111 @@
-// Servicio para probar conexiones
+// ── ConnectionService ─────────────────────────────────────────────────────
+// Valida configuraciones de integración del lado cliente (formato/campos).
+// Las pruebas de conexión reales deben hacerse a través de la Edge Function
+// correspondiente — este servicio NO hace llamadas directas a APIs externas.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface TestResult {
+    success: boolean;
+    message: string;
+    details?: Record<string, unknown>;
+}
+
 export class ConnectionService {
-  static async testEmailConnection(config: {
-    server: string;
-    port: number;
-    security: string;
-    username: string;
-    password: string;
-  }): Promise<{ success: boolean; message: string; details?: any }> {
-    try {
-      // Validaciones básicas
-      if (!config.server || !config.username || !config.password) {
-        return {
-          success: false,
-          message: 'Faltan campos obligatorios'
-        };
-      }
 
-      if (!config.server.includes('.')) {
-        return {
-          success: false,
-          message: 'Servidor IMAP inválido'
-        };
-      }
-
-      // Simulación de prueba de conexión para frontend
-      // En una aplicación real, esto se haría a través de una API backend
-      const response = await fetch('/api/test-email', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(config),
-      });
-
-      if (!response.ok) {
-        // Si no hay backend, simular validación básica
-        if (response.status === 404) {
-          // Validaciones básicas del lado cliente
-          const isValidEmail = config.username.includes('@');
-          const isValidServer = config.server.length > 0;
-          const isValidPort = config.port > 0 && config.port < 65536;
-
-          if (!isValidEmail) {
-            return {
-              success: false,
-              message: 'El usuario debe ser una dirección de email válida'
-            };
-          }
-
-          if (!isValidServer) {
-            return {
-              success: false,
-              message: 'Servidor IMAP inválido'
-            };
-          }
-
-          if (!isValidPort) {
-            return {
-              success: false,
-              message: 'Puerto inválido (debe estar entre 1 y 65535)'
-            };
-          }
-
-          // Validaciones específicas por proveedor
-          if (config.server.includes('gmail') && config.port !== 993 && config.port !== 465) {
-            return {
-              success: false,
-              message: 'Para Gmail, use puerto 993 (IMAP) o 465 (SMTP) con SSL/TLS'
-            };
-          }
-
-          if (config.server.includes('outlook') && config.port !== 993 && config.port !== 587) {
-            return {
-              success: false,
-              message: 'Para Outlook, use puerto 993 (IMAP) o 587 (SMTP)'
-            };
-          }
-
-          if (config.server.includes('yahoo') && config.port !== 993 && config.port !== 465) {
-            return {
-              success: false,
-              message: 'Para Yahoo, use puerto 993 (IMAP) o 465 (SMTP) con SSL/TLS'
-            };
-          }
-
-          return {
-            success: true,
-            message: 'Configuración válida. Nota: Para prueba real, implemente un endpoint backend /api/test-email',
-            details: {
-              server: config.server,
-              port: config.port,
-              security: config.security,
-              username: config.username,
-              note: 'Validación del lado cliente únicamente'
-            }
-          };
+    /**
+     * Valida la estructura de la configuración de email.
+     * Para una prueba de envío real, usar la Edge Function `node-email`.
+     */
+    static validateEmailConfig(config: {
+        server: string;
+        port: number;
+        security: string;
+        username: string;
+        password: string;
+    }): TestResult {
+        if (!config.server || !config.username || !config.password) {
+            return { success: false, message: 'Faltan campos obligatorios (servidor, usuario, contraseña)' };
+        }
+        if (!config.server.includes('.')) {
+            return { success: false, message: 'Servidor IMAP inválido — debe ser un hostname (ej: imap.gmail.com)' };
+        }
+        if (!config.username.includes('@')) {
+            return { success: false, message: 'El usuario debe ser una dirección de email válida' };
+        }
+        if (config.port <= 0 || config.port > 65535) {
+            return { success: false, message: 'Puerto inválido — debe estar entre 1 y 65535' };
         }
 
-        const errorData = await response.json();
-        return {
-          success: false,
-          message: errorData.message || 'Error del servidor'
-        };
-      }
-
-      const result = await response.json();
-      return result;
-
-    } catch (error) {
-      const errorMessage = (error as Error).message;
-      
-      if (errorMessage.includes('fetch')) {
-        // Error de red - probablemente no hay backend
-        return {
-          success: false,
-          message: 'No se puede conectar al servidor backend. Implemente /api/test-email para pruebas reales.'
-        };
-      }
-
-      return {
-        success: false,
-        message: 'Error de conexión: ' + errorMessage
-      };
-    }
-  }
-
-  static async testCrmConnection(config: {
-    type: string;
-    apiUrl: string;
-    apiKey: string;
-  }): Promise<{ success: boolean; message: string; details?: any }> {
-    try {
-      if (!config.apiUrl || !config.apiKey) {
-        return {
-          success: false,
-          message: 'URL de API y API Key son obligatorios'
-        };
-      }
-
-      if (!config.apiUrl.startsWith('http')) {
-        return {
-          success: false,
-          message: 'URL de API debe comenzar con http:// o https://'
-        };
-      }
-
-      // Simulación de prueba de conexión CRM
-      try {
-        const response = await fetch('/api/test-crm', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(config),
-        });
-
-        if (!response.ok && response.status === 404) {
-          return {
-            success: true,
-            message: 'Configuración CRM válida. Implemente /api/test-crm para pruebas reales.',
-            details: {
-              type: config.type,
-              apiUrl: config.apiUrl,
-              note: 'Validación del lado cliente únicamente'
-            }
-          };
+        // Sugerencias por proveedor
+        if (config.server.includes('gmail') && config.port !== 993 && config.port !== 465) {
+            return { success: false, message: 'Para Gmail usa puerto 993 (IMAP) o 465 (SMTP) con SSL/TLS' };
+        }
+        if (config.server.includes('outlook') && config.port !== 993 && config.port !== 587) {
+            return { success: false, message: 'Para Outlook usa puerto 993 (IMAP) o 587 (SMTP)' };
         }
 
-        const result = await response.json();
-        return result;
-      } catch {
         return {
-          success: true,
-          message: 'Configuración CRM válida. Implemente backend para pruebas reales.',
-          details: {
-            type: config.type,
-            apiUrl: config.apiUrl,
-            note: 'Validación del lado cliente únicamente'
-          }
-        };
-      }
-
-    } catch (error) {
-      return {
-        success: false,
-        message: 'Error de conexión CRM: ' + (error as Error).message
-      };
-    }
-  }
-
-  static async testAiConnection(config: {
-    provider: string;
-    apiKey: string;
-    model: string;
-  }): Promise<{ success: boolean; message: string; details?: any }> {
-    try {
-      if (!config.apiKey) {
-        return {
-          success: false,
-          message: 'API Key es obligatorio'
-        };
-      }
-
-      if (config.apiKey.length < 10) {
-        return {
-          success: false,
-          message: 'API Key parece ser inválida (muy corta)'
-        };
-      }
-
-      // Simulación de prueba de conexión IA
-      try {
-        const response = await fetch('/api/test-ai', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(config),
-        });
-
-        if (!response.ok && response.status === 404) {
-          return {
             success: true,
-            message: 'Configuración IA válida. Implemente /api/test-ai para pruebas reales.',
-            details: {
-              provider: config.provider,
-              model: config.model,
-              note: 'Validación del lado cliente únicamente'
-            }
-          };
+            message: 'Configuración de email válida. Los emails se enviarán a través de Resend (configurado en Supabase Secrets).',
+            details: { server: config.server, port: config.port, security: config.security },
+        };
+    }
+
+    /**
+     * Valida la configuración de una integración externa.
+     * Las credenciales reales (API keys) deben estar en Supabase Secrets, no aquí.
+     */
+    static validateIntegrationConfig(config: {
+        name: string;
+        supabaseUrl?: string;
+        apiUrl?: string;
+    }): TestResult {
+        if (!config.supabaseUrl && !config.apiUrl) {
+            return { success: false, message: 'URL de la integración es obligatoria' };
         }
 
-        const result = await response.json();
-        return result;
-      } catch {
-        return {
-          success: true,
-          message: 'Configuración IA válida. Implemente backend para pruebas reales.',
-          details: {
-            provider: config.provider,
-            model: config.model,
-            note: 'Validación del lado cliente únicamente'
-          }
-        };
-      }
+        const url = config.supabaseUrl ?? config.apiUrl ?? '';
+        if (!url.startsWith('https://')) {
+            return { success: false, message: 'La URL debe comenzar con https://' };
+        }
+        if (!url.includes('.supabase.co') && !url.startsWith('https://api.')) {
+            return { success: false, message: 'URL no reconocida — verifica que sea la URL de Supabase del sistema origen' };
+        }
 
-    } catch (error) {
-      return {
-        success: false,
-        message: 'Error de conexión IA: ' + (error as Error).message
-      };
+        return {
+            success: true,
+            message: `Configuración de ${config.name} válida. La conexión real se verifica cuando el flujo se ejecuta.`,
+            details: { url },
+        };
     }
-  }
+
+    /**
+     * Valida que la configuración de un proveedor de IA tiene estructura correcta.
+     * La API key real va en Supabase Secrets (ANTHROPIC_API_KEY), no en config_json.
+     */
+    static validateAiConfig(config: {
+        provider: string;
+        model: string;
+    }): TestResult {
+        if (!config.provider) {
+            return { success: false, message: 'Proveedor de IA es obligatorio' };
+        }
+        if (!config.model) {
+            return { success: false, message: 'Modelo es obligatorio' };
+        }
+
+        const supportedProviders = ['anthropic', 'openai'];
+        if (!supportedProviders.includes(config.provider.toLowerCase())) {
+            return {
+                success: false,
+                message: `Proveedor no soportado. Usar: ${supportedProviders.join(', ')}`,
+            };
+        }
+
+        return {
+            success: true,
+            message: `Configuración de ${config.provider} válida. La API Key debe estar en Supabase Secrets como ANTHROPIC_API_KEY.`,
+            details: { provider: config.provider, model: config.model },
+        };
+    }
 }
