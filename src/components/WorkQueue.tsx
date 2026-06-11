@@ -26,6 +26,8 @@ interface TareaAprobacion {
     vence_at: string;
     created_at: string;
     solicitante_id: string | null;
+    nivel_escalamiento?: number;
+    rol_aprobador_original?: string | null;
     workflows?: { name: string };
 }
 
@@ -303,6 +305,14 @@ export function WorkQueue({ currentUser }: WorkQueueProps) {
                                                     {t.workflows?.name ?? t.workflow_id}
                                                 </p>
                                                 <p className="text-sm text-gray-600 mt-0.5">{t.node_title}</p>
+                                                {(t.nivel_escalamiento ?? 0) > 0 && (
+                                                    <span
+                                                        className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 mt-1"
+                                                        title={t.rol_aprobador_original ? `Escalada desde ${t.rol_aprobador_original} por falta de respuesta` : 'Escalada por falta de respuesta'}
+                                                    >
+                                                        ⬆ Escalada{t.rol_aprobador_original ? ` desde ${t.rol_aprobador_original}` : ''}
+                                                    </span>
+                                                )}
                                                 {t.descripcion && (
                                                     <p className="text-xs text-gray-500 mt-1 line-clamp-2">{t.descripcion}</p>
                                                 )}
