@@ -4,10 +4,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { enviarEmail as enviar, canalEmail } from '../_shared/email.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const RESEND_API_KEY   = Deno.env.get('RESEND_API_KEY') ?? '';
 
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -135,7 +135,7 @@ serve(async (req) => {
             });
 
             // Notificar al solicitante si tiene email registrado
-            if (RESEND_API_KEY && tarea.solicitante_id) {
+            if (canalEmail() !== 'ninguno' && tarea.solicitante_id) {
                 try {
                     const { data: solicitante } = await supabase
                         .from('profiles')
@@ -147,14 +147,10 @@ serve(async (req) => {
                         const { data: wfData } = await supabase
                             .from('workflows').select('name').eq('id', tarea.workflow_id).single();
 
-                        await fetch('https://api.resend.com/emails', {
-                            method: 'POST',
-                            headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                from:    'HermesAI Flow <onboarding@resend.dev>',
-                                to:      [solicitante.email],
-                                subject: `❌ Flujo rechazado — ${wfData?.name ?? 'Flujo'}`,
-                                html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+                        await enviar(
+                            solicitante.email,
+                            `❌ Flujo rechazado — ${wfData?.name ?? 'Flujo'}`,
+                            `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
   <div style="background:#7f1d1d;padding:24px;border-radius:8px 8px 0 0">
     <h2 style="color:#fff;margin:0;font-size:18px">❌ Solicitud Rechazada</h2>
     <p style="color:#fca5a5;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
@@ -167,8 +163,7 @@ serve(async (req) => {
     <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
   </div>
 </div>`,
-                            }),
-                        });
+                        );
                     }
                 } catch {
                     // No interrumpir si falla el email

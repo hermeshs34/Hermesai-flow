@@ -5,10 +5,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { enviarEmail as enviar, canalEmail } from '../_shared/email.ts';
 
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const RESEND_API_KEY    = Deno.env.get('RESEND_API_KEY') ?? '';
 
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -154,7 +154,6 @@ function buildContextSummary(context: Record<string, any>): string {
 async function executeNode(
     node: any,
     context: Record<string, any>,
-    deps: { supabase: any; resendKey: string }
 ): Promise<any> {
     const cfg      = node.config_json ?? {};
     const nodeKey  = `${node.type}:${node.category}`;
@@ -167,9 +166,11 @@ async function executeNode(
         case 'trigger:webhook':
             return { triggered: true, timestamp: new Date().toISOString() };
 
-        // ── Email (Resend) ────────────────────────────────────────────────
+        // ── Email (ver _shared/email.ts) ──────────────────────────────────
         case 'output:email': {
-            if (!deps.resendKey) throw new Error('RESEND_API_KEY no configurado en Supabase Secrets');
+            if (canalEmail() === 'ninguno') {
+                throw new Error('Sin canal de correo: faltan GMAIL_USER + GMAIL_APP_PASSWORD y también RESEND_API_KEY en Supabase Secrets');
+            }
             const to      = resolveValue(cfg.to ?? '', context);
             const subject = resolveValue(cfg.subject ?? 'Notificación HermesAI Flow', context);
             let   body    = resolveValue(cfg.body ?? '', context);
@@ -190,25 +191,8 @@ async function executeNode(
 </div>`;
             }
 
-            const res = await fetch('https://api.resend.com/emails', {
-                method:  'POST',
-                headers: {
-                    Authorization:   `Bearer ${deps.resendKey}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    from:    cfg.from ?? 'HermesAI Flow <onboarding@resend.dev>',
-                    to:      [to],
-                    subject,
-                    html:    body,
-                }),
-            });
-            if (!res.ok) {
-                const txt = await res.text();
-                throw new Error(`Resend API error: ${txt}`);
-            }
-            const data = await res.json();
-            return { sent: true, email_id: data.id, to, subject };
+            const emailId = await enviar(to, subject, body, cfg.from);
+            return { sent: true, email_id: emailId, to, subject };
         }
 
         // ── Enviar WhatsApp (Twilio) ─────────────────────────────────────
@@ -867,7 +851,7 @@ async function executeNode(
         // ── Reporte Gerencial (email formateado) ──────────────────────────
         case 'processor:reporte':
         case 'output:reporte': {
-            if (!deps.resendKey) throw new Error('RESEND_API_KEY no configurado');
+            if (canalEmail() === 'ninguno') throw new Error('Sin canal de correo configurado');
             const to      = resolveValue(cfg.to ?? '', context);
             const subject = resolveValue(cfg.subject ?? '📊 Reporte Gerencial — HermesAI Flow', context);
             let   body    = resolveValue(cfg.body ?? '', context);
@@ -886,19 +870,8 @@ async function executeNode(
 </div>`;
             }
 
-            const res = await fetch('https://api.resend.com/emails', {
-                method:  'POST',
-                headers: { Authorization: `Bearer ${deps.resendKey}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    from:    cfg.from ?? 'HermesAI Flow <onboarding@resend.dev>',
-                    to:      [to],
-                    subject,
-                    html:    body,
-                }),
-            });
-            if (!res.ok) throw new Error(`Resend: ${await res.text()}`);
-            const data = await res.json();
-            return { sent: true, email_id: data.id, to, subject };
+            const emailId = await enviar(to, subject, body, cfg.from);
+            return { sent: true, email_id: emailId, to, subject };
         }
 
         // ── Nodo no implementado ──────────────────────────────────────────
@@ -1282,10 +1255,7 @@ serve(async (req) => {
                     .update({ status: 'running' })
                     .eq('id', node.id);
 
-                const result = await executeNode(node, context, {
-                    supabase,
-                    resendKey: RESEND_API_KEY,
-                });
+                const result = await executeNode(node, context);
 
                 context[node.id] = result;
                 completedNodeIds.add(node.id);
@@ -1355,7 +1325,7 @@ serve(async (req) => {
                     );
 
                     // ── Notificar por email a los aprobadores del rol requerido ──
-                    if (RESEND_API_KEY) {
+                    if (canalEmail() !== 'ninguno') {
                         try {
                             const { data: aprobadores } = await supabase
                                 .from('profiles')
@@ -1366,17 +1336,10 @@ serve(async (req) => {
 
                             for (const ap of (aprobadores ?? [])) {
                                 if (!ap.email) continue;
-                                await fetch('https://api.resend.com/emails', {
-                                    method: 'POST',
-                                    headers: {
-                                        Authorization: `Bearer ${RESEND_API_KEY}`,
-                                        'Content-Type': 'application/json',
-                                    },
-                                    body: JSON.stringify({
-                                        from:    'HermesAI Flow <onboarding@resend.dev>',
-                                        to:      [ap.email],
-                                        subject: `⏸ Aprobación requerida — ${workflow.name}`,
-                                        html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+                                await enviar(
+                                    ap.email,
+                                    `⏸ Aprobación requerida — ${workflow.name}`,
+                                    `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
   <div style="background:#1e3a5f;padding:24px;border-radius:8px 8px 0 0">
     <h2 style="color:#fff;margin:0;font-size:18px">⏸ Aprobación Pendiente</h2>
     <p style="color:#a5b4fc;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
@@ -1394,8 +1357,7 @@ serve(async (req) => {
     <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
   </div>
 </div>`,
-                                    }),
-                                });
+                                );
                             }
                         } catch {
                             // No interrumpir el flujo si el email falla

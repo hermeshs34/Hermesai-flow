@@ -40,6 +40,8 @@ export function Settings() {
     const [savingKpi,    setSavingKpi]    = useState(false);
     const [testingBcv,   setTestingBcv]   = useState(false);
     const [bcvResult,    setBcvResult]    = useState<string | null>(null);
+    // Canal de correo: no se afirma, se pregunta (ver más abajo).
+    const [canalEmail,   setCanalEmail]   = useState('Consultando…');
 
     // KPI params
     const [kpiSlaMs,        setKpiSlaMs]       = useState(30000);
@@ -68,6 +70,24 @@ export function Settings() {
                     setKpiCostoHora(data.kpi_costo_hora_usd ?? 25);
                 }
             });
+    }, []);
+
+    // El canal de correo lo decide el servidor por los secrets que encuentre, así
+    // que esta pantalla lo pregunta en vez de darlo por hecho: durante meses puso
+    // "Resend — Activo ✅" mientras no llegaba ni un correo.
+    useEffect(() => {
+        interface SistemaSalud { name: string; status: string; message: string }
+        supabase.functions.invoke('health-check')
+            .then(({ data }) => {
+                const sistemas = (data?.systems ?? []) as SistemaSalud[];
+                const email = sistemas.find(s => s.name.startsWith('Email'));
+                if (!email) { setCanalEmail('No se pudo consultar'); return; }
+                if (email.status === 'unconfigured') { setCanalEmail('Sin canal configurado ⚠️'); return; }
+                setCanalEmail(email.status === 'ok'
+                    ? `${email.name} — Activo ✅`
+                    : `${email.name} — ${email.message} ❌`);
+            })
+            .catch(() => setCanalEmail('No se pudo consultar'));
     }, []);
 
     const handleSaveNotifications = async () => {
@@ -151,7 +171,7 @@ export function Settings() {
                     <Row label="Base de datos" value="Supabase — Conectado ✅" />
                     <Row label="Proyecto" value={projectRef} muted />
                     <Row label="Motor de ejecución" value="Edge Function — Activo ✅" />
-                    <Row label="API Email (Resend)" value="onboarding@resend.dev — Activo ✅" />
+                    <Row label="Correo saliente" value={canalEmail} />
                     <Row label="Versión" value="Sprint S2 — Mayo 2026" />
                 </Section>
 
@@ -182,8 +202,11 @@ export function Settings() {
                         {/* Resend */}
                         <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
                             <div>
-                                <p className="text-sm font-semibold text-gray-700">Resend API (Email)</p>
-                                <p className="text-xs text-gray-400">Secret: RESEND_API_KEY en Supabase Edge Functions</p>
+                                <p className="text-sm font-semibold text-gray-700">Correo saliente</p>
+                                <p className="text-xs text-gray-400">
+                                    Secrets en Supabase Edge Functions: GMAIL_USER + GMAIL_APP_PASSWORD (SMTP), o RESEND_API_KEY.
+                                    Se usa el primero que exista.
+                                </p>
                             </div>
                             <a
                                 href="https://supabase.com/dashboard/project/kbscaxcokxwdbnrltkup/settings/functions"

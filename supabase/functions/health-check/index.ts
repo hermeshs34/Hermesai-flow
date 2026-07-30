@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { canalEmail, direccionRemitente } from '../_shared/email.ts';
 
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -91,18 +92,29 @@ serve(async (req) => {
         results.push({ name: 'RiskGuard', status: 'unconfigured', latency_ms: null, last_check: new Date().toISOString(), message: 'Secret RISKGUARD_SUPABASE_URL no configurado' });
     }
 
-    // ── Resend (email) ───────────────────────────────────────────────────
-    const RESEND_KEY = Deno.env.get('RESEND_API_KEY');
-    if (RESEND_KEY) {
-        results.push(await ping('Resend', async () => {
+    // ── Email — el canal que se usaría ahora mismo ───────────────────────
+    // Antes esto preguntaba siempre por Resend y decía "Conectado" mientras
+    // no entregaba nada: la clave era válida, pero `onboarding@resend.dev`
+    // había dejado de repartir. Se informa del canal real (ver _shared/email.ts).
+    const canal = canalEmail();
+    if (canal === 'smtp') {
+        results.push(await ping(`Email · Gmail SMTP (${direccionRemitente()})`, async () => {
+            // Solo se comprueba que la salida al 465 sigue abierta. No se hace
+            // AUTH: esto lo llama el Sidebar cada 60 s y no conviene tocar la
+            // puerta de Gmail con la contraseña tantas veces al día.
+            const conn = await Deno.connect({ hostname: 'smtp.gmail.com', port: 465 });
+            conn.close();
+        }));
+    } else if (canal === 'resend') {
+        results.push(await ping('Email · Resend', async () => {
             const r = await fetch('https://api.resend.com/domains', {
-                headers: { Authorization: `Bearer ${RESEND_KEY}` },
+                headers: { Authorization: `Bearer ${Deno.env.get('RESEND_API_KEY')}` },
                 signal: AbortSignal.timeout(6000),
             });
             if (!r.ok) throw new Error(`Resend HTTP ${r.status}`);
         }));
     } else {
-        results.push({ name: 'Resend', status: 'unconfigured', latency_ms: null, last_check: new Date().toISOString(), message: 'Secret RESEND_API_KEY no configurado' });
+        results.push({ name: 'Email', status: 'unconfigured', latency_ms: null, last_check: new Date().toISOString(), message: 'Sin canal: faltan GMAIL_USER + GMAIL_APP_PASSWORD y también RESEND_API_KEY' });
     }
 
     return new Response(

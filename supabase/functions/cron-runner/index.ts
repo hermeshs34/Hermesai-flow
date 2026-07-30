@@ -8,10 +8,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { enviarEmail as enviar, canalEmail } from '../_shared/email.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const RESEND_API_KEY   = Deno.env.get('RESEND_API_KEY') ?? '';
 
 // Jerarquía de escalamiento BPM: rol vencido → rol que recibe la tarea
 const ESCALA_A: Record<string, string> = {
@@ -26,13 +26,9 @@ const ESCALA_A: Record<string, string> = {
 const MAX_NIVEL_ESCALAMIENTO = 1; // 1 escalamiento; al segundo vencimiento se cancela
 
 async function enviarEmail(to: string[], subject: string, html: string): Promise<void> {
-    if (!RESEND_API_KEY || to.length === 0) return;
+    if (canalEmail() === 'ninguno' || to.length === 0) return;
     try {
-        await fetch('https://api.resend.com/emails', {
-            method:  'POST',
-            headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ from: 'HermesAI Flow <onboarding@resend.dev>', to, subject, html }),
-        });
+        await enviar(to, subject, html);
     } catch {
         // No interrumpir el ciclo del cron si falla el email
     }

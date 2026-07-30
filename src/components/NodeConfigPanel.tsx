@@ -384,12 +384,15 @@ function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void })
                     <code className="bg-gray-100 px-1 rounded">{'{{previous.nombre_buscado}}'}</code>
                 </p>
             </div>
-            <Field label="Remitente (opcional)" hint="Dejar vacío usa: HermesAI Flow <onboarding@resend.dev>">
+            <Field label="Remitente (opcional)" hint="Dejar vacío usa el remitente por defecto del sistema">
                 <Input value={cfg.from ?? ''} onChange={v => set('from', v)} placeholder="Mi Empresa <alertas@miempresa.com>" />
             </Field>
             <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-700">
                 <Info className="w-3.5 h-3.5 inline mr-1" />
-                El envío usa <strong>Resend API</strong>. Secret <code>RESEND_API_KEY</code> debe estar en Supabase → Settings → Edge Functions.
+                El canal de envío se configura con secrets en Supabase → Settings → Edge Functions y lo puedes ver en{' '}
+                <strong>Configuración → Estado del Sistema</strong>. Si el canal activo es SMTP, el <strong>nombre</strong>{' '}
+                del remitente se respeta pero la <strong>dirección</strong> pasa a ser la de la cuenta de envío, y la que
+                escribas aquí queda como <em>Reply-To</em>.
             </div>
         </div>
     );
