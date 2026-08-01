@@ -1,25 +1,52 @@
-# HermesAI Flow — Hook Pre-Commit Seguridad
-$staged = git diff --cached --name-only 2>/dev/null
+# HermesAI Flow - Hook Pre-Commit Seguridad
+#
+# SOLO ASCII EN ESTE ARCHIVO. Esta guardado en UTF-8 sin BOM y Windows
+# PowerShell 5.1 lo lee como ANSI: un guion largo se convierte en tres bytes,
+# el ultimo de los cuales es una comilla tipografica que PowerShell toma como
+# fin de cadena. El script dejaba de compilar y el hook no llegaba a ejecutar
+# ni una comprobacion. Nada de acentos, guiones largos ni comillas curvas.
+
+$staged = git diff --cached --name-only 2>$null
 
 $issues = @()
 
 foreach ($file in $staged) {
+    if ([string]::IsNullOrWhiteSpace($file)) { continue }
+
     if ($file -match '\.(ts|tsx|js|jsx)$') {
-        $content = git show ":$file" 2>/dev/null
-        if ($content -match 'RESEND_API_KEY\s*=\s*["\x27]re_') { $issues += "[CRITICO] $file — RESEND_API_KEY hardcodeada" }
-        if ($content -match 'ANTHROPIC_API_KEY\s*=\s*["\x27]sk-ant') { $issues += "[CRITICO] $file — ANTHROPIC_API_KEY hardcodeada" }
-        if ($content -match 'service_role') { $issues += "[ALERTA] $file — posible service_role key expuesta" }
+        # Out-String: git show devuelve un array de lineas y -match sobre un
+        # array filtra en vez de dar un booleano. Se compara el archivo entero.
+        $content = git show ":$file" 2>$null | Out-String
+
+        if ($content -match 'RESEND_API_KEY\s*=\s*["\x27]re_') {
+            $issues += "[CRITICO] $file - RESEND_API_KEY hardcodeada"
+        }
+        if ($content -match 'ANTHROPIC_API_KEY\s*=\s*["\x27]sk-ant') {
+            $issues += "[CRITICO] $file - ANTHROPIC_API_KEY hardcodeada"
+        }
+
+        # Se busca la credencial en si, no el nombre de la variable. Antes esto
+        # era -match 'service_role', y -match en PowerShell ignora mayusculas:
+        # casaba con Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'), que es
+        # justo el patron correcto. Saltaba en todo commit que tocara una Edge
+        # Function, asi que el aviso no significaba nada.
+        # Formatos: JWT (eyJ...), clave secreta nueva (sb_secret_...), PAT (sbp_...).
+        if ($content -match '["\x27](eyJ[A-Za-z0-9_\-]{20,}|sb_secret_[A-Za-z0-9_\-]{10,}|sbp_[a-f0-9]{40})') {
+            $issues += "[CRITICO] $file - credencial hardcodeada (JWT / service_role / PAT)"
+        }
+
         if ($content -match '\.from\(["\x27]\w+["\x27]\)(?!.*organization_id)' -and $content -notmatch 'profiles|organizations') {
-            $issues += "[ADVERTENCIA] $file — query posiblemente sin filtro organization_id"
+            $issues += "[ADVERTENCIA] $file - query posiblemente sin filtro organization_id"
         }
     }
+
     if ($file -match '\.env$' -and $file -notmatch '\.example$') {
-        $issues += "[CRITICO] $file — archivo .env sensible incluido en commit"
+        $issues += "[CRITICO] $file - archivo .env sensible incluido en commit"
     }
 }
 
 if ($issues.Count -gt 0) {
-    Write-Host "ALERTA SEGURIDAD PRE-COMMIT — HermesAI Flow:"
+    Write-Host "ALERTA SEGURIDAD PRE-COMMIT - HermesAI Flow:"
     $issues | ForEach-Object { Write-Host "  $_" }
     exit 1
 }

@@ -12,6 +12,18 @@
             "timeout": 20
           }
         ]
+      },
+      {
+        "matcher": "PowerShell(git commit*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -ExecutionPolicy Bypass -File '.claude/hooks/pre-commit-security.ps1'",
+            "shell": "bash",
+            "statusMessage": "Verificando seguridad pre-commit...",
+            "timeout": 20
+          }
+        ]
       }
     ],
     "PostToolUse": [
