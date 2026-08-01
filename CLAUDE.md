@@ -73,7 +73,7 @@ project/
 ├── INTEGRATIONS.md                  ← contratos con los 4 sistemas
 ├── ROADMAP.md                       ← estado actual de fases
 ├── database/
-│   ├── schema.sql                   ← DDL completo (fuente de verdad)
+│   ├── schema.sql                   ← espejo del esquema REAL (ver §5.1)
 │   ├── functions/                   ← funciones PostgreSQL / Edge Functions
 │   ├── policies/                    ← políticas RLS (una por tabla)
 │   ├── seeds/                       ← datos demo
@@ -151,19 +151,81 @@ execution_logs    (id, workflow_id, organization_id, node_id, status,
 -- Configuración de integraciones por organización
 integrations      (id, organization_id, system_name, config_json,
                    is_active, created_at, updated_at)
+
+-- Ejecuciones (raíz de cada run; execution_logs es su detalle por nodo)
+execution_runs    (id, organization_id, workflow_id, triggered_by, status,
+                   started_at, finished_at, context_json, paused_node_id, ...)
+
+-- Gobierno (F1–F4)
+audit_log         (id, organization_id, usuario_id, usuario_email, accion,
+                   entidad, entidad_id, descripcion, ...)   -- OJO: usuario_id, NO actor_id
+tareas_aprobacion (id, organization_id, workflow_id, execution_run_id, node_id,
+                   rol_aprobador, estado, vence_at, resolved_at,
+                   nivel_escalamiento, ...)                 -- OJO: resolved_at, NO resuelto_at
+matriz_aprobacion (id, organization_id, nombre, categoria, umbral_monto,
+                   operador, rol_aprobador, nivel, ...)
+delegaciones      (id, organization_id, usuario_id, suplente_id, desde, hasta, motivo)
 ```
+
+Las columnas de arriba son un resumen. **La lista completa y exacta está en
+`database/schema.sql`**, y las abreviadas con `...` no caben aquí a propósito.
+
+### 5.1 `schema.sql` describe la base, no la dirige
+
+`database/schema.sql` es un **espejo** del esquema de producción, regenerado
+desde el catálogo. No es una especificación: si difiere de la base, el que está
+mal es el archivo.
+
+Durante meses fue al revés —se editaba a mano y se le llamaba "fuente de
+verdad"— y divergió en más de treinta puntos sin dar un solo error, porque cada
+tabla se declaraba con `CREATE TABLE IF NOT EXISTS` y una declaración sobre una
+tabla existente no hace nada. Costó un millón de filas basura y 743 MB
+(`cron-runner` escribía `estado='vencido'` y `resuelto_at`, que solo existían en
+el archivo) y dos meses de auditoría de aprobaciones perdida (`resolve-approval`
+insertaba `actor_id`, columna inexistente). Por eso ahora usa `CREATE TABLE` a
+secas: si vuelve a desviarse, que reviente.
+
+**Reglas:**
+1. Antes de escribir una columna desde una Edge Function, **comprobarla contra
+   la base**, no contra este archivo ni contra CLAUDE.md.
+2. **Comprobar siempre el `{ error }` de `supabase-js`.** No lanza excepción, la
+   devuelve. Un `error` que nadie lee convierte un fallo en silencio, y los tres
+   incidentes anteriores son exactamente eso.
+3. Tras aplicar una migración, regenerar el archivo:
+   ```
+   supabase link --project-ref kbscaxcokxwdbnrltkup
+   supabase db dump --linked --schema public --keep-comments -f database/schema.sql
+   ```
+   (la conexión directa es solo IPv6; `link` configura el pooler IPv4)
 
 ---
 
 ## 6. Roles y Permisos
 
+El `CHECK` real de `profiles.role` admite **diez** valores. Los cuatro primeros
+de la tabla original de este documento eran los legacy; los roles BPM llegaron
+en F1 y nadie actualizó esta sección.
+
 ```typescript
 type Role =
-  | 'admin'        // CRUD completo + gestión de usuarios + integraciones
-  | 'editor'       // Crear/editar/activar flujos, ver logs
-  | 'viewer'       // Solo lectura: flujos y logs
-  | 'operator'     // Activar/desactivar flujos, ver logs (sin editar)
+  // Roles BPM (F1) — los que se ofrecen en la UI
+  | 'admin'          // CRUD completo + gestión de usuarios + integraciones
+  | 'dueno_proceso'  // Dueño del proceso: crea y edita sus flujos
+  | 'supervisor'     // Supervisa ejecución, edita flujos
+  | 'operador'       // Ejecuta y actualiza flujos, sin crear
+  | 'autorizador'    // Aprueba tareas de la matriz de aprobación
+  | 'cumplimiento'   // Cumplimiento normativo
+  | 'auditor'        // Solo lectura, incluida auditoría
+  // Roles legacy — NO ofrecer en la UI, mantener por usuarios existentes
+  | 'editor'
+  | 'operator'
+  | 'viewer'         // DEFAULT de profiles.role en la base
 ```
+
+⚠️ `audit_log` no restringe lectura por rol: la política `audit_read_org` solo
+filtra por `organization_id`, así que **cualquier usuario autenticado de la
+organización lee la auditoría completa**, no solo admin/auditor/cumplimiento.
+Está documentado en `schema.sql`; corregirlo es un cambio pendiente.
 
 ---
 
