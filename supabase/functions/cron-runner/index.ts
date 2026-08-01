@@ -4,7 +4,7 @@
 //   1. Disparar flujos con nodo trigger:cron cuya expresión coincide con la hora
 //   2. Escalar/vencer aprobaciones cuyo vence_at pasó (F4):
 //        nivel 0 → escala al rol superior, nuevo plazo, email a los aprobadores
-//        nivel 1 → 'vencido', run en error, email al solicitante
+//        nivel 1 → 'expirado', run en error, email al solicitante
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -24,6 +24,11 @@ const ESCALA_A: Record<string, string> = {
 };
 
 const MAX_NIVEL_ESCALAMIENTO = 1; // 1 escalamiento; al segundo vencimiento se cancela
+
+// Margen tras el cual un run en 'running' se da por muerto. Una Edge Function
+// no puede durar tanto: el techo son minutos. Subirlo solo si algún flujo
+// legítimo tarda más que esto, cosa que hoy no ocurre.
+const MINUTOS_RUN_COLGADO = 15;
 
 async function enviarEmail(to: string[], subject: string, html: string): Promise<void> {
     if (canalEmail() === 'ninguno' || to.length === 0) return;
@@ -153,13 +158,27 @@ serve(async (req) => {
                 );
                 const nuevoVence = new Date(now.getTime() + ventanaMs).toISOString();
 
-                await supabase.from('tareas_aprobacion').update({
-                    rol_aprobador:          rolSube,
-                    rol_aprobador_original: tarea.rol_aprobador_original ?? tarea.rol_aprobador,
-                    nivel_escalamiento:     nivel + 1,
-                    escalado_at:            now.toISOString(),
-                    vence_at:               nuevoVence,
-                }).eq('id', tarea.id);
+                // Igual que en la rama de expiración: si la tarea no se pudo
+                // mover, no se escriben logs. Es lo único que impide que un
+                // UPDATE fallido se convierta en un bucle de un log por minuto.
+                const { error: errEscalar } = await supabase
+                    .from('tareas_aprobacion')
+                    .update({
+                        rol_aprobador:          rolSube,
+                        rol_aprobador_original: tarea.rol_aprobador_original ?? tarea.rol_aprobador,
+                        nivel_escalamiento:     nivel + 1,
+                        escalado_at:            now.toISOString(),
+                        vence_at:               nuevoVence,
+                    })
+                    .eq('id', tarea.id);
+
+                if (errEscalar) {
+                    console.error(
+                        `cron-runner: no se pudo escalar la tarea ${tarea.id} — ${errEscalar.message}. ` +
+                        `Se omite sin escribir logs para no reincidir en el bucle.`
+                    );
+                    continue;
+                }
 
                 await supabase.from('audit_log').insert({
                     organization_id: tarea.organization_id,
@@ -207,11 +226,27 @@ serve(async (req) => {
 
                 escaladas.push(`${wfName} — ${tarea.rol_aprobador} → ${rolSube}`);
             } else {
-                // ── Sin nivel superior o ya escalada: vencer y cancelar run ──
-                await supabase.from('tareas_aprobacion').update({
-                    estado:      'vencido',
-                    resuelto_at: now.toISOString(),
-                }).eq('id', tarea.id);
+                // ── Sin nivel superior o ya escalada: expirar y cancelar run ──
+                // 'expirado' y resolved_at son los nombres REALES de la tabla, los
+                // que creó 20260601_f2_aprobaciones.sql. Aquí decía 'vencido' y
+                // 'resuelto_at', que no existen: el UPDATE fallaba, la tarea seguía
+                // en 'pendiente', el cron la reencontraba al minuto siguiente y
+                // volvía a insertar los dos logs de abajo. 1.005.828 filas y 743 MB
+                // entre el 11/06 y el 01/08/2026, sobre 14 tareas.
+                // Por eso ahora se comprueba el error y se sale sin escribir nada:
+                // si la tarea no se pudo cerrar, repetir los logs no arregla nada.
+                const { error: errExpirar } = await supabase
+                    .from('tareas_aprobacion')
+                    .update({ estado: 'expirado', resolved_at: now.toISOString() })
+                    .eq('id', tarea.id);
+
+                if (errExpirar) {
+                    console.error(
+                        `cron-runner: no se pudo expirar la tarea ${tarea.id} — ${errExpirar.message}. ` +
+                        `Se omite sin escribir logs para no reincidir en el bucle.`
+                    );
+                    continue;
+                }
 
                 await supabase.from('execution_runs').update({
                     status:        'error',
@@ -267,6 +302,29 @@ serve(async (req) => {
             }
         }
 
+        // ══ 4. Vigilante de ejecuciones colgadas ═════════════════════════════
+        // Una Edge Function que muere del todo —límite de tiempo, memoria— no
+        // ejecuta ningún catch, así que su run se queda en 'running' y nadie lo
+        // reclama: el escalamiento de arriba solo mira 'esperando_aprobacion'.
+        // Así aparecieron dos runs del 29/07/2026 que seguían "ejecutándose"
+        // tres días después. El límite de una Edge Function son minutos, no
+        // horas: pasado el margen, el run está muerto con certeza.
+        const runsRescatados: string[] = [];
+        const limiteColgado = new Date(now.getTime() - MINUTOS_RUN_COLGADO * 60_000).toISOString();
+
+        const { data: colgados } = await supabase
+            .from('execution_runs')
+            .update({
+                status:        'error',
+                finished_at:   now.toISOString(),
+                error_message: `Ejecución sin cerrar tras ${MINUTOS_RUN_COLGADO} min — la función terminó sin registrar el resultado`,
+            })
+            .eq('status', 'running')
+            .lt('started_at', limiteColgado)
+            .select('id');
+
+        for (const r of colgados ?? []) runsRescatados.push(r.id);
+
         return new Response(
             JSON.stringify({
                 checked:  (cronNodes ?? []).length,
@@ -275,6 +333,7 @@ serve(async (req) => {
                 skipped_workflows: skipped,
                 aprobaciones_escaladas: escaladas,
                 aprobaciones_vencidas:  vencidas,
+                runs_colgados_cerrados: runsRescatados,
                 timestamp: now.toISOString(),
             }),
             { headers: { ...CORS, 'Content-Type': 'application/json' } }

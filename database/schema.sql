@@ -151,8 +151,13 @@ CREATE TABLE IF NOT EXISTS public.audit_log (
     organization_id uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
     usuario_id      uuid REFERENCES public.profiles(id) ON DELETE SET NULL,
     usuario_email   text,
+    -- 'escalamiento' y 'vencimiento' los escribe cron-runner y faltaban en esta
+    -- lista. En producción la tabla NO tiene estos CHECK — la creó
+    -- 20260531_f1_gobierno.sql sin ellos, y el CREATE TABLE IF NOT EXISTS de
+    -- aquí nunca llegó a aplicarlos. Es lo único que evitó que esos inserts
+    -- fallaran. Para alinear la base, ver 20260801_alinear_esquema_real.sql.
     accion          text NOT NULL
-                    CHECK (accion IN ('crear', 'modificar', 'eliminar', 'ejecutar', 'aprobar', 'rechazar', 'login', 'cambio_rol')),
+                    CHECK (accion IN ('crear', 'modificar', 'eliminar', 'ejecutar', 'aprobar', 'rechazar', 'login', 'cambio_rol', 'escalamiento', 'vencimiento')),
     entidad         text NOT NULL
                     CHECK (entidad IN ('workflow', 'usuario', 'integracion', 'aprobacion', 'sesion')),
     entidad_id      uuid,
@@ -176,11 +181,18 @@ CREATE TABLE IF NOT EXISTS public.tareas_aprobacion (
     descripcion         text,
     monto               numeric,
     categoria           text,
+    -- OJO: estos son los nombres REALES, los que creó 20260601_f2_aprobaciones.sql
+    -- y los que hay en producción. Este archivo decía 'vencido' y 'resuelto_at',
+    -- que no existen en la base — y como la tabla se declara con CREATE TABLE IF
+    -- NOT EXISTS, la discrepancia nunca dio error: simplemente no se aplicaba.
+    -- El cron-runner se escribió contra esta versión fantasma y su UPDATE falló
+    -- en silencio del 11/06 al 01/08/2026, un millón de filas basura. Antes de
+    -- tocar una columna aquí, comprobarla contra la base.
     estado              text NOT NULL DEFAULT 'pendiente'
-                        CHECK (estado IN ('pendiente', 'aprobado', 'rechazado', 'vencido')),
+                        CHECK (estado IN ('pendiente', 'aprobado', 'rechazado', 'devuelto', 'expirado')),
     comentario          text,
     vence_at            timestamptz,
-    resuelto_at         timestamptz,
+    resolved_at         timestamptz,
     created_at          timestamptz NOT NULL DEFAULT now()
 );
 

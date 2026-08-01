@@ -79,7 +79,7 @@ serve(async (req) => {
         // 2a. El aprobador debe pertenecer a la organización de la tarea
         const { data: aprobadorProfile } = await supabase
             .from('profiles')
-            .select('organization_id')
+            .select('organization_id, email')
             .eq('id', approverId)
             .single();
         if (!aprobadorProfile || aprobadorProfile.organization_id !== tarea.organization_id) {
@@ -107,14 +107,28 @@ serve(async (req) => {
         }).eq('id', tareaId);
 
         // 4. Registrar en audit_log
-        await supabase.from('audit_log').insert({
+        // La columna es usuario_id, no actor_id: audit_log la creó
+        // 20260531_f1_gobierno.sql con usuario_id + usuario_email. Aquí decía
+        // actor_id, que no existe, así que PostgREST rechazaba el INSERT y
+        // supabase-js devolvía el error en `error` — nadie lo miraba. Resultado:
+        // ni una sola resolución de aprobación quedó auditada desde F2 (la tabla
+        // no tiene una sola fila 'aprobar' ni 'rechazar'), pese a que el flujo
+        // funcionaba de cara al usuario. Por eso ahora se comprueba el error.
+        const { error: errAudit } = await supabase.from('audit_log').insert({
             organization_id: tarea.organization_id,
-            actor_id:        approverId,
+            usuario_id:      approverId,
+            usuario_email:   aprobadorProfile.email ?? null,
             accion:          decision === 'aprobado' ? 'aprobar' : 'rechazar',
             entidad:         'aprobacion',
             entidad_id:      tareaId,
             descripcion:     `${decision === 'aprobado' ? 'Aprobado' : 'Rechazado'}: ${tarea.descripcion ?? ''}${comentario ? ` — ${comentario}` : ''}`,
         });
+
+        // El audit no debe tumbar la resolución —la tarea ya está resuelta— pero
+        // tampoco puede volver a perderse en silencio: queda en los logs.
+        if (errAudit) {
+            console.error(`resolve-approval: audit_log no registró la tarea ${tareaId} — ${errAudit.message}`);
+        }
 
         if (decision === 'rechazado') {
             // Marcar run como rechazado

@@ -1063,6 +1063,12 @@ async function executeNode(
 serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
 
+    // Declarados fuera del try porque el catch exterior los necesita para cerrar
+    // el run. Cuando vivían dentro, el catch no los veía y la fila se quedaba en
+    // 'running' para siempre.
+    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+    let runId: string | null = null;
+
     try {
         const body = await req.json();
         const {
@@ -1078,8 +1084,6 @@ serve(async (req) => {
                 { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
             );
         }
-
-        const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
         // ── Autenticación del llamante ───────────────────────────────────────
         // Llamadas internas (cron-runner) traen el service role key. Las del
@@ -1140,8 +1144,7 @@ serve(async (req) => {
             );
         }
 
-        // 3. Crear o reutilizar registro de ejecución
-        let runId: string;
+        // 3. Crear o reutilizar registro de ejecución  (runId se declara arriba)
         let startedAt: number;
         let restoredContext: Record<string, any> = {};
         let completedNodeIds: Set<string> = new Set();
@@ -1428,6 +1431,23 @@ serve(async (req) => {
         );
 
     } catch (err: any) {
+        // Cerrar el run antes de salir. Sin esto, cualquier excepción fuera del
+        // bucle de nodos dejaba la fila en 'running' para siempre: nadie la
+        // reclama después, porque el escalamiento del cron-runner solo mira
+        // 'esperando_aprobacion'. Así quedaron colgados dos runs del 29/07/2026
+        // hasta que se cerraron a mano el 01/08.
+        //
+        // Esto NO cubre el caso de que la función muera del todo (límite de
+        // tiempo, memoria): ahí no se ejecuta ningún catch. Para eso hace falta
+        // un vigilante externo que cierre los runs en 'running' pasado un plazo.
+        if (runId) {
+            await supabase.from('execution_runs').update({
+                status:        'error',
+                finished_at:   new Date().toISOString(),
+                error_message: err.message,
+            }).eq('id', runId).in('status', ['running', 'pending']);
+        }
+
         return new Response(
             JSON.stringify({ error: err.message }),
             { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }
