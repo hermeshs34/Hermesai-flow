@@ -309,20 +309,14 @@ CREATE INDEX idx_tareas_aprobacion_run       ON public.tareas_aprobacion (execut
 CREATE INDEX idx_matriz_org                  ON public.matriz_aprobacion (organization_id, nivel);
 
 -- ═══ FUNCIONES HELPER ══════════════════════════════════════════════════════
--- my_org_id() y my_organization_id() son IDÉNTICAS: dos nombres para lo mismo,
--- nacidos de migraciones distintas. Las políticas usan unas veces una y otras
--- veces la otra, sin criterio. Están las dos porque las dos existen en
--- producción; unificarlas exige reescribir las políticas que dependen de la
--- que se elimine, así que es un cambio aparte y no una limpieza de este archivo.
+-- Hubo dos funciones idénticas, my_org_id() y my_organization_id(), nacidas de
+-- migraciones distintas, y las políticas usaban una u otra sin criterio.
+-- Unificadas en my_organization_id() el 02/08/2026 por la migración
+-- 20260803_unificar_my_organization_id.sql: my_org_id() ya no existe.
 
 CREATE OR REPLACE FUNCTION public.my_organization_id()
 RETURNS uuid LANGUAGE sql STABLE SECURITY DEFINER AS $$
     SELECT organization_id FROM public.profiles WHERE id = auth.uid()
-$$;
-
-CREATE OR REPLACE FUNCTION public.my_org_id()
-RETURNS uuid LANGUAGE sql STABLE SECURITY DEFINER AS $$
-    SELECT organization_id FROM public.profiles WHERE id = auth.uid();
 $$;
 
 CREATE OR REPLACE FUNCTION public.my_role()
@@ -384,8 +378,8 @@ CREATE POLICY profiles_read_own_org ON public.profiles
 
 CREATE POLICY profiles_admin_manage ON public.profiles
     FOR ALL TO authenticated
-    USING      (organization_id = public.my_org_id() AND public.is_admin())
-    WITH CHECK (organization_id = public.my_org_id() AND public.is_admin());
+    USING      (organization_id = public.my_organization_id() AND public.is_admin())
+    WITH CHECK (organization_id = public.my_organization_id() AND public.is_admin());
 
 -- workflows
 CREATE POLICY workflows_tenant_read ON public.workflows
@@ -472,31 +466,31 @@ CREATE POLICY logs_system_insert ON public.execution_logs
 CREATE POLICY audit_read_org ON public.audit_log
     FOR SELECT TO authenticated
     USING (
-        organization_id = public.my_org_id()
+        organization_id = public.my_organization_id()
         AND public.my_role() IN ('admin', 'dueno_proceso', 'cumplimiento', 'auditor')
     );
 
 CREATE POLICY audit_insert ON public.audit_log
     FOR INSERT TO authenticated
-    WITH CHECK (organization_id = public.my_org_id());
+    WITH CHECK (organization_id = public.my_organization_id());
 
 -- tareas_aprobacion
 -- Única política de la tabla, y la única concedida a `public` (que incluye
--- anon) en vez de a `authenticated`. En la práctica anon no pasa: my_org_id()
--- devuelve NULL sin perfil y la comparación no da ninguna fila.
+-- anon) en vez de a `authenticated`. En la práctica anon no pasa:
+-- my_organization_id() devuelve NULL sin perfil y la comparación no da ninguna fila.
 CREATE POLICY org_isolation ON public.tareas_aprobacion
     FOR ALL TO public
-    USING (organization_id = public.my_org_id());
+    USING (organization_id = public.my_organization_id());
 
 -- matriz_aprobacion
 CREATE POLICY matriz_read_org ON public.matriz_aprobacion
     FOR SELECT TO authenticated
-    USING (organization_id = public.my_org_id());
+    USING (organization_id = public.my_organization_id());
 
 CREATE POLICY matriz_admin_write ON public.matriz_aprobacion
     FOR ALL TO authenticated
-    USING      (organization_id = public.my_org_id() AND public.is_admin())
-    WITH CHECK (organization_id = public.my_org_id() AND public.is_admin());
+    USING      (organization_id = public.my_organization_id() AND public.is_admin())
+    WITH CHECK (organization_id = public.my_organization_id() AND public.is_admin());
 
 -- integrations
 CREATE POLICY integrations_tenant_read ON public.integrations
@@ -511,11 +505,11 @@ CREATE POLICY integrations_admin_manage ON public.integrations
 -- delegaciones
 CREATE POLICY deleg_read_org ON public.delegaciones
     FOR SELECT TO authenticated
-    USING (organization_id = public.my_org_id());
+    USING (organization_id = public.my_organization_id());
 
 CREATE POLICY deleg_write ON public.delegaciones
     FOR ALL TO authenticated
-    USING      (organization_id = public.my_org_id()
+    USING      (organization_id = public.my_organization_id()
                 AND (public.is_admin() OR usuario_id = auth.uid()))
-    WITH CHECK (organization_id = public.my_org_id()
+    WITH CHECK (organization_id = public.my_organization_id()
                 AND (public.is_admin() OR usuario_id = auth.uid()));
