@@ -46,9 +46,9 @@ if ([string]::IsNullOrWhiteSpace($repo)) {
 # Fallar ruidosamente. Un hook de seguridad que no encuentra el repo tiene que
 # bloquear el commit, no dejarlo pasar con la lista vacia.
 if (-not (Test-Path (Join-Path $repo '.git'))) {
-    Write-Host "[HOOK ERROR] No hay repositorio git en: $repo"
-    Write-Host "  El hook no puede verificar nada. Commit bloqueado."
-    exit 1
+    [Console]::Error.WriteLine("[HOOK ERROR] No hay repositorio git en: $repo")
+    [Console]::Error.WriteLine("  El hook no puede verificar nada. Commit bloqueado.")
+    exit 2
 }
 
 $staged = git -C "$repo" diff --cached --name-only 2>$null
@@ -90,10 +90,20 @@ foreach ($file in $staged) {
     }
 }
 
+# EXIT 2, NO 1. En Claude Code el unico codigo que BLOQUEA la herramienta es el
+# 2. Cualquier otro valor distinto de 0 se trata como "error no bloqueante": se
+# registra en el log y la ejecucion continua. Con exit 1 el hook detectaba la
+# credencial, lo anunciaba, y el commit se hacia igual. Verificado el 02/08 en
+# ~/.claude/debug/e5f78620-*.txt: "Hook PreToolUse:Bash (PreToolUse) error:"
+# seguido de tool_dispatch_start, es decir, la herramienta se ejecuto despues.
+# El motivo del bloqueo va por STDERR, no por Write-Host. Con exit 2 Claude Code
+# lee stderr para explicar por que se bloqueo; lo que se escriba en stdout no se
+# usa y el bloqueo sale como "No stderr output", sin decir que se encontro.
 if ($issues.Count -gt 0) {
-    Write-Host "ALERTA SEGURIDAD PRE-COMMIT - HermesAI Flow:"
-    $issues | ForEach-Object { Write-Host "  $_" }
-    exit 1
+    [Console]::Error.WriteLine("ALERTA SEGURIDAD PRE-COMMIT - HermesAI Flow:")
+    $issues | ForEach-Object { [Console]::Error.WriteLine("  $_") }
+    [Console]::Error.WriteLine("Commit bloqueado. Saca la credencial del codigo y usa Supabase Secrets.")
+    exit 2
 }
 
 Write-Host "[HOOK OK] Pre-commit seguridad: sin credenciales hardcodeadas, sin .env sensibles. Commit autorizado."
