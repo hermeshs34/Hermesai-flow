@@ -9,8 +9,16 @@
 # El cwd de la sesion NO es el repo: Claude Code se abre en la raiz del
 # workspace, dos niveles por encima. Un 'git diff --cached' a secas devolvia
 # vacio desde ahi y el hook contestaba OK sin haber mirado un solo archivo.
-# El repo se deduce del propio script, que vive en <repo>/.claude/hooks/.
-$repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+#
+# El hook esta declarado en la configuracion de USUARIO, asi que puede saltar en
+# cualquier repositorio. Por eso se busca primero el repo del directorio actual;
+# solo si el cwd no esta dentro de ninguno -el caso de esta sesion- se cae a la
+# ubicacion del propio script, que vive en <repo>/.claude/hooks/.
+$repo = git rev-parse --show-toplevel 2>$null
+
+if ([string]::IsNullOrWhiteSpace($repo)) {
+    $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+}
 
 # Fallar ruidosamente. Un hook de seguridad que no encuentra el repo tiene que
 # bloquear el commit, no dejarlo pasar con la lista vacia.
