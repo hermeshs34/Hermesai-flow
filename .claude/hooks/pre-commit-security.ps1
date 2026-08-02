@@ -99,9 +99,27 @@ foreach ($file in $staged) {
 # El motivo del bloqueo va por STDERR, no por Write-Host. Con exit 2 Claude Code
 # lee stderr para explicar por que se bloqueo; lo que se escriba en stdout no se
 # usa y el bloqueo sale como "No stderr output", sin decir que se encontro.
-if ($issues.Count -gt 0) {
+#
+# Solo lo CRITICO bloquea. La advertencia de organization_id es heuristica: su
+# lookahead (?!.*organization_id) no cruza saltos de linea, asi que una query
+# encadenada en varias lineas la dispara aunque filtre bien. Con exit 1 eso era
+# inofensivo porque no bloqueaba nada; al pasar a exit 2 habria empezado a
+# frenar commits legitimos de src/services. Se avisa por stdout y se deja pasar.
+# StartsWith, NO -like. En -like los corchetes son un rango de caracteres y hay
+# que escaparlos con backtick, pero dentro de comillas SIMPLES el backtick es
+# literal, no escape: el patron no casaba nunca y los criticos se colaban como
+# avisos. El hook volvia a aprobar en silencio. StartsWith no usa comodines.
+$critical = @($issues | Where-Object { $_.StartsWith('[CRITICO]') })
+$warnings = @($issues | Where-Object { -not $_.StartsWith('[CRITICO]') })
+
+if ($warnings.Count -gt 0) {
+    Write-Host "AVISOS PRE-COMMIT (no bloquean, revisar):"
+    $warnings | ForEach-Object { Write-Host "  $_" }
+}
+
+if ($critical.Count -gt 0) {
     [Console]::Error.WriteLine("ALERTA SEGURIDAD PRE-COMMIT - HermesAI Flow:")
-    $issues | ForEach-Object { [Console]::Error.WriteLine("  $_") }
+    $critical | ForEach-Object { [Console]::Error.WriteLine("  $_") }
     [Console]::Error.WriteLine("Commit bloqueado. Saca la credencial del codigo y usa Supabase Secrets.")
     exit 2
 }
