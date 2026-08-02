@@ -2,39 +2,13 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash(git commit*)",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -ExecutionPolicy Bypass -File '.claude/hooks/pre-commit-security.ps1'",
-            "shell": "bash",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"c:\\Desarrollos Sistema IA\\Sistema Flujos de Trabajo\\Flujos de Trabajo\\project\\.claude\\hooks\\pre-commit-security.ps1\"",
             "statusMessage": "Verificando seguridad pre-commit...",
             "timeout": 20
-          }
-        ]
-      },
-      {
-        "matcher": "PowerShell(git commit*)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -ExecutionPolicy Bypass -File '.claude/hooks/pre-commit-security.ps1'",
-            "shell": "bash",
-            "statusMessage": "Verificando seguridad pre-commit...",
-            "timeout": 20
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Bash(git push*)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo '[POST-PUSH] Cambios publicados en GitHub. Verificar deploy en Netlify.'",
-            "shell": "bash",
-            "statusMessage": "Recordatorio post-push..."
           }
         ]
       }
