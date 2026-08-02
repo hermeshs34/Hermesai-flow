@@ -6,7 +6,21 @@
 # fin de cadena. El script dejaba de compilar y el hook no llegaba a ejecutar
 # ni una comprobacion. Nada de acentos, guiones largos ni comillas curvas.
 
-$staged = git diff --cached --name-only 2>$null
+# El cwd de la sesion NO es el repo: Claude Code se abre en la raiz del
+# workspace, dos niveles por encima. Un 'git diff --cached' a secas devolvia
+# vacio desde ahi y el hook contestaba OK sin haber mirado un solo archivo.
+# El repo se deduce del propio script, que vive en <repo>/.claude/hooks/.
+$repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+
+# Fallar ruidosamente. Un hook de seguridad que no encuentra el repo tiene que
+# bloquear el commit, no dejarlo pasar con la lista vacia.
+if (-not (Test-Path (Join-Path $repo '.git'))) {
+    Write-Host "[HOOK ERROR] No hay repositorio git en: $repo"
+    Write-Host "  El hook no puede verificar nada. Commit bloqueado."
+    exit 1
+}
+
+$staged = git -C "$repo" diff --cached --name-only 2>$null
 
 $issues = @()
 
@@ -16,7 +30,7 @@ foreach ($file in $staged) {
     if ($file -match '\.(ts|tsx|js|jsx)$') {
         # Out-String: git show devuelve un array de lineas y -match sobre un
         # array filtra en vez de dar un booleano. Se compara el archivo entero.
-        $content = git show ":$file" 2>$null | Out-String
+        $content = git -C "$repo" show ":$file" 2>$null | Out-String
 
         if ($content -match 'RESEND_API_KEY\s*=\s*["\x27]re_') {
             $issues += "[CRITICO] $file - RESEND_API_KEY hardcodeada"
