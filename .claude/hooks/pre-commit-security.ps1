@@ -6,6 +6,29 @@
 # fin de cadena. El script dejaba de compilar y el hook no llegaba a ejecutar
 # ni una comprobacion. Nada de acentos, guiones largos ni comillas curvas.
 
+# El filtro "solo en git commit" se hace AQUI, no en la configuracion. El campo
+# 'if' del hook no se pudo verificar nunca -en modo -p no se ejecuta ningun
+# PreToolUse, ni pasando la config por --settings- y un filtro que no se puede
+# probar es la forma de fallo que ya nos costo esta semana entera. El hook se
+# declara sin filtro, salta en cada Bash/PowerShell y sale de inmediato si el
+# comando no es un commit. Cuesta el arranque de powershell.exe por llamada.
+#
+# Claude Code envia el JSON de la llamada por stdin: .tool_input.command.
+if ([Console]::IsInputRedirected) {
+    $payload = [Console]::In.ReadToEnd()
+
+    if (-not [string]::IsNullOrWhiteSpace($payload)) {
+        # Si el JSON no se puede leer NO se sale en silencio: se sigue y se
+        # comprueba el indice igualmente. Ante la duda, verificar de mas.
+        $cmd = $null
+        try { $cmd = (ConvertFrom-Json $payload).tool_input.command } catch { }
+
+        if ($null -ne $cmd -and $cmd -notmatch '(^|[;&|]\s*)git\s+(-\S+\s+)*commit\b') {
+            exit 0
+        }
+    }
+}
+
 # El cwd de la sesion NO es el repo: Claude Code se abre en la raiz del
 # workspace, dos niveles por encima. Un 'git diff --cached' a secas devolvia
 # vacio desde ahi y el hook contestaba OK sin haber mirado un solo archivo.
