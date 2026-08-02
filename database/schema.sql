@@ -462,13 +462,19 @@ CREATE POLICY logs_system_insert ON public.execution_logs
     WITH CHECK (organization_id = public.my_organization_id());
 
 -- audit_log
--- ATENCIÓN: audit_read_org NO filtra por rol. Cualquier usuario autenticado de
--- la organización lee el registro de auditoría completo. La versión anterior de
--- este archivo lo restringía a admin/auditor/cumplimiento, pero esa política
--- nunca llegó a existir en la base.
+-- Hasta el 03/08/2026 esta política solo comprobaba organization_id: cualquier
+-- usuario autenticado de la organización, incluido un 'viewer', leía la
+-- auditoría completa. El archivo afirmaba desde F1 que estaba restringida, pero
+-- esa política nunca llegó a existir. Cerrado por
+-- 20260803_audit_read_por_rol.sql.
+-- La lista de roles es la del permiso 'view_audit' de src/core/user.types.ts.
+-- Si cambia una, tiene que cambiar la otra: son la misma decisión.
 CREATE POLICY audit_read_org ON public.audit_log
     FOR SELECT TO authenticated
-    USING (organization_id = public.my_org_id());
+    USING (
+        organization_id = public.my_org_id()
+        AND public.my_role() IN ('admin', 'dueno_proceso', 'cumplimiento', 'auditor')
+    );
 
 CREATE POLICY audit_insert ON public.audit_log
     FOR INSERT TO authenticated

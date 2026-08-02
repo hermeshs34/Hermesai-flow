@@ -222,10 +222,29 @@ type Role =
   | 'viewer'         // DEFAULT de profiles.role en la base
 ```
 
-⚠️ `audit_log` no restringe lectura por rol: la política `audit_read_org` solo
-filtra por `organization_id`, así que **cualquier usuario autenticado de la
-organización lee la auditoría completa**, no solo admin/auditor/cumplimiento.
-Está documentado en `schema.sql`; corregirlo es un cambio pendiente.
+### Lectura de `audit_log` — `view_audit` manda en las dos capas
+
+Solo `admin`, `dueno_proceso`, `cumplimiento` y `auditor` leen la auditoría.
+Esa lista vive en **dos sitios que tienen que moverse juntos**:
+
+1. `ROLE_PERMISSIONS` → permiso `view_audit` (`src/core/user.types.ts`), que
+   gobierna el sidebar y la pestaña Auditoría de `Governance.tsx`.
+2. La política `audit_read_org` de `audit_log`
+   (`migrations/20260803_audit_read_por_rol.sql`).
+
+**Si cambias una, cambia la otra.** Hasta el 03/08/2026 estaban descoordinadas
+en sentidos opuestos: la RLS no filtraba por rol —cualquier `viewer` leía la
+auditoría por API— mientras la UI bloqueaba el módulo entero a quien no tuviera
+`manage_users` o `approve_tasks`, dejando fuera al propio `auditor`.
+
+`audit_insert` sigue abierta a todo usuario autenticado de la organización, a
+propósito: cada uno debe poder escribir su propia traza. No necesita `SELECT`
+porque el INSERT no encadena `.select()`.
+
+⚠️ Al restringir un `SELECT` por RLS, recuerda que **Postgres filtra filas, no
+da error**. Una vista sin permiso no falla: sale vacía, y un vacío que miente es
+indistinguible de "no hay datos". Comprueba el permiso antes de consultar, no
+después.
 
 ---
 

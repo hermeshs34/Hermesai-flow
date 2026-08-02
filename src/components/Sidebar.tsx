@@ -123,8 +123,12 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePas
     const initials = currentUser?.name
         ?.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase() ?? 'HS';
 
+    // Los tres permisos que abren alguna pestaña de Gobierno. Faltaba
+    // 'view_audit', y por eso el auditor no tenía entrada al módulo pese a que
+    // el Dashboard le ofrecía un botón "Audit trail completo" que apuntaba ahí.
     const canGovern = authService.hasPermission(currentUser ?? null, 'manage_users')
-        || authService.hasPermission(currentUser ?? null, 'approve_tasks');
+        || authService.hasPermission(currentUser ?? null, 'approve_tasks')
+        || authService.hasPermission(currentUser ?? null, 'view_audit');
 
     const navItems = canGovern
         ? [...NAV_BASE, { id: 'governance' as ViewType, label: 'Gobierno', icon: ShieldCheck, badgeKey: 'pending' as const }]

@@ -97,8 +97,14 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [form, setForm] = useState<{ name: string; email: string; role: Role }>({ name: '', email: '', role: 'operador' });
     const [tempPass, setTempPass] = useState<string | null>(null);
 
-    const isAdmin    = authService.hasPermission(currentUser, 'manage_users');
-    const canApprove = authService.hasPermission(currentUser, 'approve_tasks');
+    const isAdmin      = authService.hasPermission(currentUser, 'manage_users');
+    const canApprove   = authService.hasPermission(currentUser, 'approve_tasks');
+    // El permiso 'view_audit' existía desde F1 y esta vista no lo usaba: la
+    // pestaña de Auditoría era adminOnly, así que el propio 'auditor' —cuyo
+    // único cometido es leer la traza— no podía entrar. Ahora manda el permiso,
+    // y la política audit_read_org de la base usa esta misma lista de roles
+    // (20260803_audit_read_por_rol.sql). Una sola fuente de verdad.
+    const canViewAudit = authService.hasPermission(currentUser, 'view_audit');
 
     // Roles regulatorios (AML/CFT) — el admin NO puede aprobar sus tareas (segregación de funciones)
     const ROLES_REGULATORIOS = ['cumplimiento'];
@@ -246,10 +252,14 @@ export function Governance({ currentUser }: GovernanceProps) {
     const load = useCallback(async () => {
         setLoading(true);
         try {
+            // Se pide solo lo que el rol va a poder ver. Con la auditoría no es
+            // cosmético: la RLS filtra filas, no da error, así que un rol sin
+            // 'view_audit' recibiría una lista vacía indistinguible de "no hay
+            // nada registrado". Mejor no preguntar que mostrar un vacío que miente.
             const [u, a, m] = await Promise.all([
-                GovernanceService.getUsers(currentUser.organizationId),
-                GovernanceService.getAuditTrail(currentUser.organizationId, 150),
-                GovernanceService.getMatriz(currentUser.organizationId),
+                isAdmin       ? GovernanceService.getUsers(currentUser.organizationId)          : Promise.resolve([]),
+                canViewAudit  ? GovernanceService.getAuditTrail(currentUser.organizationId, 150) : Promise.resolve([]),
+                isAdmin       ? GovernanceService.getMatriz(currentUser.organizationId)         : Promise.resolve([]),
             ]);
             setUsers(u); setAudit(a); setMatriz(m as Record<string, unknown>[]);
 
@@ -265,7 +275,7 @@ export function Governance({ currentUser }: GovernanceProps) {
         } finally {
             setLoading(false);
         }
-    }, [currentUser.organizationId]);
+    }, [currentUser.organizationId, isAdmin, canViewAudit]);
 
     const resolveApproval = async (tarea: TareaAprobacion, decision: 'aprobado' | 'rechazado') => {
         setResolvingId(tarea.id);
@@ -381,7 +391,7 @@ export function Governance({ currentUser }: GovernanceProps) {
     };
 
     // Sin ningún permiso relevante — bloquear completamente
-    if (!isAdmin && !canApprove) {
+    if (!isAdmin && !canApprove && !canViewAudit) {
         return (
             <div className="h-full flex items-center justify-center bg-gray-50">
                 <div className="text-center max-w-sm">
@@ -403,15 +413,19 @@ export function Governance({ currentUser }: GovernanceProps) {
         u.email.toLowerCase().includes(search.toLowerCase())
     );
 
-    const ALL_TABS: { id: Tab; label: string; icon: typeof Users; badge?: number; adminOnly?: boolean }[] = [
-        { id: 'usuarios',      label: 'Usuarios y Roles',      icon: Users,          adminOnly: true },
-        { id: 'aprobaciones',  label: 'Bandeja de Aprobación', icon: ClipboardCheck, badge: aprobaciones.filter(t => isAdmin || currentUser.role === t.rol_aprobador).length },
-        { id: 'matriz',        label: 'Matriz de Aprobación',  icon: ShieldCheck,    adminOnly: true },
-        { id: 'auditoria',     label: 'Auditoría',             icon: ScrollText,     adminOnly: true },
+    // Cada pestaña declara el permiso que exige, en vez del antiguo adminOnly.
+    // Auditoría pasa a 'view_audit', que es lo que la deja ver al auditor, al
+    // dueño de proceso y a cumplimiento, no solo al admin.
+    const ALL_TABS: { id: Tab; label: string; icon: typeof Users; badge?: number; visible: boolean }[] = [
+        { id: 'usuarios',      label: 'Usuarios y Roles',      icon: Users,          visible: isAdmin },
+        { id: 'aprobaciones',  label: 'Bandeja de Aprobación', icon: ClipboardCheck, visible: isAdmin || canApprove, badge: aprobaciones.filter(t => isAdmin || currentUser.role === t.rol_aprobador).length },
+        { id: 'matriz',        label: 'Matriz de Aprobación',  icon: ShieldCheck,    visible: isAdmin },
+        { id: 'auditoria',     label: 'Auditoría',             icon: ScrollText,     visible: canViewAudit },
     ];
-    const TABS = ALL_TABS.filter(t => !t.adminOnly || isAdmin);
-    // Redirigir a aprobaciones si el tab activo no está disponible para este rol
-    const efectiveTab = TABS.find(t => t.id === tab) ? tab : 'aprobaciones';
+    const TABS = ALL_TABS.filter(t => t.visible);
+    // Caer en la primera pestaña disponible, no en 'aprobaciones' fija: un
+    // auditor no tiene bandeja, así que ese destino le dejaba la vista en blanco.
+    const efectiveTab = TABS.find(t => t.id === tab)?.id ?? TABS[0]?.id;
     const misBandeja = isAdmin
         ? aprobaciones
         : aprobaciones.filter(t => currentUser.role === t.rol_aprobador);
