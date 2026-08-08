@@ -607,6 +607,13 @@ Antes de dar por completado cualquier módulo:
 
 ### Al hacer commits
 - Después de cada `git commit`, reportar explícitamente el resultado del hook de seguridad
+- ⚠️ **`git add` y `git commit` van en llamadas SEPARADAS.** El hook es
+  `PreToolUse`: salta **antes** de que se ejecute la orden entera, y comprueba
+  `git diff --cached`. Encadenar `git add -A && git commit -m …` hace que mire
+  un índice todavía vacío, no encuentre nada y **apruebe sin revisar un solo
+  fichero**. Pasó el 08/08/2026 y se rehízo el commit con los pasos separados.
+  Es el mismo patrón del `succeeded` de pg_cron y del punto verde del Dashboard:
+  un instrumento que dice «bien» sin haber medido nada.
 
 ### Qué NO hacer
 - ❌ Instalar `imap`, `nodemailer` u otras librerías Node.js-only en el frontend
