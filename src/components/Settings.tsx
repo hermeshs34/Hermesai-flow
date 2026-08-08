@@ -204,8 +204,8 @@ export function Settings() {
                             <div>
                                 <p className="text-sm font-semibold text-gray-700">Correo saliente</p>
                                 <p className="text-xs text-gray-400">
-                                    Secrets en Supabase Edge Functions: GMAIL_USER + GMAIL_APP_PASSWORD (SMTP), o RESEND_API_KEY.
-                                    Se usa el primero que exista.
+                                    Resend, desde no-responder@avisos.hermesaitech.com. Único secret en
+                                    Supabase Edge Functions: RESEND_API_KEY. El remitente va en el código, no aquí.
                                 </p>
                             </div>
                             <a

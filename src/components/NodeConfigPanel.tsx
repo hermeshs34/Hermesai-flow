@@ -93,8 +93,15 @@ const DIAS_MES = Array.from({ length: 28 }, (_, i) => ({
 
 type Frecuencia = 'manual' | 'diario' | 'semanal' | 'mensual' | 'avanzado';
 
+// La hora que se elige aquí es la de Venezuela. El motor (cron-runner) compara
+// contra America/Caracas desde el 07/08/2026; antes comparaba contra UTC y un
+// "9:00" saltaba a las 5 de la mañana.
+const ZONA_TEXTO = 'hora de Venezuela';
+
 function cronToUI(cron: string): { frecuencia: Frecuencia; hora: string; dias: string[]; diaMes: string } {
-    if (!cron) return { frecuencia: 'diario', hora: '9', dias: ['1','2','3','4','5'], diaMes: '1' };
+    // Cron vacío es "manual", no "diario". Devolver 'diario' aquí hacía que un
+    // nodo puesto en Manual reapareciera como Diario a las 9:00 al reabrirlo.
+    if (!cron) return { frecuencia: 'manual', hora: '9', dias: ['1','2','3','4','5'], diaMes: '1' };
     const parts = cron.split(' ');
     if (parts.length !== 5) return { frecuencia: 'avanzado', hora: '9', dias: ['1','2','3','4','5'], diaMes: '1' };
     const [, h, dom, , dow] = parts;
@@ -132,9 +139,24 @@ function CronForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) 
     const [diaMes,     setDiaMes]     = React.useState(ui.diaMes);
     const [showCron,   setShowCron]   = React.useState(false);
 
+    // Si el cron cambia por fuera —al abrir otro nodo con este panel ya montado,
+    // o al terminar de cargar el flujo— hay que volver a leerlo. Sin esto el
+    // formulario se quedaba con lo que tenía al montarse y, en cuanto tocabas
+    // cualquier campo, `apply` reescribía ESE valor viejo encima del guardado:
+    // de ahí que la hora "se cambiara sola" a las 9:00 sin que nadie la tocara.
+    React.useEffect(() => {
+        const u = cronToUI(cfg.cron ?? '0 9 * * 1-5');
+        setFrecuencia(u.frecuencia);
+        setHora(u.hora);
+        setDias(u.dias);
+        setDiaMes(u.diaMes);
+    }, [cfg.cron]);
+
     const apply = (f: Frecuencia, h: string, d: string[], dm: string) => {
-        const cron = uiToCron(f, h, d, dm);
-        set('cron', cron || '0 9 * * 1-5');
+        // Manual guarda cron VACÍO. Antes caía en el `|| '0 9 * * 1-5'` y elegir
+        // "Manual" dejaba el nodo programado a diario a las 9 de la mañana, que
+        // es justo lo contrario de lo que pide el botón.
+        set('cron', uiToCron(f, h, d, dm));
     };
 
     const handleFrecuencia = (f: Frecuencia) => {
@@ -155,7 +177,7 @@ function CronForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) 
 
     const resumen = () => {
         if (frecuencia === 'manual')  return 'Solo manualmente (botón Ejecutar)';
-        const h = HORAS.find(x => x.value === hora)?.label ?? `${hora}:00`;
+        const h = `${HORAS.find(x => x.value === hora)?.label ?? `${hora}:00`} (${ZONA_TEXTO})`;
         if (frecuencia === 'diario')  return `Todos los días a las ${h}`;
         if (frecuencia === 'mensual') return `El día ${diaMes} de cada mes a las ${h}`;
         if (frecuencia === 'semanal') {
@@ -203,7 +225,9 @@ function CronForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) 
             {/* Hora */}
             {frecuencia !== 'manual' && frecuencia !== 'avanzado' && (
                 <div>
-                    <p className="text-xs font-semibold text-gray-600 mb-2">¿A qué hora?</p>
+                    <p className="text-xs font-semibold text-gray-600 mb-2">
+                        ¿A qué hora? <span className="font-normal text-gray-400">({ZONA_TEXTO})</span>
+                    </p>
                     <select
                         value={hora}
                         onChange={e => handleHora(e.target.value)}
@@ -252,7 +276,7 @@ function CronForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) 
 
             {/* Avanzado — campo cron directo */}
             {frecuencia === 'avanzado' && (
-                <Field label="Expresión Cron" hint="minuto hora día-mes mes día-semana">
+                <Field label="Expresión Cron" hint={`minuto hora día-mes mes día-semana — en ${ZONA_TEXTO}`}>
                     <Input value={cfg.cron ?? '0 9 * * 1-5'} onChange={v => set('cron', v)} placeholder="0 9 * * 1-5" />
                 </Field>
             )}

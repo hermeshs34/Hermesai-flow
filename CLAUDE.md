@@ -103,17 +103,27 @@ project/
 │       └── helpers.ts               ← funciones utilitarias
 ├── supabase/
 │   └── functions/                   ← Edge Functions Deno (motor de ejecución)
-│       ├── execute-node/            ← ejecutor genérico de nodos
-│       ├── node-email/              ← nodo: enviar email via Resend
-│       ├── node-ai-report/          ← nodo: generar informe con Claude
-│       ├── node-riskguard/          ← nodo: leer datos de RiskGuard
-│       ├── node-indicadores/        ← nodo: leer KPIs de Indicadores
-│       ├── node-eeff/               ← nodo: leer EE.FF.
-│       └── node-legaltech/          ← nodo: leer datos LegalTech
+│       ├── _shared/email.ts         ← ÚNICO punto de salida de correo (ver §9.1)
+│       ├── execute-workflow/        ← el motor: ejecuta TODOS los tipos de nodo
+│       ├── cron-runner/             ← pg_cron cada minuto: dispara y escala (F4)
+│       ├── resolve-approval/        ← aprobar / rechazar una tarea
+│       ├── health-check/            ← estado de integraciones (lo llama el Sidebar)
+│       ├── admin-create-user/       ← alta de usuarios
+│       ├── design-assistant/        ← asistente de diseño de flujos
+│       └── get-bcv-rate/            ← tasa BCV
 └── .claude/
     ├── settings.json                ← hooks y permisos Claude Code
     └── hooks/                       ← scripts de seguridad pre-commit
 ```
+
+> **Ojo: no hay una Edge Function por tipo de nodo.** Existen las carpetas
+> `execute-node/`, `node-email/`, `node-ai-report/`, `node-riskguard/`,
+> `node-indicadores/`, `node-eeff/` y `node-legaltech/`, y **las siete están
+> vacías**. Nunca se escribieron: todos los nodos se ejecutan dentro del
+> `switch` de `execute-workflow/index.ts`. Este árbol las daba por hechas
+> —igual que `schema.sql` daba por hechas columnas que no existían (§5.1)— y
+> `connectionService.ts` todavía remite a una `node-email` inexistente.
+> Corregido el 07/08/2026.
 
 ---
 
@@ -246,6 +256,92 @@ da error**. Una vista sin permiso no falla: sale vacía, y un vacío que miente 
 indistinguible de "no hay datos". Comprueba el permiso antes de consultar, no
 después.
 
+### Ejecución de flujos — `execute_workflows` manda en las dos capas
+
+Mismo caso que `view_audit`, y con el mismo desenlace. La lista de roles que
+pueden lanzar un flujo vive en **dos sitios que tienen que moverse juntos**:
+
+1. `ROLE_PERMISSIONS` → permiso `execute_workflows` (`src/core/user.types.ts`),
+   que gobierna el botón Ejecutar de la pantalla.
+2. La constante `ROLES_QUE_EJECUTAN` de `execute-workflow/index.ts`. Está
+   copiada, no importada: una Edge Function corre en Deno y no alcanza `src/`.
+
+Hoy son **tres**: `admin`, `dueno_proceso` y `autorizador`. Es una decisión de
+negocio del 08/08/2026 — *«la ejecución de los procesos es del dueño del
+proceso y el administrador o quien autoriza el proceso que está definido»*.
+Hasta entonces la lista incluía también `supervisor`, `operador` y los legacy
+`editor`/`operator`.
+
+Fuera quedan `supervisor` y `operador` (supervisan y operan, pero lanzar es del
+dueño), `cumplimiento` (aprueba, no ejecuta), `auditor`, `viewer` y los legacy.
+`autorizador` sí ejecuta, y la **segregación de funciones sigue intacta**:
+`resolve-approval` rechaza con 403 a quien intente aprobar una tarea del flujo
+que él mismo lanzó (`solicitante_id === approverId`).
+
+⚠️ Al estrecharlo, los **dos `supervisor` activos** de la organización dejaron
+de poder ejecutar. Si vuelven a necesitarlo, la vía es cambiarles el rol a
+`dueno_proceso` desde Ajustes → Usuarios, no reabrir la matriz.
+
+Hasta el 07/08/2026 la Edge Function **no miraba el rol**: leía solo
+`organization_id` del perfil, así que cualquier sesión válida de la organización
+—un `viewer`, un `auditor`— podía ejecutar cualquier flujo llamando a la función
+directamente. La pantalla escondía el botón; la API no lo impedía.
+
+⚠️ **`cron-runner` no entra en esta matriz.** No es un endpoint de ejecución: es
+el reloj, y su único llamante legítimo es el job de pg_cron. Exige `CRON_SECRET`
+(§6.1) y rechaza todo lo demás con 401. Hasta el 07/08/2026 no comprobaba nada
+y bastaba la clave anon —pública, va en el bundle del navegador— para disparar
+el ciclo completo desde fuera.
+
+### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
+
+**El secreto de las Edge Functions está en el formato NUEVO.**
+`SUPABASE_SERVICE_ROLE_KEY` vale `sb_secret_…` — 41 caracteres, **no es un
+JWT**.
+
+El proyecto convive con los dos formatos: existen las cuatro claves
+(`anon` y `service_role` legacy en JWT, más `sb_publishable_…` y `sb_secret_…`),
+y **el frontend todavía arranca con la anon legacy** (`VITE_SUPABASE_ANON_KEY`
+empieza por `eyJ`). O sea: las legacy siguen vivas y aceptadas. Lo que cambió es
+qué formato hay puesto en el secreto de las funciones.
+
+De ahí la regla que costó ocho días de cron muerto:
+
+> **Una llamada interna se reconoce por la cabecera `x-cron-secret`, no por que
+> `Authorization` traiga la service_role key.** supabase-js manda las claves del
+> formato nuevo en `apikey` y deja `Authorization` **vacía**, así que
+> `token === SERVICE_ROLE_KEY` da siempre falso.
+
+`cron-runner` invocaba `execute-workflow` y este, al no reconocer la llamada
+como interna, se iba por la rama de usuario del navegador, no encontraba sesión
+y devolvía 401 en **cada** disparo. Hoy `execute-workflow` acepta las dos vías
+—`x-cron-secret` o la clave— y `CORS['Access-Control-Allow-Headers']` incluye
+`x-cron-secret`: si falta ahí, el preflight la tumba.
+
+Reglas que se desprenden:
+
+1. **`CRON_SECRET` es un secreto propio del disparador**, 64 caracteres hex, en
+   *Edge Functions → Secrets*. No lleva caracteres que un copiar-pegar pueda
+   estropear en silencio, que es exactamente lo que pasó dos veces con la
+   service_role key. **El comando del job se escribe desde dentro de la base,
+   con el secreto como parámetro (`$1`)**, no concatenado: así no cruza ninguna
+   capa de comillas.
+2. **`cron-runner` se despliega con `--no-verify-jwt`.** Su autorización es el
+   bloque de código, no la puerta de Supabase: con verificación de JWT activada
+   el gateway rechaza al llamante *antes* y devuelve un 401 que no explica nada.
+3. **Comparar contra un secreto exige `token !== ''`.** Si la variable llegara
+   vacía por un despliegue mal configurado, `'' === ''` haría interna toda
+   petición **sin** cabecera. En `resolve-approval` eso es grave: una llamada
+   interna elige a dedo quién aprueba. Guardado en las tres funciones.
+
+⚠️ **`net.http_post` es asíncrono.** Encola y devuelve un id — ese id es el
+`"1 row"` de `cron.job_run_details.return_message`. pg_cron dice `succeeded`
+aunque el HTTP haya dado 401. **La verdad está en `net._http_response`**
+(`status_code`, `content`, `timed_out`). Ese instrumento que informaba de salud
+sin medirla es lo que escondió el fallo ocho días. Y el timeout por defecto de
+pg_net son 5 s: el job lleva `timeout_milliseconds := 30000` porque disparar un
+flujo y mandar correos pasa de cinco segundos.
+
 ---
 
 ## 7. Políticas RLS — Reglas Absolutas
@@ -309,6 +405,74 @@ Frontend → invoke('execute-node', { nodeId, workflowId, payload })
 - Timeout Edge Functions: 150 segundos máximo
 - Para flujos largos: encadenar llamadas, no una sola función monolítica
 - Informes IA complejos: usar streaming de Claude API
+
+### 9.1 El correo sale por un solo sitio — `_shared/email.ts`
+
+**Canal único: Resend.** Sin respaldo. Migrado desde SMTP de Gmail el 07/08/2026
+(punto 4 del orden de trabajo de la plataforma).
+
+```
+REMITENTE = 'HermesAI Flow <no-responder@avisos.hermesaitech.com>'
+```
+
+`avisos.hermesaitech.com` está verificado **a nivel de plataforma** (Resend,
+`eu-west-1`) y lo comparten TurnoGuard, RiskGuard y Estados Financieros. De ahí
+salen tres reglas:
+
+1. **El remitente va en el código, en la constante `REMITENTE`. Nunca en un
+   secreto.** `NOTIF_EMAIL_FROM` es de TurnoGuard; llegó a estar puesto en este
+   proyecto sin que lo leyera nadie, y antes en el de RiskGuard. Borrado el
+   07/08/2026. Si aparece otra vez, sobra.
+2. **El campo «De:» de un nodo Email no gobierna el `From`** — se degrada a
+   Reply-To. Si llegara tal cual a la API, cualquiera con permiso para editar un
+   flujo podría enviar como `facturacion@avisos.hermesaitech.com` sobre el
+   subdominio de los cuatro productos.
+3. **Varios destinatarios ⇒ envío en lote** (`POST /emails/batch`): una sola
+   petición, un correo separado por persona. El límite de Resend son **2
+   peticiones por segundo**, así que un bucle con un envío por destinatario
+   empieza a recibir 429; y metiéndolos a todos en el mismo `to`, cada uno ve
+   las direcciones de los demás. Máximo 100 mensajes por lote y 50 direcciones
+   por mensaje. **El lote es atómico:** una dirección mal escrita tumba el envío
+   entero, por eso se valida antes de salir.
+
+El único secreto es `RESEND_API_KEY`, en *Supabase → Edge Functions → Secrets*.
+Cuatro funciones mandan correo (`execute-workflow`, `cron-runner`,
+`resolve-approval` y el nodo Email dentro del motor) y **las cuatro pasan por
+este fichero**. No abrir un segundo camino: en concreto, este producto **no
+lleva Netlify Functions** — eso es de Estados Financieros, que sí las necesitaba
+porque su correo salía del navegador.
+
+⚠️ **El correo aquí lo dispara el motor, no siempre una sesión.** `cron-runner`
+corre por pg_cron sin nadie delante. Por eso la validación de JWT que lleva la
+función de correo de Estados Financieros **no se replica aquí y no hace falta**:
+el correo no tiene endpoint propio, sale desde dentro de funciones que ya
+autentican en su puerta (`execute-workflow` reconoce la llamada del cron por
+`x-cron-secret` —§6.1— o contrasta un JWT de usuario contra su
+`organization_id`).
+
+### 9.2 El cron se evalúa en hora de Venezuela, no en UTC
+
+Las Edge Functions corren en UTC. Un `0 9 * * 1-5` interpretado en UTC dispara
+a las 05:00 de Caracas: el usuario programa a las 9 y el flujo sale de noche.
+`cron-runner` convierte la hora antes de comparar:
+
+```ts
+const ZONA_HORARIA = 'America/Caracas';
+```
+
+Con `Intl.DateTimeFormat` y **`hourCycle: 'h23'`** — sin `h23`, medianoche se
+formatea como `24` y ningún cron con `0` en la hora casa nunca. Se usa `Intl` y
+no «restar cuatro horas» a propósito: Venezuela no tiene horario de verano pero
+**sí cambió de huso en 2007 y en 2016**, y una resta a mano se queda vieja sin
+avisar.
+
+La UI etiqueta las horas como *hora de Venezuela* por lo mismo. `matchesCron`
+entiende `*`, rangos (`1-5`), pasos (`*/5`), listas (`1,3,5`) y valores exactos.
+
+⚠️ **`workflow_nodes` guarda `type='trigger'` y `category='cron'` en columnas
+separadas.** `trigger:cron` es el nombre del `case` del motor, que compone las
+dos — **no** es el valor de ninguna columna, y filtrar por él no casa ni una
+fila.
 
 ---
 
@@ -391,12 +555,31 @@ const { data } = await supabase.from('workflows').select('*')
 
 | Fase | Descripción | Estado |
 |------|-------------|--------|
-| F0 | Fundaciones: Supabase, auth, estructura, CLAUDE.md | 🔄 En curso |
-| F1 | Motor de ejecución: Edge Functions, nodo Email, nodo BCV | ⏳ Pendiente |
-| F2 | Conectores 4 sistemas: RiskGuard, EE.FF., Indicadores, LegalTech | ⏳ Pendiente |
-| F3 | Agente IA: informes automáticos por dominio | ⏳ Pendiente |
-| F4 | Alertas inteligentes: umbrales, escalamiento, multi-canal | ⏳ Pendiente |
-| F5 | QA, hardening, go-live | ⏳ Pendiente |
+| F0 | Fundaciones: Supabase, auth, estructura, CLAUDE.md | ✅ Completa |
+| F1 | Motor de ejecución: Edge Functions, nodo Email, nodo BCV | ✅ Completa |
+| F2 | Conectores 4 sistemas: RiskGuard, EE.FF., Indicadores, LegalTech | ⚠️ Parcial — ver abajo |
+| F3 | Agente IA: informes automáticos por dominio | ✅ Completa (03/06/2026) |
+| F4 | Alertas inteligentes: umbrales, escalamiento, multi-canal | ✅ En producción (11/06, probada de extremo a extremo el 02/08/2026) |
+| F5 | QA, hardening, go-live | 🔄 En curso |
+
+**Esta tabla decía «⏳ Pendiente» en F1–F5 hasta el 07/08/2026**, con F4 corriendo en
+producción desde hacía dos meses. Es el mismo patrón que `schema.sql` (§5.1) y que el
+«redeploy pendiente» que se arrastró 52 días: un documento que nadie contrasta acaba
+describiendo un sistema que no existe. **Si tocas una fase, actualiza la fila.**
+
+### F2 no está completa: falta LegalTech
+
+Los `case` reales del `switch` de `execute-workflow/index.ts` son `riskguard`, `aml`,
+`indicadores`, `eeff`, `semaforo`, `bcv`, `decision`, `aprobacion`, `agente`,
+`regulatorio`, `email`, `whatsapp`, `reporte` y `log`. **No hay ningún nodo LegalTech**, y
+`health-check` tampoco lo sondea: sus variables `LEGALTECH_SUPABASE_URL` /
+`LEGALTECH_SERVICE_ROLE_KEY` (§11) no las lee nadie. Ojo con confundirlo con
+`processor:regulatorio`, que suena parecido pero no se conecta a LegalTech: arma un
+informe SUDEASEG con datos que ya están en el contexto del flujo.
+
+**Y de los tres conectores que sí existen, Indicadores está caído:** apunta a
+`fciaudxeuycqtuzyurnb`, que el documento de plataforma marca como proyecto INACTIVO.
+RiskGuard y EE.FF. responden bien.
 
 ---
 

@@ -5,7 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { canalEmail, direccionRemitente } from '../_shared/email.ts';
+import { canalEmail, direccionRemitente, DOMINIO_ENVIO } from '../_shared/email.ts';
 
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -92,29 +92,33 @@ serve(async (req) => {
         results.push({ name: 'RiskGuard', status: 'unconfigured', latency_ms: null, last_check: new Date().toISOString(), message: 'Secret RISKGUARD_SUPABASE_URL no configurado' });
     }
 
-    // ── Email — el canal que se usaría ahora mismo ───────────────────────
-    // Antes esto preguntaba siempre por Resend y decía "Conectado" mientras
-    // no entregaba nada: la clave era válida, pero `onboarding@resend.dev`
-    // había dejado de repartir. Se informa del canal real (ver _shared/email.ts).
-    const canal = canalEmail();
-    if (canal === 'smtp') {
-        results.push(await ping(`Email · Gmail SMTP (${direccionRemitente()})`, async () => {
-            // Solo se comprueba que la salida al 465 sigue abierta. No se hace
-            // AUTH: esto lo llama el Sidebar cada 60 s y no conviene tocar la
-            // puerta de Gmail con la contraseña tantas veces al día.
-            const conn = await Deno.connect({ hostname: 'smtp.gmail.com', port: 465 });
-            conn.close();
-        }));
-    } else if (canal === 'resend') {
-        results.push(await ping('Email · Resend', async () => {
+    // ── Email — Resend sobre el dominio de plataforma ────────────────────
+    // Antes esto decía "Conectado" en cuanto la clave respondía, mientras no
+    // entregaba nada: la clave era válida pero `onboarding@resend.dev` había
+    // dejado de repartir. Por eso ahora no basta con que la API conteste —se
+    // comprueba que la cuenta de esa clave tenga verificado el dominio desde
+    // el que enviamos de verdad (ver _shared/email.ts).
+    if (canalEmail() === 'resend') {
+        results.push(await ping(`Email · Resend (${direccionRemitente()})`, async () => {
             const r = await fetch('https://api.resend.com/domains', {
                 headers: { Authorization: `Bearer ${Deno.env.get('RESEND_API_KEY')}` },
                 signal: AbortSignal.timeout(6000),
             });
+
+            // Una clave de solo envío responde 401 aquí aunque sirva para
+            // mandar correo. Se dice explícito para no salir a buscar una
+            // clave rota que no lo está.
+            if (r.status === 401) throw new Error('Clave inválida, o es de solo envío y no puede listar dominios');
             if (!r.ok) throw new Error(`Resend HTTP ${r.status}`);
+
+            const { data } = await r.json() as { data?: { name?: string; status?: string }[] };
+            const dominio = (data ?? []).find(d => d.name === DOMINIO_ENVIO);
+
+            if (!dominio) throw new Error(`La clave no ve ${DOMINIO_ENVIO}: es de otra cuenta de Resend`);
+            if (dominio.status !== 'verified') throw new Error(`${DOMINIO_ENVIO} está en estado "${dominio.status}", no verificado`);
         }));
     } else {
-        results.push({ name: 'Email', status: 'unconfigured', latency_ms: null, last_check: new Date().toISOString(), message: 'Sin canal: faltan GMAIL_USER + GMAIL_APP_PASSWORD y también RESEND_API_KEY' });
+        results.push({ name: 'Email · Resend', status: 'unconfigured', latency_ms: null, last_check: new Date().toISOString(), message: 'Falta RESEND_API_KEY en Supabase Secrets' });
     }
 
     return new Response(

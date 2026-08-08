@@ -4,7 +4,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { enviarEmail as enviar, canalEmail } from '../_shared/email.ts';
+import { enviarEmail as enviar, canalEmail, escaparHtml } from '../_shared/email.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -40,7 +40,10 @@ serve(async (req) => {
         // el service role key — desde el frontend la identidad sale del token.
         const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
         let approverId: string;
-        if (token === SERVICE_ROLE_KEY) {
+        // `token !== ''` no es adorno: si SERVICE_ROLE_KEY llegara vacía por un
+        // despliegue mal configurado, '' === '' haría interna toda petición SIN
+        // cabecera, y una llamada interna aquí elige a dedo quién aprueba.
+        if (token !== '' && token === SERVICE_ROLE_KEY) {
             if (!bodyApproverId) {
                 return new Response(
                     JSON.stringify({ error: 'approverId requerido en llamadas internas' }),
@@ -170,10 +173,10 @@ serve(async (req) => {
     <p style="color:#fca5a5;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
   </div>
   <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">Hola <strong>${solicitante.name}</strong>,</p>
-    <p style="color:#374151;font-size:14px">Tu solicitud del flujo <strong>"${wfData?.name ?? ''}"</strong> fue <strong style="color:#dc2626">rechazada</strong>.</p>
-    ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${tarea.descripcion}</p>` : ''}
-    ${comentario ? `<div style="background:#fee2e2;border-left:4px solid #dc2626;padding:12px 16px;border-radius:4px;margin:12px 0"><p style="margin:0;color:#7f1d1d;font-size:13px"><strong>Motivo:</strong> ${comentario}</p></div>` : ''}
+    <p style="color:#374151;font-size:14px">Hola <strong>${escaparHtml(solicitante.name)}</strong>,</p>
+    <p style="color:#374151;font-size:14px">Tu solicitud del flujo <strong>"${escaparHtml(wfData?.name ?? '')}"</strong> fue <strong style="color:#dc2626">rechazada</strong>.</p>
+    ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${escaparHtml(tarea.descripcion)}</p>` : ''}
+    ${comentario ? `<div style="background:#fee2e2;border-left:4px solid #dc2626;padding:12px 16px;border-radius:4px;margin:12px 0"><p style="margin:0;color:#7f1d1d;font-size:13px"><strong>Motivo:</strong> ${escaparHtml(comentario)}</p></div>` : ''}
     <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
   </div>
 </div>`,

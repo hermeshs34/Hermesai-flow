@@ -1075,6 +1075,27 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
     const dashView = getDashView(currentUser?.role);
     const myRuns   = runs.filter(r => r.triggered_by === currentUser?.email);
 
+    // ── Salud del cron ────────────────────────────────────────────────────
+    // El indicador de la tarjeta "Flujos Programados" era un punto verde fijo y
+    // el texto "pg_cron activo" escrito a mano: no consultaba absolutamente
+    // nada. Siguió en verde los ocho días que el cron estuvo parado tras el
+    // incidente del 30/07, que es justo por lo que nadie lo vio. Ahora sale de
+    // las ejecuciones reales.
+    //
+    // Cuidado con lo que se puede afirmar: que no haya ejecuciones automáticas
+    // NO demuestra que pg_cron esté caído —pasa igual si a ningún flujo le
+    // tocaba—, así que la tarjeta informa de lo único que sabe con certeza:
+    // cuándo fue la última vez que algo se ejecutó solo.
+    const runsCron     = runs.filter(r => r.triggered_by === 'cron');
+    const ultimoCron   = runsCron[0] ?? null;   // `runs` llega ordenado por started_at desc
+    const horasSinCron = ultimoCron
+        ? (Date.now() - new Date(ultimoCron.started_at).getTime()) / 3_600_000
+        : Infinity;
+    // Con flujos programados activos, un día entero sin una sola ejecución
+    // automática es anómalo: lo más espaciado que ofrece el Constructor es
+    // mensual, pero cualquier cartera con varios flujos toca a diario.
+    const cronSano = cronFlows.length === 0 || horasSinCron < 24;
+
     return (
         <>
         <div className="h-full overflow-y-auto bg-[#f0f2f5]">
@@ -1448,9 +1469,15 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                             <Calendar className="w-4 h-4 text-indigo-300" />
                             <h2 className="font-semibold text-sm">Flujos Programados (Cron Activo)</h2>
                         </div>
-                        <div className="flex items-center gap-1.5 text-emerald-400">
-                            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                            <span className="text-[10px] font-semibold">pg_cron activo</span>
+                        <div className={`flex items-center gap-1.5 ${cronSano ? 'text-emerald-400' : 'text-amber-300'}`}>
+                            <div className={`w-2 h-2 rounded-full ${cronSano ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                            <span className="text-[10px] font-semibold">
+                                {cronFlows.length === 0
+                                    ? 'sin flujos programados'
+                                    : ultimoCron
+                                        ? `última automática ${fmtRelative(ultimoCron.started_at)}`
+                                        : `sin ejecuciones automáticas · ${periodLabel(period).toLowerCase()}`}
+                            </span>
                         </div>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -1459,16 +1486,21 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                                 Sin flujos programados activos — crea uno con el nodo "Programado (Cron)" en el Constructor.
                             </p>
                         )}
-                        {cronFlows.map(f => (
+                        {cronFlows.map(f => {
+                            const ultima = runsCron.find(r => r.workflow_id === f.wfId);
+                            return (
                             <div key={f.wfId} className="flex items-center justify-between bg-white/8 hover:bg-white/12 rounded-xl px-4 py-3 transition-colors">
                                 <div>
                                     <p className="text-sm font-semibold">{f.name}</p>
                                     <p className="text-[10px] text-indigo-300 font-mono mt-0.5">{f.cron}</p>
-                                    <p className="text-[10px] text-white/40 mt-0.5">Activo · pg_cron</p>
+                                    <p className="text-[10px] text-white/40 mt-0.5">
+                                        {ultima ? `Última automática ${fmtRelative(ultima.started_at)}` : 'Sin ejecuciones automáticas'}
+                                    </p>
                                 </div>
-                                <div className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${ultima ? 'bg-emerald-400' : 'bg-amber-400'}`} />
                             </div>
-                        ))}
+                            );
+                        })}
                         <button
                             onClick={() => {
                                 toast.info('En el Constructor: arrastra un nodo "Programado (Cron)" y configura la expresión horaria.');

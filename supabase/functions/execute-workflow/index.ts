@@ -5,15 +5,43 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { enviarEmail as enviar, canalEmail } from '../_shared/email.ts';
+import { enviarEmail as enviar, enviarEmailPersonalizado as enviarPersonalizado, canalEmail, escaparHtml } from '../_shared/email.ts';
 
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
+// Credencial de las llamadas internas (cron-runner). Ver la puerta más abajo.
+const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? '';
+
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 };
+
+// ── Quién puede lanzar un flujo ─────────────────────────────────────────────
+// Es la lista de roles con el permiso `execute_workflows` de ROLE_PERMISSIONS
+// (src/core/user.types.ts). Está copiada, no importada: una Edge Function corre
+// en Deno y no alcanza el árbol de `src/`.
+//
+// ⚠️ SON DOS SITIOS QUE TIENEN QUE MOVERSE JUNTOS, igual que `view_audit` entre
+// la UI y la política RLS de audit_log (§6 del CLAUDE.md). Si cambias
+// ROLE_PERMISSIONS, cambia esto. Si solo cambias uno, la pantalla y el motor
+// dejan de decir lo mismo y gana el que no miraste.
+//
+// Decisión de negocio de Hermes (08/08/2026): «la ejecución de los procesos es
+// del dueño del proceso y el administrador o quien autoriza el proceso que está
+// definido». Antes la lista incluía además `supervisor`, `operador` y los
+// legacy `editor`/`operator`; se estrechó a estos tres.
+//
+// Fuera quedan a propósito: `supervisor` y `operador` (supervisan y operan,
+// pero lanzar es del dueño), `cumplimiento` (aprueba, no ejecuta), `auditor` y
+// `viewer` (solo lectura), y los legacy.
+//
+// `autorizador` sí ejecuta, pero ojo: la segregación de funciones sigue en pie
+// en resolve-approval — quien lanza un flujo no puede aprobar su propia tarea.
+const ROLES_QUE_EJECUTAN = new Set([
+    'admin', 'dueno_proceso', 'autorizador',
+]);
 
 // ── Topological sort (Kahn's algorithm) ─────────────────────────────────────
 function topologicalSort(nodes: any[], connections: any[]): any[] {
@@ -137,9 +165,23 @@ function buildContextSummary(context: Record<string, any>): string {
             if (k === 'label') valueStyle += ';font-size:14px';
 
             const rowBg = bg ? '#f9fafb' : '#ffffff';
+
+            // `display` viene de los sistemas conectados —una descripción de
+            // siniestro, el nombre de una cuenta contable—: es dato ajeno dentro
+            // de nuestra plantilla y va escapado.
+            //
+            // EXCEPCIÓN: los campos `*_html` son HTML que generó el propio motor
+            // (hoy solo `reporte_html`, del nodo Regulatorio: un informe entero
+            // que llega así al correo cuando el nodo Email no lleva cuerpo).
+            // Escaparlos convertiría ese informe en código fuente a la vista.
+            // Se distinguen por el nombre del campo, no por mirar el contenido:
+            // adivinar si una cadena "parece HTML" es justo la heurística que
+            // deja pasar lo que no debe.
+            const esHtmlPropio = k.endsWith('_html');
+
             rows += `<tr style="background:${rowBg}">
-                <td style="padding:8px 16px;color:#6b7280;font-size:12px;width:40%">${label}</td>
-                <td style="padding:8px 16px;${valueStyle}">${display}</td>
+                <td style="padding:8px 16px;color:#6b7280;font-size:12px;width:40%">${escaparHtml(label)}</td>
+                <td style="padding:8px 16px;${valueStyle}">${esHtmlPropio ? display : escaparHtml(display)}</td>
             </tr>`;
             bg = !bg;
         }
@@ -169,7 +211,7 @@ async function executeNode(
         // ── Email (ver _shared/email.ts) ──────────────────────────────────
         case 'output:email': {
             if (canalEmail() === 'ninguno') {
-                throw new Error('Sin canal de correo: faltan GMAIL_USER + GMAIL_APP_PASSWORD y también RESEND_API_KEY en Supabase Secrets');
+                throw new Error('Sin canal de correo: falta RESEND_API_KEY en Supabase Secrets');
             }
             const to      = resolveValue(cfg.to ?? '', context);
             const subject = resolveValue(cfg.subject ?? 'Notificación HermesAI Flow', context);
@@ -395,7 +437,10 @@ async function executeNode(
                 rgErr = res.error;
             } else if (nombre) {
                 // Búsqueda parcial con ilike — más robusta que textSearch en todos los entornos
-                const palabras = nombre.trim().split(/\s+/);
+                // El tipo explícito no es adorno: `nombre` es any, así que sin él
+                // `palabras` también lo es y los tres callbacks de abajo daban
+                // TS7006. Anotar el origen los arregla los tres.
+                const palabras: string[] = nombre.trim().split(/\s+/);
                 const palabraMasFuerte = palabras.reduce((a, b) => b.length > a.length ? b : a, palabras[0]);
                 const res = await rg
                     .from('listas_restrictivas')
@@ -985,16 +1030,22 @@ async function executeNode(
             for (const [k, v] of Object.entries(consolidated)) {
                 if (k === 'hits') continue; // se renderiza aparte
                 const label   = k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+                // Dos de estas ramas son HTML a propósito (el Sí/No en color y
+                // el nivel de riesgo) y las otras dos son dato que viene de los
+                // sistemas conectados. Se escapa el dato y se deja la etiqueta:
+                // escapar en bloque teñiría de gris los semáforos del informe.
                 let display   = typeof v === 'boolean' ? (v ? '<span style="color:#dc2626;font-weight:700">Sí</span>' : '<span style="color:#16a34a;font-weight:700">No</span>')
                               : Array.isArray(v)        ? `${v.length} registros`
-                              : typeof v === 'object'   ? JSON.stringify(v)
-                              : String(v);
+                              : k.endsWith('_html')     ? String(v)   // HTML del propio motor, ver buildContextSummary
+                              : typeof v === 'object'   ? escaparHtml(JSON.stringify(v))
+                              : escaparHtml(v);
                 if (k === 'nivel') {
                     const c = v === 'alto' ? '#dc2626' : v === 'medio' ? '#d97706' : '#16a34a';
-                    display = `<span style="color:${c};font-weight:700;text-transform:uppercase">${v}</span>`;
+                    display = `<span style="color:${c};font-weight:700;text-transform:uppercase">${escaparHtml(v)}</span>`;
                 }
                 filas += `<tr style="background:${bg ? '#f9fafb' : '#fff'}">
-                    <td style="padding:9px 16px;color:#6b7280;font-size:12px;width:42%;border-bottom:1px solid #f3f4f6">${label}</td>
+                    <td style="padding:9px 16px;color:#6b7280;font-size:12px;width:42%;border-bottom:1px solid #f3f4f6">${escaparHtml(label)}</td>
                     <td style="padding:9px 16px;color:#111827;font-size:13px;font-weight:600;border-bottom:1px solid #f3f4f6">${display}</td>
                 </tr>`;
                 bg = !bg;
@@ -1006,9 +1057,9 @@ async function executeNode(
             if (Array.isArray(hits) && hits.length > 0) {
                 const hitRows = hits.map((h: any) =>
                     `<tr>
-                        <td style="padding:8px 12px;font-size:12px;color:#111827;border-bottom:1px solid #fee2e2">${h.tipo_lista ?? '—'}</td>
-                        <td style="padding:8px 12px;font-size:12px;color:#111827;border-bottom:1px solid #fee2e2;font-weight:600">${h.nombre ?? '—'}</td>
-                        <td style="padding:8px 12px;font-size:11px;color:#6b7280;border-bottom:1px solid #fee2e2">${h.motivo ?? '—'}</td>
+                        <td style="padding:8px 12px;font-size:12px;color:#111827;border-bottom:1px solid #fee2e2">${escaparHtml(h.tipo_lista ?? '—')}</td>
+                        <td style="padding:8px 12px;font-size:12px;color:#111827;border-bottom:1px solid #fee2e2;font-weight:600">${escaparHtml(h.nombre ?? '—')}</td>
+                        <td style="padding:8px 12px;font-size:11px;color:#6b7280;border-bottom:1px solid #fee2e2">${escaparHtml(h.motivo ?? '—')}</td>
                     </tr>`
                 ).join('');
                 hitsHtml = `
@@ -1027,10 +1078,10 @@ async function executeNode(
 
             const reporte_html = `<div style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
   <div style="background:linear-gradient(135deg,${colorHeader},#1e3a5f);padding:28px 24px">
-    <p style="margin:0 0 4px;color:rgba(255,255,255,0.7);font-size:11px;text-transform:uppercase;letter-spacing:1px">${tipo} — INFORME REGULATORIO</p>
-    <h1 style="margin:0;color:#fff;font-size:20px;font-weight:700">${empresa}</h1>
-    <p style="margin:8px 0 0;color:rgba(255,255,255,0.8);font-size:13px">Período: ${periodo} &nbsp;·&nbsp; Emitido: ${fechaHora}</p>
-    ${referencia ? `<p style="margin:4px 0 0;color:rgba(255,255,255,0.7);font-size:12px">Referencia: ${referencia}</p>` : ''}
+    <p style="margin:0 0 4px;color:rgba(255,255,255,0.7);font-size:11px;text-transform:uppercase;letter-spacing:1px">${escaparHtml(tipo)} — INFORME REGULATORIO</p>
+    <h1 style="margin:0;color:#fff;font-size:20px;font-weight:700">${escaparHtml(empresa)}</h1>
+    <p style="margin:8px 0 0;color:rgba(255,255,255,0.8);font-size:13px">Período: ${escaparHtml(periodo)} &nbsp;·&nbsp; Emitido: ${escaparHtml(fechaHora)}</p>
+    ${referencia ? `<p style="margin:4px 0 0;color:rgba(255,255,255,0.7);font-size:12px">Referencia: ${escaparHtml(referencia)}</p>` : ''}
   </div>
   <div style="padding:24px">
     ${alertaBanner}
@@ -1090,27 +1141,60 @@ serve(async (req) => {
         // frontend traen el JWT del usuario: se valida contra Supabase Auth y
         // se verifica que su perfil pertenezca a la organización del body —
         // nunca se confía en organizationId/approverId sin esta verificación.
+        //
+        // ⚠️ Una llamada interna se reconoce por `x-cron-secret`, NO por que
+        // `Authorization` traiga la service_role key. Este proyecto usa el
+        // formato nuevo de claves de Supabase (`sb_secret_…`, que no es un JWT)
+        // y supabase-js las envía en `apikey`, dejando `Authorization` vacía:
+        // comparar contra SERVICE_ROLE_KEY daba siempre falso y el cron acabó
+        // recibiendo un 401 en cada disparo. Se mantiene la comparación con la
+        // clave por compatibilidad, exigiendo que el token NO esté vacío —
+        // si algún día la variable llegara vacía, '' === '' dejaría la puerta
+        // abierta a cualquiera que no mandase cabecera.
         const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+        const secretoCron = (req.headers.get('x-cron-secret') ?? '').trim();
+        const esLlamadaInterna =
+            (CRON_SECRET !== '' && secretoCron === CRON_SECRET) ||
+            (token !== '' && token === SERVICE_ROLE_KEY);
+
         let callerUserId: string | null = null;
-        if (token !== SERVICE_ROLE_KEY) {
+        if (!esLlamadaInterna) {
             const { data: userData } = token
                 ? await supabase.auth.getUser(token)
                 : { data: { user: null } };
             if (!userData?.user) {
+                // Distinguir los dos casos, que se arreglan de forma muy
+                // distinta: sin cabecera es un llamante mal configurado; con
+                // cabecera y sin usuario es una sesión caducada de verdad.
                 return new Response(
-                    JSON.stringify({ error: 'No autenticado — sesión inválida o expirada' }),
+                    JSON.stringify({
+                        error: token === ''
+                            ? 'No autenticado — la petición no trae cabecera Authorization'
+                            : 'No autenticado — sesión inválida o expirada',
+                    }),
                     { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } }
                 );
             }
             callerUserId = userData.user.id;
             const { data: callerProfile } = await supabase
                 .from('profiles')
-                .select('organization_id')
+                .select('organization_id, role')
                 .eq('id', callerUserId)
                 .single();
             if (!callerProfile || callerProfile.organization_id !== organizationId) {
                 return new Response(
                     JSON.stringify({ error: 'No autorizado para esta organización' }),
+                    { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
+            // El rol también manda. Hasta el 07/08/2026 esto solo leía
+            // `organization_id`: bastaba una sesión válida en la organización
+            // para lanzar cualquier flujo llamando a la función a mano, aunque
+            // fueras `viewer` o `auditor`. La pantalla escondía el botón y la
+            // API no lo impedía — el mismo patrón del incidente de audit_log.
+            if (!ROLES_QUE_EJECUTAN.has(callerProfile.role)) {
+                return new Response(
+                    JSON.stringify({ error: `El rol "${callerProfile.role}" no puede ejecutar flujos` }),
                     { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
                 );
             }
@@ -1337,31 +1421,36 @@ serve(async (req) => {
                                 .eq('role', err.rolAprobador)
                                 .eq('is_active', true);
 
-                            for (const ap of (aprobadores ?? [])) {
-                                if (!ap.email) continue;
-                                await enviar(
-                                    ap.email,
-                                    `⏸ Aprobación requerida — ${workflow.name}`,
-                                    `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+                            // Un correo distinto para cada aprobador (saluda por su
+                            // nombre), pero UNA sola petición: antes era un bucle con
+                            // un envío por persona y el límite de Resend son 2
+                            // peticiones por segundo. Ver _shared/email.ts.
+                            const mensajes = (aprobadores ?? [])
+                                .filter((ap: any) => ap.email)
+                                .map((ap: any) => ({
+                                    to:      ap.email,
+                                    subject: `⏸ Aprobación requerida — ${workflow.name}`,
+                                    html:    `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
   <div style="background:#1e3a5f;padding:24px;border-radius:8px 8px 0 0">
     <h2 style="color:#fff;margin:0;font-size:18px">⏸ Aprobación Pendiente</h2>
     <p style="color:#a5b4fc;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
   </div>
   <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">Hola <strong>${ap.name}</strong>,</p>
-    <p style="color:#374151;font-size:14px">El flujo <strong>"${workflow.name}"</strong> requiere tu aprobación para continuar.</p>
+    <p style="color:#374151;font-size:14px">Hola <strong>${escaparHtml(ap.name)}</strong>,</p>
+    <p style="color:#374151;font-size:14px">El flujo <strong>"${escaparHtml(workflow.name)}"</strong> requiere tu aprobación para continuar.</p>
     <table style="width:100%;border-collapse:collapse;margin:16px 0;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
-      <tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px;width:40%">Descripción</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${err.descripcion ?? '—'}</td></tr>
-      ${err.monto ? `<tr><td style="padding:10px 16px;color:#6b7280;font-size:12px;background:#f8fafc">Monto</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${err.monto}</td></tr>` : ''}
-      ${err.categoria ? `<tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px">Categoría</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${err.categoria}</td></tr>` : ''}
+      <tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px;width:40%">Descripción</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.descripcion ?? '—')}</td></tr>
+      ${err.monto ? `<tr><td style="padding:10px 16px;color:#6b7280;font-size:12px;background:#f8fafc">Monto</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.monto)}</td></tr>` : ''}
+      ${err.categoria ? `<tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px">Categoría</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.categoria)}</td></tr>` : ''}
       <tr${err.categoria ? '' : ' style="background:#f1f5f9"'}><td style="padding:10px 16px;color:#6b7280;font-size:12px">Vence</td><td style="padding:10px 16px;font-weight:600;font-size:13px;color:#dc2626">${new Date(err.venceAt).toLocaleString('es-VE')}</td></tr>
     </table>
     <p style="color:#374151;font-size:14px">Ingresa a <strong>Gobierno → Bandeja de Aprobación</strong> para aprobar o rechazar.</p>
     <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
   </div>
 </div>`,
-                                );
-                            }
+                                }));
+
+                            if (mensajes.length > 0) await enviarPersonalizado(mensajes);
                         } catch {
                             // No interrumpir el flujo si el email falla
                         }

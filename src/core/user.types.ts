@@ -43,17 +43,29 @@ export interface User {
 }
 
 // ── Matriz rol → permisos ────────────────────────────────────────────────────
+//
+// ⚠️ `execute_workflows` lo tienen SOLO admin, dueno_proceso y autorizador.
+// Es una decisión de negocio de Hermes (08/08/2026): «la ejecución de los
+// procesos es del dueño del proceso y el administrador o quien autoriza el
+// proceso que está definido». Antes lo tenían también supervisor, operador y
+// los legacy editor/operator.
+//
+// Esta lista y la constante ROLES_QUE_EJECUTAN de
+// supabase/functions/execute-workflow/index.ts SON LA MISMA REGLA en dos capas
+// y tienen que moverse juntas: la de aquí esconde el botón, la de allí es la
+// que de verdad impide ejecutar. Está copiada y no importada porque una Edge
+// Function corre en Deno y no alcanza src/. Ver CLAUDE.md §6.
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     admin:         ['manage_users', 'manage_workflows', 'execute_workflows', 'approve_tasks', 'authorize_critical', 'manage_integrations', 'view_logs', 'view_audit', 'view_all'],
     dueno_proceso: ['manage_workflows', 'execute_workflows', 'view_logs', 'view_audit'],
-    supervisor:    ['manage_workflows', 'execute_workflows', 'approve_tasks', 'view_logs'],
-    operador:      ['execute_workflows', 'view_logs'],
-    autorizador:   ['approve_tasks', 'authorize_critical', 'view_logs'],
+    supervisor:    ['manage_workflows', 'approve_tasks', 'view_logs'],
+    operador:      ['view_logs'],
+    autorizador:   ['execute_workflows', 'approve_tasks', 'authorize_critical', 'view_logs'],
     cumplimiento:  ['approve_tasks', 'view_logs', 'view_audit'],
     auditor:       ['view_all', 'view_logs', 'view_audit'],
     // legacy
-    editor:        ['manage_workflows', 'execute_workflows', 'view_logs'],
-    operator:      ['execute_workflows', 'view_logs'],
+    editor:        ['manage_workflows', 'view_logs'],
+    operator:      ['view_logs'],
     viewer:        ['view_logs'],
 };
 

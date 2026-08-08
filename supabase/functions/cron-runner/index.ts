@@ -8,10 +8,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { enviarEmail as enviar, canalEmail } from '../_shared/email.ts';
+import { enviarEmail as enviar, canalEmail, escaparHtml } from '../_shared/email.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+// Contraseña propia del disparador, en Secrets. Ver la puerta más abajo.
+const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? '';
 
 // Jerarquía de escalamiento BPM: rol vencido → rol que recibe la tarea
 const ESCALA_A: Record<string, string> = {
@@ -44,10 +47,52 @@ const CORS = {
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// ── Zona horaria de los flujos ───────────────────────────────────────────────
+// Las expresiones cron se escriben desde el Constructor, donde el usuario elige
+// "todos los días a las 9". Esas 9 son las 9 de Venezuela, no las 9 UTC.
+//
+// Hasta el 07/08/2026 esto se comparaba contra `getUTCHours()` y compañía, así
+// que un "0 9 * * 1-5" saltaba a las 05:00 de la mañana hora local. Se nota que
+// alguien lo descubrió y lo compensó a mano: hay un flujo guardado como "0 13",
+// que son justo las 09:00 de Venezuela.
+//
+// Se resuelve con Intl en vez de restando 4 horas a pelo, para que siga siendo
+// correcto si el país vuelve a cambiar de huso (ya lo hizo en 2007 y en 2016).
+const ZONA_HORARIA = 'America/Caracas';
+
+const FORMATO_ZONA = new Intl.DateTimeFormat('en-CA', {
+    timeZone:  ZONA_HORARIA,
+    hourCycle: 'h23',           // sin esto, la medianoche puede salir como "24"
+    year: 'numeric', month: '2-digit', day:    '2-digit',
+    hour: '2-digit', minute: '2-digit',
+});
+
+interface PartesLocales { minuto: number; hora: number; dia: number; mes: number; diaSemana: number; }
+
+/** Qué hora es en Venezuela ahora mismo, campo a campo. */
+function partesLocales(now: Date): PartesLocales {
+    const p: Record<string, string> = {};
+    for (const { type, value } of FORMATO_ZONA.formatToParts(now)) p[type] = value;
+
+    const anio = Number(p.year), mes = Number(p.month), dia = Number(p.day);
+
+    return {
+        minuto: Number(p.minute),
+        hora:   Number(p.hour),
+        dia,
+        mes,
+        // El día de la semana se saca de la fecha LOCAL ya resuelta: entre las
+        // 20:00 y las 24:00 de Venezuela el UTC ya va por el día siguiente, y un
+        // "lunes a viernes" se equivocaría justo en las tardes.
+        diaSemana: new Date(Date.UTC(anio, mes - 1, dia)).getUTCDay(),
+    };
+}
+
 // ── Verificar si la hora actual coincide con la expresión cron ───────────────
 function matchesCron(expr: string, now: Date): boolean {
     try {
         const [min, hour, dom, month, dow] = expr.trim().split(/\s+/);
+        const local = partesLocales(now);
 
         const matches = (field: string, value: number): boolean => {
             if (field === '*') return true;
@@ -69,11 +114,11 @@ function matchesCron(expr: string, now: Date): boolean {
         };
 
         return (
-            matches(min,   now.getUTCMinutes())     &&
-            matches(hour,  now.getUTCHours())        &&
-            matches(dom,   now.getUTCDate())         &&
-            matches(month, now.getUTCMonth() + 1)    &&
-            matches(dow,   now.getUTCDay())
+            matches(min,   local.minuto)    &&
+            matches(hour,  local.hora)      &&
+            matches(dom,   local.dia)       &&
+            matches(month, local.mes)       &&
+            matches(dow,   local.diaSemana)
         );
     } catch {
         return false;
@@ -82,6 +127,48 @@ function matchesCron(expr: string, now: Date): boolean {
 
 serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
+
+    // ── Solo el reloj entra ──────────────────────────────────────────────────
+    // Esto no es un endpoint de ejecución al que unos roles accedan y otros no:
+    // es el disparador automático, y su único llamante legítimo es el job de
+    // pg_cron, que trae el service role key.
+    //
+    // Hasta el 07/08/2026 no comprobaba NADA y saltaba directo al cliente con
+    // service role: bastaba la clave anon —que va dentro del bundle del
+    // navegador, o sea, pública— para lanzar el ciclo entero desde fuera, con
+    // los flujos y las aprobaciones de todas las organizaciones por delante.
+    //
+    // La llave que espera es CRON_SECRET (Secrets), no la service_role. Dos
+    // razones, las dos aprendidas a golpes el 08/08/2026:
+    //
+    //  1. Un JWT dentro de una cadena SQL dentro de un JSON es frágil. La
+    //     service_role key incrustada en cron.job se rompió DOS veces al
+    //     copiarla: primero perdió el prefijo "Bearer " (la puerta de Supabase
+    //     contestaba «Auth header is not 'Bearer {token}'») y después llegó con
+    //     un carácter de más —firma de 44 caracteres donde HS256 tiene 43
+    //     exactos, o sea «Invalid JWT»—. CRON_SECRET es hexadecimal: sin puntos,
+    //     sin guiones, sin nada que un copiar-pegar pueda estropear sin que se
+    //     note, y si se estropea el largo canta.
+    //  2. La service_role key es la llave maestra de la base. No tenía por qué
+    //     estar guardada en cron.job para disparar un reloj. Esta contraseña
+    //     solo sirve para esto y se puede cambiar sin tocar nada más.
+    //
+    // Se sigue aceptando la service_role key para no dejar tirado al job viejo
+    // mientras se migra, y porque es legítima por definición.
+    //
+    // ⚠️ Esta función se despliega con verify_jwt DESACTIVADO (--no-verify-jwt).
+    // Tiene que ser así: con la verificación puesta, la puerta de Supabase
+    // rechaza al cron antes de llegar aquí y devuelve un 401 que no dice nada
+    // útil. La autorización es ESTE bloque; si se toca, queda abierta.
+    const token = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+    const esCron    = CRON_SECRET !== '' && token === CRON_SECRET;
+    const esService = token !== '' && token === SERVICE_ROLE_KEY;
+    if (!esCron && !esService) {
+        return new Response(
+            JSON.stringify({ error: 'No autorizado — cron-runner solo lo invoca el planificador' }),
+            { status: 401, headers: { ...CORS, 'Content-Type': 'application/json' } }
+        );
+    }
 
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
     const now      = new Date();
@@ -92,7 +179,7 @@ serve(async (req) => {
         // 1. Buscar todos los nodos tipo trigger:cron de flujos activos
         const { data: cronNodes, error } = await supabase
             .from('workflow_nodes')
-            .select('workflow_id, config_json, workflows(organization_id, name, status)')
+            .select('workflow_id, config_json, workflows(organization_id, name, is_active)')
             .eq('type', 'trigger')
             .eq('category', 'cron');
 
@@ -104,19 +191,39 @@ serve(async (req) => {
             const orgId   = wf?.organization_id;
             const wfName  = wf?.name ?? node.workflow_id;
 
-            // Solo flujos activos con expresión cron configurada
-            if (!expr || !orgId || wf?.status === 'paused') {
+            // Solo flujos activos con expresión cron configurada.
+            //
+            // La columna es `is_active`, que es la que escribe el interruptor
+            // Activo/Pausado de la pantalla (updateWorkflow → is_active). Aquí
+            // se miraba `status === 'paused'`, y `status` NUNCA vale eso: solo
+            // toma 'idle' o 'error', porque lo escribe el motor para contar cómo
+            // acabó la última ejecución, no el usuario para decidir si el flujo
+            // corre. Resultado: pausar un flujo no lo pausaba —el cron lo
+            // disparaba igual— y el interruptor de la pantalla no gobernaba
+            // nada. Corregido el 07/08/2026.
+            if (!expr || !orgId || wf?.is_active !== true) {
                 skipped.push(`${wfName} — sin cron o pausado`);
                 continue;
             }
 
             if (!matchesCron(expr, now)) {
-                skipped.push(`${wfName} — cron "${expr}" no coincide con ${now.toISOString()}`);
+                // La hora se muestra en la del usuario, que es contra la que se
+                // compara. Ponerla en UTC aquí es lo que hacía imposible ver a
+                // simple vista que un "0 9" no saltaba a las 9 de la mañana.
+                skipped.push(`${wfName} — cron "${expr}" no coincide con ${FORMATO_ZONA.format(now)} (${ZONA_HORARIA})`);
                 continue;
             }
 
             // 2. Disparar la ejecución
+            // La cabecera `x-cron-secret` es lo que identifica esta llamada como
+            // interna. NO vale confiar en que `Authorization` lleve la
+            // service_role key: este proyecto usa el formato nuevo de claves
+            // (`sb_secret_…`, 41 caracteres, no un JWT) y supabase-js las manda
+            // en `apikey`, dejando `Authorization` VACÍA. execute-workflow se
+            // iba entonces por la rama de usuario del navegador, no encontraba
+            // sesión y devolvía 401 a cada disparo del cron.
             const { data, error: execErr } = await supabase.functions.invoke('execute-workflow', {
+                headers: { 'x-cron-secret': CRON_SECRET },
                 body: {
                     workflowId:     node.workflow_id,
                     organizationId: orgId,
@@ -125,7 +232,19 @@ serve(async (req) => {
             });
 
             if (execErr) {
-                skipped.push(`${wfName} — error al ejecutar: ${execErr.message}`);
+                // `execErr.message` es siempre la misma frase inútil de
+                // supabase-js: "Edge Function returned a non-2xx status code".
+                // El motivo de verdad va en el CUERPO de la respuesta, que el
+                // cliente deja en `context` y que hasta ahora nadie leía: un
+                // fallo de ejecución quedaba registrado sin decir de qué.
+                let detalle = execErr.message;
+                const ctx = (execErr as unknown as { context?: Response }).context;
+                if (ctx && typeof ctx.text === 'function') {
+                    try {
+                        detalle = `HTTP ${ctx.status} — ${(await ctx.text()).slice(0, 400)}`;
+                    } catch { /* cuerpo ya consumido: nos quedamos con el mensaje */ }
+                }
+                skipped.push(`${wfName} — error al ejecutar: ${detalle}`);
             } else {
                 fired.push(`${wfName} — runId: ${data?.runId}`);
             }
@@ -214,9 +333,9 @@ serve(async (req) => {
     <p style="color:#fcd34d;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
   </div>
   <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">El rol <strong>${tarea.rol_aprobador}</strong> no respondió a tiempo la aprobación del flujo <strong>"${wfName}"</strong>. La tarea fue escalada a tu rol (<strong>${rolSube}</strong>).</p>
-    ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${tarea.descripcion}</p>` : ''}
-    ${tarea.monto ? `<p style="color:#374151;font-size:13px"><strong>Monto:</strong> ${tarea.monto}</p>` : ''}
+    <p style="color:#374151;font-size:14px">El rol <strong>${escaparHtml(tarea.rol_aprobador)}</strong> no respondió a tiempo la aprobación del flujo <strong>"${escaparHtml(wfName)}"</strong>. La tarea fue escalada a tu rol (<strong>${escaparHtml(rolSube)}</strong>).</p>
+    ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${escaparHtml(tarea.descripcion)}</p>` : ''}
+    ${tarea.monto ? `<p style="color:#374151;font-size:13px"><strong>Monto:</strong> ${escaparHtml(tarea.monto)}</p>` : ''}
     <p style="color:#374151;font-size:13px"><strong>Nuevo vencimiento:</strong> ${new Date(nuevoVence).toLocaleString('es-VE')}</p>
     <p style="color:#374151;font-size:13px">Resuélvela desde la <strong>Cola de Trabajo</strong> de HermesAI Flow.</p>
     <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
@@ -287,9 +406,9 @@ serve(async (req) => {
     <p style="color:#fca5a5;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
   </div>
   <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">Hola <strong>${solicitante.name ?? ''}</strong>,</p>
-    <p style="color:#374151;font-size:14px">Tu solicitud del flujo <strong>"${wfName}"</strong> fue <strong style="color:#dc2626">cancelada</strong>: la aprobación venció sin respuesta${nivel > 0 ? ' incluso después de escalarla al nivel superior' : ''}.</p>
-    ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${tarea.descripcion}</p>` : ''}
+    <p style="color:#374151;font-size:14px">Hola <strong>${escaparHtml(solicitante.name ?? '')}</strong>,</p>
+    <p style="color:#374151;font-size:14px">Tu solicitud del flujo <strong>"${escaparHtml(wfName)}"</strong> fue <strong style="color:#dc2626">cancelada</strong>: la aprobación venció sin respuesta${nivel > 0 ? ' incluso después de escalarla al nivel superior' : ''}.</p>
+    ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${escaparHtml(tarea.descripcion)}</p>` : ''}
     <p style="color:#374151;font-size:13px">Puedes volver a ejecutar el flujo si la solicitud sigue vigente.</p>
     <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
   </div>
