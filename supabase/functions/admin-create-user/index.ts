@@ -9,7 +9,6 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const ANON_KEY         = Deno.env.get('SUPABASE_ANON_KEY')!;
 
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -23,17 +22,26 @@ serve(async (req) => {
 
     try {
         // 1. Identificar al llamante por su JWT
+        //
+        // Se valida con el cliente de servicio, pasándole el token a getUser().
+        // Antes se montaba un cliente aparte con SUPABASE_ANON_KEY, que la
+        // plataforma inyecta con la clave ANTIGUA en formato JWT: al desactivar
+        // las claves legacy (08/08/2026) ese cliente habría dejado de
+        // autenticar y el alta de usuarios habría empezado a responder "Sesión
+        // inválida" a todo el mundo. Es la misma forma que ya usan
+        // execute-workflow y resolve-approval.
         const authHeader = req.headers.get('Authorization');
         if (!authHeader) return json({ error: 'No autenticado' }, 401);
 
-        const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-            global: { headers: { Authorization: authHeader } },
-        });
-        const { data: { user: caller }, error: authErr } = await userClient.auth.getUser();
+        const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+        if (token === '') return json({ error: 'No autenticado' }, 401);
+
+        const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+
+        const { data: { user: caller }, error: authErr } = await admin.auth.getUser(token);
         if (authErr || !caller) return json({ error: 'Sesión inválida' }, 401);
 
         // 2. Verificar que el llamante es admin y obtener su organización
-        const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
         const { data: callerProfile } = await admin
             .from('profiles')
             .select('role, organization_id')
