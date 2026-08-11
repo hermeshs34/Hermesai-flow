@@ -8,6 +8,7 @@ import { DesignAssistant }   from './DesignAssistant';
 import { WorkflowService } from '../services/workflow.service';
 import { GovernanceService } from '../services/governance.service';
 import { supabase }        from '../core/supabase';
+import { fechaVE }         from '../utils/fecha';
 import { authService }     from '../core/auth.service';
 import type { WorkflowNodeData, WorkflowConnection, Workflow } from '../types/workflow';
 import type { NodeType }   from './NodePalette';
@@ -392,7 +393,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
 
     // ── Crear nuevo workflow ───────────────────────────────────────────────
     const handleCreateWorkflow = async () => {
-        const name = newWfName.trim() || `Flujo ${new Date().toLocaleDateString('es-VE')}`;
+        const name = newWfName.trim() || `Flujo ${fechaVE(new Date())}`;
         setCreatingWorkflow(true);
         try {
             const wf = await WorkflowService.createWorkflow(
@@ -691,7 +692,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                                         <div className="flex items-center justify-between mt-0.5">
                                                             <span className="text-xs text-gray-400">{wf.executionCount ?? 0} ejecuciones</span>
                                                             <span className="text-xs text-gray-400">
-                                                                {wf.lastRun ? `Últ. ${new Date(wf.lastRun).toLocaleDateString('es-VE')}` : 'Sin ejecuciones'}
+                                                                {wf.lastRun ? `Últ. ${fechaVE(wf.lastRun)}` : 'Sin ejecuciones'}
                                                             </span>
                                                         </div>
                                                     </button>

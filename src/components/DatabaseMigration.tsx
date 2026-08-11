@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { DatabaseMigrationService } from '../services/databaseMigrationService';
+import { horaVE } from '../utils/fecha';
 import {
   Database,
   CheckCircle,
@@ -87,7 +88,7 @@ export function DatabaseMigration() {
   };
 
   const addToLog = (message: string) => {
-    const timestamp = new Date().toLocaleTimeString();
+    const timestamp = horaVE(new Date());
     setMigrationLog(prev => [...prev, `[${timestamp}] ${message}`]);
   };
 

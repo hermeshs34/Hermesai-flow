@@ -474,6 +474,38 @@ separadas.** `trigger:cron` es el nombre del `case` del motor, que compone las
 dos — **no** es el valor de ninguna columna, y filtrar por él no casa ni una
 fila.
 
+### 9.3 `'es-VE'` es el idioma, NO el huso — toda fecha pasa por `fecha.ts`
+
+El motor disparaba bien y la pantalla contaba otra cosa. `toLocaleString('es-VE')`
+fija el **idioma y el formato** (dd/mm, «a. m.»); **el huso lo toma del entorno**
+si no se le pasa `timeZone`. Resultado, medido el 11/08/2026 con el flujo BCV:
+
+| Ejecución real | Pantalla en Caracas | Pantalla en Madrid | En un correo (Edge Function) |
+|---|---|---|---|
+| 13:00 UTC = **09:00 VE** | 09:00 ✅ | **15:00** ❌ | **13:00** ❌ |
+
+Desde Caracas acertaba por casualidad, así que el fallo solo aparece cuando el
+que mira está en otro huso — y el CIO trabaja desde España. En el correo era
+peor porque **sale del sistema**: al aprobador le llegaba un «Vence» **cuatro
+horas adelantado**, y las Edge Functions corren en UTC siempre, mire quien mire.
+
+Hay además un efecto de fecha, no solo de hora: entre las 20:00 y las 24:00 de
+Venezuela el UTC ya va por el día siguiente, así que un evento de las 22:30
+aparecía fechado mañana. Es el mismo motivo por el que `partesLocales` saca el
+día de la semana de la fecha **local** ya resuelta.
+
+**Regla: ninguna fecha se formatea a mano.** Todo pasa por los helpers, que son
+los únicos sitios donde aparece `timeZone`:
+
+- `src/utils/fecha.ts` → `fechaHoraVE`, `fechaVE`, `horaVE` (frontend)
+- `supabase/functions/_shared/fecha.ts` → `fechaHoraVE`, `fechaVE` (Deno)
+
+⚠️ **Son gemelos copiados, no importados** — Deno no alcanza `src/`, igual que
+`ROLES_QUE_EJECUTAN` (§6). **Si cambias uno, cambia el otro.**
+
+Los `toLocaleString('es-VE')` que quedan en el código son de **importes**, no de
+fechas, y ahí el locale sí es lo único que hace falta.
+
 ---
 
 ## 10. Nodo IA — Claude API

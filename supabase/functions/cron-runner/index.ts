@@ -9,6 +9,7 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { enviarEmail as enviar, canalEmail, escaparHtml } from '../_shared/email.ts';
+import { fechaHoraVE } from '../_shared/fecha.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -336,7 +337,7 @@ serve(async (req) => {
     <p style="color:#374151;font-size:14px">El rol <strong>${escaparHtml(tarea.rol_aprobador)}</strong> no respondió a tiempo la aprobación del flujo <strong>"${escaparHtml(wfName)}"</strong>. La tarea fue escalada a tu rol (<strong>${escaparHtml(rolSube)}</strong>).</p>
     ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${escaparHtml(tarea.descripcion)}</p>` : ''}
     ${tarea.monto ? `<p style="color:#374151;font-size:13px"><strong>Monto:</strong> ${escaparHtml(tarea.monto)}</p>` : ''}
-    <p style="color:#374151;font-size:13px"><strong>Nuevo vencimiento:</strong> ${new Date(nuevoVence).toLocaleString('es-VE')}</p>
+    <p style="color:#374151;font-size:13px"><strong>Nuevo vencimiento:</strong> ${fechaHoraVE(nuevoVence)} (hora de Venezuela)</p>
     <p style="color:#374151;font-size:13px">Resuélvela desde la <strong>Cola de Trabajo</strong> de HermesAI Flow.</p>
     <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
   </div>

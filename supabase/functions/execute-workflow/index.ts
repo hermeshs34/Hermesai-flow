@@ -6,6 +6,7 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { enviarEmail as enviar, enviarEmailPersonalizado as enviarPersonalizado, canalEmail, escaparHtml } from '../_shared/email.ts';
+import { fechaHoraVE, fechaVE } from '../_shared/fecha.ts';
 
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -131,7 +132,7 @@ function formatValue(val: any): string {
     if (typeof val === 'boolean') return val ? 'Sí' : 'No';
     // Formatear timestamps ISO
     if (typeof val === 'string' && val.match(/^\d{4}-\d{2}-\d{2}T/)) {
-        return new Date(val).toLocaleString('es-VE');
+        return fechaHoraVE(val);
     }
     return String(val);
 }
@@ -256,7 +257,7 @@ async function executeNode(
                 throw new Error(`Nodo WhatsApp: número inválido "${to}" — usar formato internacional +584141234567`);
 
             if (!message) {
-                message = `📋 *HermesAI Flow*\nEl flujo se completó exitosamente.\n${new Date().toLocaleString('es-VE')}`;
+                message = `📋 *HermesAI Flow*\nEl flujo se completó exitosamente.\n${fechaHoraVE(new Date())}`;
             }
 
             const twilioRes = await fetch(
@@ -906,7 +907,7 @@ async function executeNode(
                 body = `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;background:#fff">
   <div style="background:linear-gradient(135deg,#1e1b4b,#4f46e5);padding:32px 24px;border-radius:12px 12px 0 0;text-align:center">
     <h1 style="color:#fff;margin:0;font-size:22px">📊 Reporte de Gestión</h1>
-    <p style="color:#a5b4fc;margin:8px 0 0;font-size:13px">Informe ejecutivo generado automáticamente · ${new Date().toLocaleDateString('es-VE')}</p>
+    <p style="color:#a5b4fc;margin:8px 0 0;font-size:13px">Informe ejecutivo generado automáticamente · ${fechaVE(new Date())}</p>
   </div>
   <div style="padding:28px 24px;background:#f8fafc">
     ${buildContextSummary(context)}
@@ -997,10 +998,10 @@ async function executeNode(
         // ── Reporte Regulatorio (SUDEASEG / SUDEBAN) ──────────────────────
         case 'processor:regulatorio': {
             const tipo       = cfg.tipo       ?? 'SUDEASEG';
-            const periodo    = resolveValue(cfg.periodo    ?? '', context) || new Date().toLocaleDateString('es-VE', { month: 'long', year: 'numeric' });
+            const periodo    = resolveValue(cfg.periodo    ?? '', context) || fechaVE(new Date(), { month: 'long', year: 'numeric' });
             const empresa    = cfg.empresa    ?? 'Entidad no especificada';
             const referencia = resolveValue(cfg.referencia ?? '', context);
-            const fechaHora  = new Date().toLocaleString('es-VE', { timeZone: 'America/Caracas' });
+            const fechaHora  = fechaHoraVE(new Date());
 
             const OMITIR_REP = new Set(['branch','evaluated','skipped','triggered','timestamp','fuente','generado_por','modelo','tokens_input','tokens_output']);
 
@@ -1442,7 +1443,7 @@ serve(async (req) => {
       <tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px;width:40%">Descripción</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.descripcion ?? '—')}</td></tr>
       ${err.monto ? `<tr><td style="padding:10px 16px;color:#6b7280;font-size:12px;background:#f8fafc">Monto</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.monto)}</td></tr>` : ''}
       ${err.categoria ? `<tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px">Categoría</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.categoria)}</td></tr>` : ''}
-      <tr${err.categoria ? '' : ' style="background:#f1f5f9"'}><td style="padding:10px 16px;color:#6b7280;font-size:12px">Vence</td><td style="padding:10px 16px;font-weight:600;font-size:13px;color:#dc2626">${new Date(err.venceAt).toLocaleString('es-VE')}</td></tr>
+      <tr${err.categoria ? '' : ' style="background:#f1f5f9"'}><td style="padding:10px 16px;color:#6b7280;font-size:12px">Vence</td><td style="padding:10px 16px;font-weight:600;font-size:13px;color:#dc2626">${fechaHoraVE(err.venceAt)} (hora de Venezuela)</td></tr>
     </table>
     <p style="color:#374151;font-size:14px">Ingresa a <strong>Gobierno → Bandeja de Aprobación</strong> para aprobar o rechazar.</p>
     <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>

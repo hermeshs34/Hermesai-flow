@@ -5,6 +5,7 @@ import {
     Play, Zap, Mail, Database, GitBranch, Bot, BarChart2, FileText,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
+import { fechaHoraVE, horaVE } from '../utils/fecha';
 import { toast } from 'sonner';
 
 interface RunRow {
@@ -58,7 +59,7 @@ function fmt(ms: number | null): string {
 }
 
 function fmtDate(iso: string): string {
-    return new Date(iso).toLocaleString('es-VE', {
+    return fechaHoraVE(iso, {
         day: '2-digit', month: '2-digit',
         hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
@@ -232,7 +233,7 @@ function TimelineStep({ step, isLast }: { step: StepGroup; isLast: boolean }) {
                     </p>
 
                     <p className="text-xs text-gray-400 mt-0.5">
-                        {new Date(step.startedAt).toLocaleTimeString('es-VE')}
+                        {horaVE(step.startedAt)}
                     </p>
                 </button>
 
@@ -253,7 +254,7 @@ function TimelineStep({ step, isLast }: { step: StepGroup; isLast: boolean }) {
                                     'bg-gray-50 border-gray-100'
                                 }`}>
                                     <div className="flex items-center gap-2 mb-1">
-                                        <span className="text-gray-400">{new Date(log.timestamp).toLocaleTimeString('es-VE')}</span>
+                                        <span className="text-gray-400">{horaVE(log.timestamp)}</span>
                                         <span className="flex-1 text-gray-700">{log.message}</span>
                                     </div>
                                     {entries.length > 0 && (

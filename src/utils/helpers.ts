@@ -1,3 +1,5 @@
+import { fechaHoraVE } from './fecha';
+
 /**
  * Generar ID único
  */
@@ -6,11 +8,14 @@ export function generateId(prefix: string = 'id'): string {
 }
 
 /**
- * Formatear fecha para mostrar
+ * Formatear fecha para mostrar — en hora de Venezuela.
+ *
+ * Estaba en 'es-ES' y sin `timeZone`, o sea formato de España y el huso del
+ * navegador. Delega en el helper único (`utils/fecha`) para que no vuelva a
+ * haber dos criterios de hora en la aplicación.
  */
 export function formatDate(dateString: string, includeTime: boolean = true): string {
-  const date = new Date(dateString);
-  const formatter = new Intl.DateTimeFormat('es-ES', {
+  return fechaHoraVE(dateString, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -20,7 +25,6 @@ export function formatDate(dateString: string, includeTime: boolean = true): str
       second: '2-digit',
     }),
   });
-  return formatter.format(date);
 }
 
 /**

@@ -9,6 +9,7 @@ import { GovernanceService, type ManagedUser, type AuditEntry } from '../service
 import { ROL_META, ROLES_ASIGNABLES, type Role, type User } from '../core/user.types';
 import { authService } from '../core/auth.service';
 import { supabase } from '../core/supabase';
+import { fechaHoraVE } from '../utils/fecha';
 import { toast } from 'sonner';
 
 interface GovernanceProps {
@@ -34,7 +35,7 @@ interface TareaAprobacion {
 }
 
 function fmtDate(iso: string): string {
-    return new Date(iso).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return fechaHoraVE(iso, { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 const ACCION_META: Record<string, { label: string; color: string }> = {

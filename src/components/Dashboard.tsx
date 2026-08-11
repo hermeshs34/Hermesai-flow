@@ -12,6 +12,7 @@ import type { Workflow, WorkflowNodeData, WorkflowConnection } from '../types/wo
 import type { User, Role } from '../core/user.types';
 import { ROL_META } from '../core/user.types';
 import { WorkflowService } from '../services/workflow.service';
+import { fechaHoraVE, fechaVE } from '../utils/fecha';
 import { toast } from 'sonner';
 
 // ── Clasificación de vista por rol ─────────────────────────────────────────────
@@ -216,7 +217,7 @@ function AprobacionesPanel({ user, onNavigate }: { user: User; onNavigate?: (v: 
                                         {t.vence_at && (
                                             <span className="text-[10px] text-gray-400 flex items-center gap-1">
                                                 <Clock className="w-2.5 h-2.5" />
-                                                Vence {new Date(t.vence_at).toLocaleDateString('es-VE')}
+                                                Vence {fechaVE(t.vence_at)}
                                             </span>
                                         )}
                                     </div>
@@ -711,7 +712,7 @@ function fmt(ms: number | null): string {
 }
 
 function fmtDate(iso: string): string {
-    return new Date(iso).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return fechaHoraVE(iso, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 function fmtRelative(iso: string): string {

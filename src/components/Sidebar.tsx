@@ -6,6 +6,7 @@ import {
     ListTodo,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
+import { horaVE } from '../utils/fecha';
 import { authService } from '../core/auth.service';
 import { ROL_META } from '../core/user.types';
 import type { ViewType } from '../App';
@@ -196,7 +197,7 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePas
                         {systems.map(s => (
                             <div key={s.name}
                                 className="flex items-center justify-between"
-                                title={`${s.message}${s.latency_ms != null ? ` · ${s.latency_ms}ms` : ''}${s.last_check ? ` · ${new Date(s.last_check).toLocaleTimeString('es-VE')}` : ''}`}
+                                title={`${s.message}${s.latency_ms != null ? ` · ${s.latency_ms}ms` : ''}${s.last_check ? ` · ${horaVE(s.last_check)}` : ''}`}
                             >
                                 <span className="text-xs text-white/50">{s.name}</span>
                                 <div className="flex items-center gap-1.5">
