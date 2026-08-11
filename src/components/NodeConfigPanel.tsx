@@ -761,13 +761,15 @@ function ReporteGerencialForm({ cfg, set }: { cfg: any; set: (k: string, v: any)
 }
 
 function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    // Solo roles REALES de `profiles.role` y que además tengan `approve_tasks`.
+    // Llevaba 'gerente_riesgos' y 'actuario', que no existen en el sistema: elegir
+    // cualquiera de los dos creaba una tarea que no podía resolver nadie —salvo un
+    // admin, y de rebote, por la salida "o eres admin" de canResolve.
     const ROLES = [
         { value: 'admin',            label: 'Administrador' },
         { value: 'supervisor',       label: 'Supervisor' },
         { value: 'autorizador',      label: 'Autorizador' },
-        { value: 'gerente_riesgos',  label: 'Gerente de Riesgos' },
         { value: 'cumplimiento',     label: 'Cumplimiento' },
-        { value: 'actuario',         label: 'Actuario' },
     ];
 
     const MOTIVOS_RAPIDOS = [

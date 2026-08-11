@@ -23,8 +23,18 @@ const ESCALA_A: Record<string, string> = {
     supervisor:    'dueno_proceso',
     dueno_proceso: 'admin',
     autorizador:   'admin',
-    cumplimiento:  'admin',
     // admin no tiene superior → al vencer se cancela directamente
+    //
+    // ⚠️ `cumplimiento` TAMPOCO escala, y es a propósito (decisión de Hermes,
+    // 11/08/2026). Los procesos de AML/legitimación de capitales los autoriza
+    // solo el Oficial de Cumplimiento, ni siquiera un admin (§6.2). Mientras
+    // aquí figuró `cumplimiento: 'admin'`, esa regla se saltaba sola con
+    // esperar: la tarea vencía, pasaba a `admin` y el admin ya podía
+    // aprobarla por la rama no regulatoria. En la base quedaron 7 tareas con
+    // rol_aprobador_original='cumplimiento' y rol_aprobador='admin'. Cerrar la
+    // API sin cerrar esto habría sido tapar la puerta y dejar la ventana.
+    // Ahora, al vencer, `rolSube` es undefined y el flujo se cancela: hay que
+    // relanzarlo, que es lo correcto para un proceso regulatorio.
 };
 
 const MAX_NIVEL_ESCALAMIENTO = 1; // 1 escalamiento; al segundo vencimiento se cancela

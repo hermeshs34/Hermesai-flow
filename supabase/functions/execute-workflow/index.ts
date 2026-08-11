@@ -44,6 +44,14 @@ const ROLES_QUE_EJECUTAN = new Set([
     'admin', 'dueno_proceso', 'autorizador',
 ]);
 
+// Roles que un nodo de aprobación puede EXIGIR. Son los roles reales de
+// `profiles.role` que además tienen el permiso `approve_tasks`.
+// ⚠️ Copiada de la lista ROLES de `NodeConfigPanel.tsx` (el desplegable del
+// Constructor), porque Deno no alcanza `src/`. Si cambias una, cambia la otra.
+const ROLES_APROBADORES = new Set([
+    'admin', 'supervisor', 'autorizador', 'cumplimiento',
+]);
+
 // ── Topological sort (Kahn's algorithm) ─────────────────────────────────────
 function topologicalSort(nodes: any[], connections: any[]): any[] {
     const inDegree: Record<string, number> = {};
@@ -358,6 +366,18 @@ async function executeNode(
         // ── Aprobación Humana — pausa real (F2) ──────────────────────────
         case 'processor:aprobacion': {
             const rolAprobador = cfg.approver ?? 'supervisor';
+            // El rol tiene que EXISTIR. El nodo del flujo "Flujo F2 NR" tenía
+            // guardado "Administrador" —la etiqueta del desplegable, no el rol—,
+            // así que la tarea nacía pidiendo un rol inexistente y no la podía
+            // resolver nadie: ni el Oficial de Cumplimiento ni el propio rol que
+            // el usuario creía haber elegido. Fallar aquí, en claro, es mucho
+            // mejor que pausar un flujo que ya nace muerto.
+            if (!ROLES_APROBADORES.has(rolAprobador)) {
+                throw new Error(
+                    `Rol aprobador no válido: "${rolAprobador}". Abre el nodo de aprobación ` +
+                    `en el Constructor y elige uno de: ${[...ROLES_APROBADORES].join(', ')}.`
+                );
+            }
             const descripcion  = resolveValue(cfg.reason ?? 'Requiere revisión manual', context);
             const monto        = cfg.monto ? Number(resolveValue(String(cfg.monto), context)) : null;
             const categoria    = cfg.categoria ? resolveValue(cfg.categoria, context) : null;

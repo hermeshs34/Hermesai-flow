@@ -324,6 +324,32 @@ aprobar una tarea de AML. Tercera vez que aparece el mismo patrón, después de
 `audit_log` y de `execute-workflow`: **si una regla solo está en la pantalla,
 no está.**
 
+⚠️ **El escalamiento era la ventana de al lado.** `ESCALA_A` de `cron-runner`
+llevaba `cumplimiento: 'admin'`: la tarea de AML vencía a las 48 h, pasaba a
+`admin` y entonces sí la aprobaba un admin por la rama no regulatoria. La regla
+se saltaba sola **con esperar**, sin tocar nada. Quedaron 7 tareas en la base
+con `rol_aprobador_original='cumplimiento'` y `rol_aprobador='admin'`. Desde el
+11/08/2026 `cumplimiento` **no escala**: al vencer se cancela el flujo y hay que
+relanzarlo. Al cerrar una regla, repasa **todos** los caminos que escriben el
+campo, no solo el que la comprueba.
+
+### 6.3 El rol de un nodo de aprobación se guarda por su SLUG
+
+`workflow_nodes.config_json.approver` guarda `'admin'`, no `'Administrador'`.
+El motor lo copia tal cual a `tareas_aprobacion.rol_aprobador` y la UI lo
+compara contra `profiles.role`, así que una etiqueta ahí crea una tarea que
+**no puede resolver nadie** — ni el rol que creías haber elegido. Pasó con
+"Flujo F2 NR" (`approver: "Administrador"`), y sobrevivía porque `canResolve`
+tiene una salida «o eres admin» que disimulaba el dato roto.
+
+Hoy lo valida `ROLES_APROBADORES` en `execute-workflow`: un rol que no exista
+**revienta el nodo con un mensaje claro** en vez de pausar un flujo que nace
+muerto. La lista —`admin`, `supervisor`, `autorizador`, `cumplimiento`— son los
+roles reales con permiso `approve_tasks`, y está **copiada** de la constante
+`ROLES` de `NodeConfigPanel.tsx`. Si cambias una, cambia la otra. Ese
+desplegable ofrecía además `gerente_riesgos` y `actuario`, que no existen en
+`profiles.role`: retirados el 11/08/2026.
+
 ### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
 
 **El secreto de las Edge Functions está en el formato NUEVO.**
