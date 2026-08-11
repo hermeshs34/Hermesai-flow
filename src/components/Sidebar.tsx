@@ -48,6 +48,8 @@ const INIT: SystemHealth[] = [
 
 interface SidebarBadges { errors: number; pending: number; }
 
+// ⚠️ Copiada en `WorkQueue.tsx`, `Governance.tsx` y en la Edge Function
+// `resolve-approval`, que es quien manda de verdad. Si cambias una, las cuatro.
 const ROLES_REGULATORIOS_SIDEBAR = ['cumplimiento'];
 
 function useSidebarBadges(organizationId: string | undefined, role: string | undefined, isAdmin: boolean): SidebarBadges {

@@ -8,6 +8,10 @@ import { authService } from '../core/auth.service';
 import { toast } from 'sonner';
 import type { User } from '../core/user.types';
 
+// Roles regulatorios (AML/CFT): sus tareas las resuelve SOLO ese rol, ni el admin.
+// ⚠️ Copiada en `Governance.tsx`, `Sidebar.tsx` y en la Edge Function
+// `resolve-approval` (que es quien manda de verdad — el navegador solo pinta
+// botones). Si cambias una, cambia las cuatro.
 const ROLES_REGULATORIOS = ['cumplimiento'];
 
 interface WorkQueueProps { currentUser: User; }
@@ -180,32 +184,14 @@ export function WorkQueue({ currentUser }: WorkQueueProps) {
 
             if (decision === 'rechazado') {
                 toast.success('Flujo rechazado');
+            } else if (result.reanudado) {
+                toast.success('Flujo reanudado');
             } else {
-                toast.info('Aprobado — reanudando flujo...');
-                const resumeRes = await fetch(
-                    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/execute-workflow`,
-                    {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${accessToken}`,
-                        },
-                        body: JSON.stringify({
-                            workflowId: result.workflowId,
-                            organizationId: result.organizationId,
-                            triggeredBy: 'approval',
-                            action: 'resume',
-                            runId: result.runId,
-                            approverId,
-                        }),
-                    }
-                );
-                const resumeData = await resumeRes.json();
-                if (!resumeRes.ok || resumeData?.error) {
-                    toast.warning(`Aprobado pero error al reanudar: ${resumeData?.error ?? 'error desconocido'}`);
-                } else {
-                    toast.success('Flujo reanudado');
-                }
+                // Reanudar ya NO lo hace el frontend: lo hace resolve-approval por
+                // la vía interna. Desde el navegador se llamaba a execute-workflow
+                // con el JWT del aprobador, y esa función exige ROLES_QUE_EJECUTAN
+                // —un `cumplimiento` aprobaba y se comía un 403 al reanudar.
+                toast.warning(`Aprobado pero error al reanudar: ${result.errorResume ?? 'error desconocido'}`);
             }
             await load();
         } catch (e: any) {

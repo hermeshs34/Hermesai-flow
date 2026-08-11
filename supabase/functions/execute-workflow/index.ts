@@ -1409,7 +1409,7 @@ serve(async (req) => {
                     }).eq('id', runId);
 
                     await addLog(node.id, 'warning',
-                        `⏸ Flujo pausado — esperando aprobación de rol "${err.rolAprobador}". Vence: ${err.venceAt}`
+                        `⏸ Flujo pausado — esperando aprobación de rol "${err.rolAprobador}". Vence: ${fechaHoraVE(err.venceAt)} (hora de Venezuela)`
                     );
 
                     // ── Notificar por email a los aprobadores del rol requerido ──

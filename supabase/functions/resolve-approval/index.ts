@@ -8,6 +8,24 @@ import { enviarEmail as enviar, canalEmail, escaparHtml } from '../_shared/email
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+const CRON_SECRET      = Deno.env.get('CRON_SECRET') ?? '';
+
+// ── Regla de negocio: quién puede resolver qué ─────────────────────────────
+// Los procesos de cumplimiento y legitimación de capitales los autoriza SOLO
+// el Oficial de Cumplimiento — ni siquiera el admin. El resto de tareas las
+// resuelve el rol indicado en `rol_aprobador` o un admin.
+//
+// ⚠️ Esta lista está COPIADA en el frontend (`WorkQueue.tsx`, `Governance.tsx`
+// y `Sidebar.tsx`), porque Deno no alcanza `src/`. Es el mismo caso que
+// ROLES_QUE_EJECUTAN (CLAUDE.md §6): si cambias una, cambia las otras.
+//
+// Hasta el 11/08/2026 esta comprobación NO EXISTÍA aquí: la función validaba
+// organización y segregación de funciones, pero nunca que el aprobador tuviera
+// el rol que la tarea exige. La regla del Oficial de Cumplimiento vivía solo en
+// el navegador, así que por API cualquier usuario autenticado de la
+// organización que no fuera el solicitante podía aprobar una tarea suya. Mismo
+// patrón que audit_log y que execute-workflow antes del 07/08.
+const ROLES_REGULATORIOS = ['cumplimiento'];
 
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -82,7 +100,7 @@ serve(async (req) => {
         // 2a. El aprobador debe pertenecer a la organización de la tarea
         const { data: aprobadorProfile } = await supabase
             .from('profiles')
-            .select('organization_id, email')
+            .select('organization_id, email, role')
             .eq('id', approverId)
             .single();
         if (!aprobadorProfile || aprobadorProfile.organization_id !== tarea.organization_id) {
@@ -92,7 +110,24 @@ serve(async (req) => {
             );
         }
 
-        // 2b. Verificar SoD: el aprobador no puede ser quien SOLICITÓ/EJECUTÓ esta tarea
+        // 2b. El aprobador debe tener el rol que la tarea exige (ver ROLES_REGULATORIOS)
+        const rolAprobador   = aprobadorProfile.role;
+        const esRegulatoria  = ROLES_REGULATORIOS.includes(tarea.rol_aprobador);
+        const puedeResolver  = esRegulatoria
+            ? rolAprobador === tarea.rol_aprobador
+            : rolAprobador === 'admin' || rolAprobador === tarea.rol_aprobador;
+        if (!puedeResolver) {
+            return new Response(
+                JSON.stringify({
+                    error: esRegulatoria
+                        ? `Esta aprobación es de "${tarea.rol_aprobador}" y solo la resuelve ese rol — ni siquiera un administrador`
+                        : `El rol "${rolAprobador}" no puede resolver una aprobación de "${tarea.rol_aprobador}"`,
+                }),
+                { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
+            );
+        }
+
+        // 2c. Verificar SoD: el aprobador no puede ser quien SOLICITÓ/EJECUTÓ esta tarea
         // (se compara con solicitante_id, no created_by — el diseñador puede ser el aprobador)
         if (tarea.solicitante_id && tarea.solicitante_id === approverId) {
             return new Response(
@@ -199,8 +234,61 @@ serve(async (req) => {
             .eq('id', tarea.execution_run_id)
             .in('status', ['esperando_aprobacion', 'error']);
 
-        // 6. Devolver datos para que el FRONTEND llame a execute-workflow con action=resume
-        // (llamadas inter-función tienen problemas de JWT; el frontend ya tiene sesión válida)
+        // 6. Reanudar el flujo desde AQUÍ, por la vía interna (`x-cron-secret`)
+        //
+        // Antes esto lo hacía el FRONTEND, llamando a execute-workflow con el JWT
+        // del aprobador. El comentario que lo justificaba —"las llamadas
+        // inter-función tienen problemas de JWT"— era cierto hasta el 07/08/2026;
+        // desde que existe `x-cron-secret` (CLAUDE.md §6.1) ya no lo es.
+        //
+        // Y esa vía estaba ROTA: execute-workflow exige que el llamante esté en
+        // ROLES_QUE_EJECUTAN {admin, dueno_proceso, autorizador}, así que un
+        // `cumplimiento` aprobaba la tarea y acto seguido recibía un 403 al
+        // reanudar — el run se quedaba en esperando_aprobacion para siempre.
+        // Reanudar NO es lanzar: es la continuación de un run que arrancó otro, y
+        // quien la autoriza es la aprobación que acaba de concederse, no el rol
+        // del aprobador. Por eso va como llamada interna y no hereda esa matriz.
+        //
+        // ⚠️ Sin CRON_SECRET la llamada no se reconocería como interna y
+        // execute-workflow devolvería 401. Se avisa en claro en vez de dejar el
+        // run colgado sin explicación.
+        let reanudado  = false;
+        let errorResume: string | null = null;
+
+        if (CRON_SECRET === '') {
+            errorResume = 'CRON_SECRET no está configurado en esta función — no se puede reanudar el flujo';
+            console.error(`resolve-approval: ${errorResume}`);
+        } else {
+            const { data: resumeData, error: resumeErr } = await supabase.functions.invoke('execute-workflow', {
+                headers: { 'x-cron-secret': CRON_SECRET },
+                body: {
+                    workflowId:     tarea.workflow_id,
+                    organizationId: tarea.organization_id,
+                    triggeredBy:    'approval',
+                    action:         'resume',
+                    runId:          tarea.execution_run_id,
+                    approverId,
+                },
+            });
+
+            if (resumeErr) {
+                // `resumeErr.message` es siempre "Edge Function returned a non-2xx
+                // status code". El motivo va en el cuerpo, que supabase-js deja en
+                // `context` — mismo tratamiento que en cron-runner.
+                errorResume = resumeErr.message;
+                const ctx = (resumeErr as unknown as { context?: Response }).context;
+                if (ctx && typeof ctx.text === 'function') {
+                    try {
+                        errorResume = `HTTP ${ctx.status} — ${(await ctx.text()).slice(0, 400)}`;
+                    } catch { /* cuerpo ya consumido */ }
+                }
+                console.error(`resolve-approval: no se pudo reanudar el run ${tarea.execution_run_id} — ${errorResume}`);
+            } else {
+                reanudado = !resumeData?.error;
+                if (!reanudado) errorResume = String(resumeData?.error);
+            }
+        }
+
         return new Response(
             JSON.stringify({
                 success:        true,
@@ -208,6 +296,8 @@ serve(async (req) => {
                 runId:          tarea.execution_run_id,
                 workflowId:     tarea.workflow_id,
                 organizationId: tarea.organization_id,
+                reanudado,
+                errorResume,
             }),
             { status: 200, headers: { ...CORS, 'Content-Type': 'application/json' } }
         );

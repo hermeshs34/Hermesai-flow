@@ -293,6 +293,37 @@ el reloj, y su único llamante legítimo es el job de pg_cron. Exige `CRON_SECRE
 y bastaba la clave anon —pública, va en el bundle del navegador— para disparar
 el ciclo completo desde fuera.
 
+⚠️ **Reanudar tampoco entra en esta matriz — y estrechar la lista la rompió.**
+`action='resume'` no lanza nada: continúa un run que arrancó otra persona, y lo
+que lo autoriza es **la aprobación que se acaba de conceder**, no el rol de
+quien aprueba. Hasta el 11/08/2026 lo hacía el navegador llamando a
+`execute-workflow` con el JWT del aprobador, así que pasaba por
+`ROLES_QUE_EJECUTAN`: un `cumplimiento` aprobaba la tarea, se comía un 403 al
+reanudar y **el run se quedaba en `esperando_aprobacion` para siempre**. Se vio
+en producción con el flujo "Prueba Flujo 02032026" (tarea `aprobado`, run
+paralizado). Hoy reanuda `resolve-approval` por la vía interna `x-cron-secret`.
+Ojo: la frase que justificaba la vuelta por el frontend —*«las llamadas
+inter-función tienen problemas de JWT»*— era cierta hasta el 07/08 y dejó de
+serlo sin que nadie repasara lo que dependía de ella.
+
+### 6.2 Aprobaciones — `ROLES_REGULATORIOS` manda en CUATRO capas
+
+Los procesos de **cumplimiento y legitimación de capitales** los autoriza solo
+el Oficial de Cumplimiento, **ni siquiera un admin**. Es decisión de negocio de
+Hermes. El resto de tareas las resuelve el rol de `rol_aprobador` o un `admin`.
+
+La lista vive copiada en cuatro sitios que se mueven juntos — `WorkQueue.tsx`,
+`Governance.tsx`, `Sidebar.tsx` y **`resolve-approval/index.ts`, que es el
+único que manda de verdad**; los tres primeros solo deciden qué botón se pinta.
+
+Hasta el 11/08/2026 la Edge Function **no miraba `rol_aprobador` ni una vez**:
+validaba organización y segregación de funciones y nada más. La regla del
+Oficial de Cumplimiento existía solo en el navegador, así que por API cualquier
+usuario autenticado de la organización que no fuera el solicitante podía
+aprobar una tarea de AML. Tercera vez que aparece el mismo patrón, después de
+`audit_log` y de `execute-workflow`: **si una regla solo está en la pantalla,
+no está.**
+
 ### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
 
 **El secreto de las Edge Functions está en el formato NUEVO.**

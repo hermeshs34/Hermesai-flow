@@ -108,6 +108,8 @@ export function Governance({ currentUser }: GovernanceProps) {
     const canViewAudit = authService.hasPermission(currentUser, 'view_audit');
 
     // Roles regulatorios (AML/CFT) — el admin NO puede aprobar sus tareas (segregación de funciones)
+    // ⚠️ Copiada en `WorkQueue.tsx`, `Sidebar.tsx` y en la Edge Function
+    // `resolve-approval`, que es quien manda de verdad. Si cambias una, las cuatro.
     const ROLES_REGULATORIOS = ['cumplimiento'];
     const canResolve = (tarea: TareaAprobacion) => {
         if (ROLES_REGULATORIOS.includes(tarea.rol_aprobador)) {
@@ -304,33 +306,14 @@ export function Governance({ currentUser }: GovernanceProps) {
 
             if (decision === 'rechazado') {
                 toast.success('❌ Flujo rechazado');
+            } else if (result.reanudado) {
+                toast.success('✅ Flujo aprobado y reanudado correctamente');
             } else {
-                // Aprobado: reanudar el flujo directamente desde el frontend
-                toast.info('✅ Aprobado — reanudando flujo...');
-                const resumeRes = await fetch(
-                    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/execute-workflow`,
-                    {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${accessToken}`,
-                        },
-                        body: JSON.stringify({
-                            workflowId:     result.workflowId,
-                            organizationId: result.organizationId,
-                            triggeredBy:    'approval',
-                            action:         'resume',
-                            runId:          result.runId,
-                            approverId,
-                        }),
-                    }
-                );
-                const resumeData = await resumeRes.json();
-                if (!resumeRes.ok || resumeData?.error) {
-                    toast.warning(`⚠ Aprobado pero error al reanudar: ${resumeData?.error ?? 'error desconocido'}`);
-                } else {
-                    toast.success('✅ Flujo aprobado y reanudado correctamente');
-                }
+                // Reanudar ya NO lo hace el frontend: lo hace resolve-approval por
+                // la vía interna. Desde el navegador se llamaba a execute-workflow
+                // con el JWT del aprobador, y esa función exige ROLES_QUE_EJECUTAN
+                // —un `cumplimiento` aprobaba y se comía un 403 al reanudar.
+                toast.warning(`⚠ Aprobado pero error al reanudar: ${result.errorResume ?? 'error desconocido'}`);
             }
             setAprobaciones(prev => prev.filter(t => t.id !== tarea.id));
             setComentario(prev => { const n = { ...prev }; delete n[tarea.id]; return n; });
