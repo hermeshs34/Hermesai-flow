@@ -279,11 +279,27 @@ dueño), `cumplimiento` (aprueba, no ejecuta), `auditor`, `viewer` y los legacy.
 que él mismo lanzó (`solicitante_id === approverId`).
 
 ⚠️ Al estrecharlo, los dos `supervisor` que había dejaron de poder ejecutar y se
-les reasignó el rol. **Censo real al 12/08/2026 — 5 personas:** 2 `admin`
-(Hermes, Daniel), 1 `dueno_proceso` (Abraham), 1 `cumplimiento` (Nohemy) y
-1 `operador` (Katherine). **No hay ningún `supervisor` ni ningún `autorizador`.**
-Contrastar el censo antes de razonar sobre roles: media docena de notas de este
-documento han hablado de usuarios que ya no estaban.
+les reasignó el rol. **Censo real al 12/08/2026 (18:38 UTC) — 6 personas:**
+2 `admin` (Hermes, Daniel), 1 `dueno_proceso` (Abraham), 1 `supervisor` (Nahum
+Azevedo, dado de alta ese mismo día), 1 `cumplimiento` (Nohemy) y 1 `operador`
+(Katherine). **Sigue sin haber ningún `autorizador`.** Contrastar el censo
+antes de razonar sobre roles: media docena de notas de este documento han
+hablado de usuarios que ya no estaban.
+
+⚠️ **El alta de ese `supervisor` encendió dos comportamientos que llevaban
+meses inertes**, y ninguno avisó:
+1. `ESCALA_A.operador = 'supervisor'` (`cron-runner`): una aprobación de
+   `operador` que vence ya escala **a una persona real**, no al vacío.
+2. `cfg.approver ?? 'supervisor'` (`execute-workflow`, `case
+   'processor:aprobacion'`): un nodo de aprobación **sin aprobador configurado**
+   ya no crea una tarea huérfana — se la asigna en silencio al supervisor. El
+   defecto no era inofensivo, solo estaba desactivado por falta de censo.
+   Al conectar `matriz_aprobacion` (`CICLO_VIDA_FLUJOS.md` §7) este `??` debe
+   morir: sin regla que case, el nodo revienta.
+
+**Regla general: dar de alta a alguien en un rol vacío activa todas las ramas
+de código que apuntaban a ese rol.** Antes de crear un rol nuevo, buscar el
+slug en el código y ver qué se enciende.
 
 Hasta el 07/08/2026 la Edge Function **no miraba el rol**: leía solo
 `organization_id` del perfil, así que cualquier sesión válida de la organización

@@ -146,13 +146,22 @@ No pueden nacer todos en `borrador`: el que está activo dejaría de correr.
 
 ## 5. Decisiones abiertas
 
-1. **No hay ningún `supervisor`.** El censo son 5 personas: 2 `admin` (Hermes,
-   Daniel), 1 `dueno_proceso` (Abraham), 1 `cumplimiento` (Nohemy), 1 `operador`
-   (Katherine). **El rol que autoriza está vacío**, así que el esquema no
-   arranca hasta nombrar a alguien.
-   Si Abraham diseña y Katherine ejecuta, el autorizador natural es **Daniel** —
-   pero eso deja un solo `admin`. Nohemy es la otra opción, aunque ya es el único
-   Oficial de Cumplimiento y cargarla más repite un riesgo ya señalado.
+1. ~~**No hay ningún `supervisor`.**~~ **Resuelto el 12/08/2026:** Hermes dio de
+   alta a **Nahum Azevedo** como `supervisor`. Censo actual: 6 personas —
+   2 `admin` (Hermes, Daniel), 1 `dueno_proceso` (Abraham), 1 `supervisor`
+   (Nahum), 1 `cumplimiento` (Nohemy), 1 `operador` (Katherine). El esquema ya
+   tiene a alguien en las tres puntas.
+
+   ⚠️ **Pero hoy Nahum PUEDE editar flujos**, que es justo lo que este documento
+   dice que no debe pasar. `supervisor` tiene `manage_workflows` en
+   `ROLE_PERMISSIONS` y está en las tres políticas RLS de edición
+   (`20260812_rls_edicion_igual_que_manage_workflows.sql`). O sea: quien
+   controla también edita, y los cuatro ojos se rompen en el otro sentido.
+   Se dejó así porque no existía `authorize_workflows` que poner en su lugar —
+   pero eso era razonable mientras el rol estaba vacío. Con una persona dentro,
+   **es una decisión que hay que tomar ya**: o se le quita `manage_workflows`
+   ahora (cambio pequeño: la constante y las tres políticas) o se acepta el
+   solape a sabiendas hasta que exista el ciclo de vida.
 2. **¿`autorizador` también autoriza definiciones?** En la matriz de arriba sí,
    por coherencia con su nombre. Hoy tampoco tiene a nadie.
 3. ~~**¿Qué pasa con un flujo publicado que está corriendo cuando se edita?**~~
