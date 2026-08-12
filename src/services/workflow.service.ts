@@ -24,6 +24,37 @@ function mapWorkflow(row: Record<string, unknown>): Workflow {
     };
 }
 
+// ─── La invariante que protege los nodos ─────────────────────────────────────
+
+/**
+ * `saveNodes` y `saveConnections` BORRAN todo lo del flujo antes de insertar, así
+ * que un guardado con la lista equivocada no es un guardado malo: es un borrado.
+ *
+ * Solo se permite escribir sobre **el flujo que el lienzo cargó de verdad**. Eso
+ * cubre las dos formas de perder datos:
+ *   · escribir `[]` sobre un flujo que sí tenía nodos  → lo vacía
+ *   · escribir los nodos de A sobre B                  → B pasa a hacer lo de A
+ *
+ * El 12/08/2026 se perdieron los nodos de cuatro flujos por la primera. El
+ * autoguardado del canvas se disparaba al **cambiar de flujo**, no solo al
+ * editar, y saltaba 1,5 s después con el estado del flujo anterior. Si la carga
+ * del nuevo tardaba más que eso, ganaba el temporizador. `Prueba Flujo 02032026`
+ * ejecutó 6 nodos a las 17:29:59Z del 11/08 y estaba a cero al día siguiente,
+ * sin que nadie lo editara.
+ *
+ * ⚠️ Esta comprobación es la SEGUNDA línea. La primera está en `WorkflowCanvas`,
+ * que no debe ni armar el guardado antes de terminar la carga. Si esta salta, hay
+ * un fallo en la primera: es un error, no una condición esperada.
+ */
+function exigirLienzoCargado(workflowId: string, cargadoDe: string | null, cuantos: number): void {
+    if (cargadoDe === workflowId) return;
+    throw new Error(
+        `Guardado bloqueado para evitar pérdida de datos: el lienzo tiene cargado ` +
+        `${cargadoDe ? `"${cargadoDe}"` : 'ningún flujo'} y se intentaba escribir ` +
+        `${cuantos} elemento(s) sobre "${workflowId}".`
+    );
+}
+
 // ─── WorkflowService — Supabase ──────────────────────────────────────────────
 
 export class WorkflowService {
@@ -58,8 +89,15 @@ export class WorkflowService {
 
         if (wfErr || !wf) return null;
 
-        const { data: nodes }       = await supabase.from('workflow_nodes').select('*').eq('workflow_id', id);
-        const { data: connections } = await supabase.from('workflow_connections').select('*').eq('workflow_id', id);
+        // ⚠️ Comprobar el error, no solo el data. supabase-js NO lanza: devuelve
+        // `{ data: null, error }`, y ese null acaba en `?? []` — un lienzo vacío
+        // indistinguible de un flujo sin nodos. Hasta el 12/08/2026 no se miraba,
+        // y el autoguardado convertía esa lectura fallida en un DELETE real.
+        const { data: nodes,       error: nodesErr } = await supabase.from('workflow_nodes').select('*').eq('workflow_id', id);
+        if (nodesErr) throw new Error(`No se pudieron leer los nodos del flujo: ${nodesErr.message}`);
+
+        const { data: connections, error: connErr }  = await supabase.from('workflow_connections').select('*').eq('workflow_id', id);
+        if (connErr) throw new Error(`No se pudieron leer las conexiones del flujo: ${connErr.message}`);
 
         const workflow = mapWorkflow(wf);
         workflow.nodes       = (nodes ?? []).map(n => ({
@@ -139,8 +177,11 @@ export class WorkflowService {
     static async saveNodes(
         workflowId: string,
         organizationId: string,
-        nodes: WorkflowNodeData[]
+        nodes: WorkflowNodeData[],
+        cargadoDe: string | null
     ): Promise<void> {
+        exigirLienzoCargado(workflowId, cargadoDe, nodes.length);
+
         // Borrar nodos anteriores y reemplazar (estrategia simple para canvas)
         await supabase.from('workflow_nodes').delete().eq('workflow_id', workflowId);
 
@@ -165,8 +206,11 @@ export class WorkflowService {
 
     static async saveConnections(
         workflowId: string,
-        connections: WorkflowConnection[]
+        connections: WorkflowConnection[],
+        cargadoDe: string | null
     ): Promise<void> {
+        exigirLienzoCargado(workflowId, cargadoDe, connections.length);
+
         await supabase.from('workflow_connections').delete().eq('workflow_id', workflowId);
 
         if (connections.length === 0) return;

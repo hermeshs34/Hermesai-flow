@@ -638,6 +638,46 @@ const { data } = await supabase
 const { data } = await supabase.from('workflows').select('*')
 ```
 
+### 12.1 El lienzo solo puede escribir el flujo que cargó
+
+`saveNodes` y `saveConnections` **borran todo el flujo y reinsertan**. Con esa
+forma, un guardado con la lista equivocada no es un guardado malo: es un borrado.
+Por eso ambas exigen un cuarto argumento, `cargadoDe`, y **revientan** si no
+coincide con el flujo que se va a escribir. Es obligatorio: el compilador no deja
+llamarlas sin él.
+
+El 12/08/2026 se perdieron los nodos de cuatro flujos sin que nadie los editara.
+El autoguardado del canvas tiene `activeWorkflowId` en sus dependencias, así que
+saltaba **al cambiar de flujo**, no solo al editar; el temporizador de 1,5 s se
+armaba con el estado del flujo *anterior* y, si la carga del nuevo tardaba más
+que eso, escribía. `Prueba Flujo 02032026` ejecutó 6 nodos a las 17:29:59Z del
+11/08 y amaneció a cero.
+
+Y **se propagaba solo**: el Constructor abre `wfs[0]` al entrar, ese flujo se
+quedaba vacío, y el `nodes = []` que dejaba en memoria arrasaba el siguiente
+flujo que abrieras. Cuatro flujos a cero, uno de ellos con 27 ejecuciones en su
+historial.
+
+**Reglas:**
+1. **No guardes lo que no has terminado de cargar.** `cargadoPara` solo se pone
+   *después* de que resuelva `getWorkflow`, y se comprueba dos veces: al armar el
+   temporizador y al dispararse.
+2. **Una carga fallida no puede quedarse como lienzo vacío editable**, o el
+   primer autoguardado lo hace permanente. Se cierra el flujo y se avisa.
+3. **Descarta las respuestas caducadas** (`peticionActiva`): al cambiar de flujo
+   deprisa, una carga anterior resuelve tarde y pinta los nodos de otro flujo.
+4. Un flujo **recién creado** sí está vacío de verdad: ahí se marca como cargado
+   a mano (`handleCreateWorkflow`, y la plantilla del Dashboard).
+
+⚠️ Sigue abierto que el borrado y la inserción **no son atómicos**: si falla el
+`insert` después del `delete`, los nodos se pierden igual. La solución es una
+función SQL transaccional; hasta entonces, la invariante de arriba es lo único
+que hay.
+
+⚠️ `src/services/workflowService.ts` (sin punto) es un duplicado **muerto** —no
+lo importa nadie— con su propia copia de este mismo `delete`+`insert`. No lo uses
+ni lo "arregles": bórralo cuando toque.
+
 ---
 
 ## 13. Fases del Proyecto

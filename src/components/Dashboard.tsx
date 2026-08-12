@@ -1042,8 +1042,10 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
             const blueprint = buildTemplate(t.id);
             if (blueprint.nodes.length > 0) {
                 const nodes: WorkflowNodeData[] = blueprint.nodes.map(n => ({ ...n, connections: [] }));
-                await WorkflowService.saveNodes(wf.id, orgId, nodes);
-                await WorkflowService.saveConnections(wf.id, blueprint.connections);
+                // El flujo acaba de crearse aquí mismo y está vacío: escribir la
+                // plantilla sobre él es legítimo, así que se declara como cargado.
+                await WorkflowService.saveNodes(wf.id, orgId, nodes, wf.id);
+                await WorkflowService.saveConnections(wf.id, blueprint.connections, wf.id);
             }
             localStorage.setItem('hermesai_open_workflow', wf.id);
             toast.success(`✅ Flujo "${name}" creado con ${blueprint.nodes.length} nodos — abriendo en el Constructor`);

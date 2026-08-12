@@ -325,6 +325,16 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     const canvasRef               = useRef<HTMLDivElement>(null);
     const saveTimer               = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+    // Qué flujo está REALMENTE cargado en el lienzo. Mientras no coincida con
+    // `activeWorkflowId`, lo que hay en `nodes` es del flujo anterior (o el vacío
+    // inicial) y guardarlo borraría el flujo nuevo. Ver `exigirLienzoCargado`.
+    const cargadoPara             = useRef<string | null>(null);
+
+    // Último flujo que el usuario pidió abrir. Si al resolver una carga ya no
+    // coincide, esa respuesta llegó tarde (cambió de flujo mientras tanto) y se
+    // descarta: si no, el lienzo mostraría los nodos de un flujo y el nombre de otro.
+    const peticionActiva          = useRef<string | null>(null);
+
     // ── Cargar lista de workflows ──────────────────────────────────────────
     useEffect(() => {
         WorkflowService.getWorkflows(currentUser.organizationId)
@@ -348,16 +358,33 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
 
     // ── Seleccionar flujo y cargar sus nodos ───────────────────────────────
     const selectWorkflow = useCallback(async (wf: Workflow) => {
+        // Invalidar ANTES de tocar activeWorkflowId: a partir de aquí y hasta que
+        // termine la carga, ningún guardado puede escribir. Si quedaba un
+        // temporizador armado del flujo anterior, saltará y no hará nada.
+        cargadoPara.current  = null;
+        peticionActiva.current = wf.id;
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+
         setActiveWorkflowId(wf.id);
         setWorkflowName(wf.name);
         setShowWfDropdown(false);
         setBannerDismissed(false); // mostrar banner al abrir cada flujo nuevo
         try {
             const full = await WorkflowService.getWorkflow(wf.id, currentUser.organizationId);
-            setNodes(full?.nodes ?? []);
-            setConnections(full?.connections ?? []);
-        } catch {
-            toast.error('Error cargando el flujo');
+            if (peticionActiva.current !== wf.id) return;   // respuesta caducada
+            if (!full) throw new Error('el flujo no existe o no pertenece a tu organización');
+            cargadoPara.current = wf.id;   // ahora sí: lo de `nodes` es de este flujo
+            setNodes(full.nodes);
+            setConnections(full.connections);
+        } catch (err: any) {
+            if (peticionActiva.current !== wf.id) return;   // ya no interesa este flujo
+            // Una carga fallida NO puede quedarse como lienzo vacío editable: el
+            // primer autoguardado borraría el flujo. Se cierra el flujo entero.
+            setActiveWorkflowId(null);
+            setWorkflowName('');
+            setNodes([]);
+            setConnections([]);
+            toast.error(`No se pudo abrir "${wf.name}": ${err.message ?? 'error de carga'}. Vuelve a intentarlo.`);
         }
     }, [currentUser.organizationId]);
 
@@ -374,16 +401,27 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     }, [handleUndo, handleRedo]);
 
     // ── Auto-guardar con debounce (1.5s) ──────────────────────────────────
+    // ⚠️ Este efecto también se dispara al CAMBIAR de flujo, no solo al editar,
+    // porque `activeWorkflowId` está en las dependencias. En ese instante `nodes`
+    // todavía es del flujo anterior y `saveNodes` borra antes de insertar: si la
+    // carga tardaba más de 1,5 s, el temporizador ganaba y vaciaba el flujo recién
+    // abierto. Así se perdieron cuatro flujos el 12/08/2026. `cargadoPara` es la
+    // condición que faltaba: no se guarda lo que no se ha terminado de cargar.
     useEffect(() => {
         if (!activeWorkflowId) return;
+        if (cargadoPara.current !== activeWorkflowId) return;   // carga en vuelo
         if (saveTimer.current) clearTimeout(saveTimer.current);
+        const idAlArmar = activeWorkflowId;
         saveTimer.current = setTimeout(async () => {
+            // Volver a comprobarlo al saltar: entre armar y disparar pueden haber
+            // pasado 1,5 s y el usuario puede haber cambiado de flujo.
+            if (cargadoPara.current !== idAlArmar) return;
             setSaving(true);
             try {
-                await WorkflowService.saveNodes(activeWorkflowId, currentUser.organizationId, nodes);
-                await WorkflowService.saveConnections(activeWorkflowId, connections);
-            } catch {
-                toast.error('Error guardando flujo');
+                await WorkflowService.saveNodes(idAlArmar, currentUser.organizationId, nodes, cargadoPara.current);
+                await WorkflowService.saveConnections(idAlArmar, connections, cargadoPara.current);
+            } catch (err: any) {
+                toast.error(`Error guardando flujo: ${err.message ?? 'fallo desconocido'}`);
             } finally {
                 setSaving(false);
             }
@@ -402,6 +440,9 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                 { name, description: '' }
             );
             setWorkflows(prev => [wf, ...prev]);
+            // Un flujo recién creado está vacío de verdad, no por una carga a
+            // medias: se marca como cargado para que se pueda editar y guardar.
+            cargadoPara.current = wf.id;
             setNodes([]);
             setConnections([]);
             setActiveWorkflowId(wf.id);
