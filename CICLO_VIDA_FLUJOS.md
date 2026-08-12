@@ -155,9 +155,153 @@ No pueden nacer todos en `borrador`: el que está activo dejaría de correr.
    Oficial de Cumplimiento y cargarla más repite un riesgo ya señalado.
 2. **¿`autorizador` también autoriza definiciones?** En la matriz de arriba sí,
    por coherencia con su nombre. Hoy tampoco tiene a nadie.
-3. **¿Qué pasa con un flujo publicado que está corriendo cuando se edita?** La
-   propuesta lo devuelve a borrador; el run en curso termina. Alternativa: no
-   dejar editar mientras hay un run vivo.
+3. ~~**¿Qué pasa con un flujo publicado que está corriendo cuando se edita?**~~
+   **Resuelto — decisión de Hermes del 12/08/2026: el esquema debe respetar si
+   un flujo está en ejecución o programado.** Ver §6.
 4. **¿Se puede publicar un flujo con nodos sin configurar?** Hoy los hay —un
    `Decisión (Si/No)` vacío va siempre por la rama `true` (CLAUDE.md §9.4). La
    autorización es el sitio natural para exigir que no queden nodos a medias.
+   Con parámetros (§7) esto deja de ser opcional: cada parámetro nuevo es una
+   cosa más que se puede quedar sin configurar **en silencio**.
+
+---
+
+## 6. Un flujo vivo no se toca
+
+> *«este esquema de aprobación y flujos debe respetar si un flujo está en
+> ejecución o programado, porque si cambia puede dañar»* — Hermes, 12/08/2026.
+
+Son tres peligros distintos y solo uno es leve.
+
+### 6.1 Run en curso (`status='running'`) — leve
+
+El motor carga nodos y conexiones **una vez, al arrancar**
+(`execute-workflow/index.ts:1246`) y ejecuta desde memoria. Una edición a mitad
+de run no cambia lo que ese run está haciendo, y el timeout de la Edge Function
+son 150 s: la ventana es corta. No hace falta protegerlo por sí solo.
+
+### 6.2 Run pausado esperando aprobación — GRAVE, y está abierto hoy
+
+La carga de la línea 1246 ocurre **antes** de bifurcar a `resume` (línea 1263).
+O sea: **un run reanudado relee la definición actual de la base**, no la que
+tenía al pausarse. Con el vencimiento por defecto en 48 h, esa ventana es de dos
+días.
+
+Consecuencia: el aprobador da el visto bueno a la versión A y el flujo continúa
+con la versión B. Puede cambiar el destinatario del correo, la rama de una
+decisión o el propio `rol_aprobador` de un nodo posterior. Y no queda registrado
+en ningún sitio: **lo aprobado y lo ejecutado dejan de ser lo mismo, en
+silencio.** Es la firma de los incidentes de este proyecto.
+
+Dos arreglos posibles:
+
+| | Coste | Qué hace |
+|---|---|---|
+| **Huella de definición** (recomendado) | Bajo | Al pausar se guarda un hash de nodos+conexiones. Al reanudar, si no coincide, **no reanuda**: deja el run en error con «el flujo cambió después de aprobarse; hay que volver a aprobarlo». |
+| **Instantánea** | Alto | Al pausar se guarda la definición entera y el resume ejecuta la instantánea. Más potente; es el versionado del §3 por la puerta de atrás. |
+
+**Recomendación: la huella.** Falla cerrado, es una columna, y no obliga a
+decidir hoy lo del versionado. La instantánea, si hace falta, después.
+
+### 6.3 Flujo programado — el daño es por omisión
+
+Aquí la regla del §3 («cualquier edición devuelve a borrador y desactiva») se
+vuelve en contra: un flujo con cron se **deja de disparar** y nadie se entera,
+porque la ausencia de una ejecución no genera ningún aviso. Es la misma familia
+que el `succeeded` de pg_cron: **el silencio parece normalidad.**
+
+Reglas:
+
+1. **No se edita un flujo con un run vivo** (`running` o `esperando_aprobacion`).
+   El lienzo pasa a solo lectura con el motivo y desde cuándo. Se aplica **en la
+   base**, no solo en la pantalla — un `TRIGGER` con `RAISE EXCEPTION` y mensaje
+   en claro, porque ese texto llega al usuario (§12.2 de CLAUDE.md). Repetir el
+   error de dejar la regla solo en el navegador ya nos ha costado tres veces.
+2. **Despublicar es un acto visible, nunca un efecto secundario.** Antes de
+   guardar, avisar nombrando **el próximo disparo en hora de Venezuela**
+   («dejará de ejecutarse mañana a las 09:00»). Después, fila en
+   `workflow_autorizaciones` y en `audit_log`.
+3. **Que la parada se vea sin buscarla:** contador en el Dashboard de flujos que
+   estaban publicados y hoy están en borrador. Un flujo parado tiene que doler a
+   la vista.
+4. La edición, el cambio de estado y la desactivación van **en la misma
+   transacción**. Hoy `saveNodes`/`saveConnections` ya son un `delete`+`insert`
+   no atómico (CLAUDE.md §12.1): esto refuerza la RPC transaccional que ya está
+   pendiente, no añade trabajo nuevo.
+
+---
+
+## 7. ¿Se puede hacer paramétrico?
+
+> *«el esquema del flujo de procesos y aprobaciones se puede hacer paramétrico
+> para que no se tenga que hacer tantas modificaciones a nivel de programación,
+> ¿es muy complejo?»* — Hermes, 12/08/2026.
+
+**Sí en su mayor parte, y menos complejo de lo que parece — pero no todo debe
+serlo, y lo más valioso ya está construido y sin conectar.**
+
+### 7.1 Lo que ya está pagado y no se usa — barato y de alto valor
+
+**`matriz_aprobacion` existe, tiene pantalla de mantenimiento completa en
+`Governance.tsx` (alta, edición, activar, borrar) y NINGUNA Edge Function la
+lee.** El motor saca el aprobador de `config_json.approver` del nodo y punto.
+
+Es exactamente lo que estás pidiendo, ya construido: `categoria`,
+`umbral_monto`, `operador`, `rol_aprobador`, `nivel`. Hoy, para cambiar quién
+autoriza una compra por encima de X, hay que abrir **cada nodo de cada flujo**.
+Con la matriz conectada es **una fila en una pantalla**.
+
+Lo que falta es el cable: en `case 'processor:aprobacion'`, si el nodo no fija
+aprobador, consultar la matriz por categoría y monto. Un día de trabajo,
+aditivo, sin tocar lo que hoy funciona.
+
+⚠️ **Fallar cerrado.** Si ninguna regla casa, el nodo **revienta con mensaje
+claro**; nunca un aprobador por defecto. Hoy la línea 368 tiene
+`cfg.approver ?? 'supervisor'` — un rol que **no tiene a nadie** (§5.1). Es la
+misma trampa del `'' === ''` del §9.4: lo que no se configuró se convierte en un
+«sí» permanente.
+
+Lo mismo con **`delegaciones`**: la tabla existe y no la lee ni una línea. Es lo
+que convierte «solo hay una Nohemy» de riesgo en incidencia gestionable.
+
+### 7.2 Las listas copiadas — coste medio, y es la enfermedad crónica
+
+`ROLES_QUE_EJECUTAN`, `ROLES_REGULATORIOS` (4 copias), `ROLES_APROBADORES` (2),
+`ESCALA_A`. CLAUDE.md repite «si cambias una, cambia la otra» cinco veces, y el
+incidente de AML del 11/08 fue exactamente eso: la copia que mandaba no tenía la
+regla.
+
+Se pueden mudar a una tabla `politicas_org (organization_id, clave, valor_json)`
+que lean **las dos capas** — la Edge Function ya tiene base de datos, así que la
+copia deja de ser necesaria. Dos o tres días. Tres cautelas:
+
+1. **Si la lectura falla, denegar.** Nunca caer a un valor permisivo.
+2. **Caché corta** en la función, o cada nodo añade una consulta.
+3. **Quién edita las políticas es en sí una política:** solo `admin`, y **todo
+   cambio a `audit_log`**. Una tabla de reglas que se toca sin dejar rastro es
+   peor que una constante en el código.
+
+### 7.3 Lo que NO debe ser paramétrico
+
+- **La segregación de funciones** (quien lanza no aprueba). Si es una casilla en
+  una pantalla, se puede apagar — y se apagará el día que estorbe. Es
+  precisamente el control que viene a comprobar un auditor.
+- **La máquina de estados** del §3. Las máquinas de estado configurables
+  terminan siendo un segundo producto que mantener.
+- **La regla del Oficial de Cumplimiento** (ni un admin aprueba AML). Hacerla
+  parámetro es dejar que un admin se la conceda a sí mismo — que es justo lo que
+  la puerta del escalamiento hacía sin querer hasta el 11/08.
+
+**Regla práctica: se parametrizan los valores (quién, cuánto, cuándo, cuánto
+tiempo); se dejan en código los invariantes (quién nunca, qué no se salta).**
+
+### 7.4 Lo honesto sobre el coste
+
+«Paramétrico del todo, que no haya que programar nada» es construir un motor de
+reglas: un segundo producto. El 80 % del alivio está en **7.1 + 7.2**, que es
+trabajo de días, no de meses.
+
+Y una advertencia que este proyecto se ha ganado: **cada parámetro es una cosa
+más que se puede quedar mal configurada en silencio.** Por eso la
+parametrización viene atada a la validación al publicar (§5, decisión 4): un
+parámetro sin valor **bloquea la publicación**, no se ejecuta con un supuesto.
