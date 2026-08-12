@@ -9,6 +9,7 @@ import { WorkflowService } from '../services/workflow.service';
 import { GovernanceService } from '../services/governance.service';
 import { supabase }        from '../core/supabase';
 import { fechaVE }         from '../utils/fecha';
+import { mensajeDeEdgeFunction, rolesQuePueden } from '../utils/errores';
 import { authService }     from '../core/auth.service';
 import type { WorkflowNodeData, WorkflowConnection, Workflow } from '../types/workflow';
 import type { NodeType }   from './NodePalette';
@@ -335,6 +336,16 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     // descarta: si no, el lienzo mostraría los nodos de un flujo y el nombre de otro.
     const peticionActiva          = useRef<string | null>(null);
 
+    // ── Permisos ───────────────────────────────────────────────────────────
+    // El Constructor deja mirar a todo el mundo, pero solo escribe quien tiene
+    // `manage_workflows`. Sin esto, un Oficial de Cumplimiento tocaba el lienzo,
+    // el autoguardado salía a la base y volvía con «new row violates row-level
+    // security policy for table "workflow_nodes"»: un "no" correcto contado en
+    // el idioma de Postgres. La política RLS sigue siendo la que manda; esto solo
+    // evita pedirle a la base algo que ya sabemos que va a rechazar.
+    const puedeEditar   = authService.hasPermission(currentUser, 'manage_workflows');
+    const puedeEjecutar = authService.hasPermission(currentUser, 'execute_workflows');
+
     // ── Cargar lista de workflows ──────────────────────────────────────────
     useEffect(() => {
         WorkflowService.getWorkflows(currentUser.organizationId)
@@ -409,6 +420,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     // condición que faltaba: no se guarda lo que no se ha terminado de cargar.
     useEffect(() => {
         if (!activeWorkflowId) return;
+        if (!puedeEditar) return;                               // solo mira, no guarda
         if (cargadoPara.current !== activeWorkflowId) return;   // carga en vuelo
         if (saveTimer.current) clearTimeout(saveTimer.current);
         const idAlArmar = activeWorkflowId;
@@ -427,7 +439,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             }
         }, 1500);
         return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-    }, [nodes, connections, activeWorkflowId]);
+    }, [nodes, connections, activeWorkflowId, puedeEditar]);
 
     // ── Crear nuevo workflow ───────────────────────────────────────────────
     const handleCreateWorkflow = async () => {
@@ -461,6 +473,18 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     // ── Abrir checklist pre-ejecución ─────────────────────────────────────
     const handleExecute = () => {
         if (!activeWorkflowId) { toast.error('Selecciona un flujo primero'); return; }
+        // Decirlo antes de la checklist, no después del 403. La regla la sigue
+        // aplicando `execute-workflow` (ROLES_QUE_EJECUTAN, CLAUDE.md §6): esto
+        // es cortesía con el usuario, no seguridad.
+        if (!puedeEjecutar) {
+            toast.error(
+                `Tu rol no puede ejecutar flujos. La ejecución del proceso es de ` +
+                `${rolesQuePueden('execute_workflows')}. Si necesitas lanzarlo, pídeselo ` +
+                `al dueño del proceso o al administrador.`,
+                { duration: 8000 }
+            );
+            return;
+        }
         if (nodes.length === 0) { toast.error('Agrega al menos un nodo al flujo'); return; }
         const items = buildChecklist(nodes, connections, workflowName, !saving);
         setCheckItems(items);
@@ -490,7 +514,11 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                 toast.error(`Error: ${data?.error ?? 'fallo desconocido'}`, { id: toastId });
             }
         } catch (err: any) {
-            toast.error(`No se pudo ejecutar: ${err.message}`, { id: toastId });
+            // `err.message` aquí es siempre «Edge Function returned a non-2xx
+            // status code», que no dice nada. El motivo real va en el cuerpo de
+            // la respuesta, que `invoke` deja en `err.context`.
+            const motivo = await mensajeDeEdgeFunction(err, 'no se pudo contactar con el motor de ejecución');
+            toast.error(`No se pudo ejecutar: ${motivo}`, { id: toastId, duration: 8000 });
         } finally {
             setExecuting(false);
         }
@@ -773,12 +801,26 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
 
                     {/* Acciones */}
                     <div className="flex items-center gap-2">
-                        {saving && (
+                        {/* ⚠️ Sin permiso no se guarda nada, y un lienzo que se deja
+                            editar sin avisar es un fallo silencioso: el usuario mueve
+                            nodos, se va, y su trabajo no existe. El aviso va PRIMERO
+                            porque el «✓ Guardado» de abajo se pinta por tener nodos,
+                            no por haber escrito: a un usuario de solo lectura le
+                            estaría diciendo «bien» sin haber medido nada. */}
+                        {!puedeEditar && (
+                            <span
+                                className="flex items-center gap-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg"
+                                title={`Editar flujos es de ${rolesQuePueden('manage_workflows')}. Puedes consultar el flujo, pero los cambios no se guardarán.`}
+                            >
+                                <AlertTriangle className="w-3.5 h-3.5" /> Solo lectura
+                            </span>
+                        )}
+                        {puedeEditar && saving && (
                             <span className="flex items-center gap-1 text-xs text-gray-400">
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" /> Guardando...
                             </span>
                         )}
-                        {!saving && activeWorkflowId && nodes.length > 0 && (
+                        {puedeEditar && !saving && activeWorkflowId && nodes.length > 0 && (
                             <span className="flex items-center gap-1 text-xs text-green-600">
                                 <CheckCircle className="w-3.5 h-3.5" /> Guardado
                             </span>
@@ -827,8 +869,18 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
 
                         <button
                             onClick={handleExecute}
+                            // A propósito NO se deshabilita cuando falta el permiso: un
+                            // botón apagado no explica nada. Se deja pulsable para que
+                            // `handleExecute` conteste con el motivo y con quién sí puede.
                             disabled={!activeWorkflowId || executing}
-                            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-40 transition-colors font-semibold"
+                            title={puedeEjecutar
+                                ? 'Ejecutar el flujo'
+                                : `Tu rol no puede ejecutar flujos — es de ${rolesQuePueden('execute_workflows')}`}
+                            className={`flex items-center gap-1.5 px-4 py-2 text-sm rounded-lg disabled:opacity-40 transition-colors font-semibold ${
+                                puedeEjecutar
+                                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                    : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
+                            }`}
                         >
                             {executing
                                 ? <Loader2 className="w-4 h-4 animate-spin" />

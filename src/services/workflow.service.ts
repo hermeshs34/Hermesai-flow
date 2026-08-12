@@ -1,4 +1,5 @@
 import { supabase } from '../core/supabase.ts';
+import { mensajeDeEscritura } from '../utils/errores.ts';
 import type { Workflow, WorkflowNodeData, WorkflowConnection } from '../types/workflow.ts';
 
 // ─── Helpers de mapeo ────────────────────────────────────────────────────────
@@ -201,7 +202,7 @@ export class WorkflowService {
         }));
 
         const { error } = await supabase.from('workflow_nodes').insert(rows);
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(mensajeDeEscritura(error, 'los nodos'));
     }
 
     static async saveConnections(
@@ -235,6 +236,6 @@ export class WorkflowService {
         const { error } = await supabase
             .from('workflow_connections')
             .insert(rows);
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(mensajeDeEscritura(error, 'las conexiones'));
     }
 }

@@ -1214,8 +1214,14 @@ serve(async (req) => {
             // fueras `viewer` o `auditor`. La pantalla escondía el botón y la
             // API no lo impedía — el mismo patrón del incidente de audit_log.
             if (!ROLES_QUE_EJECUTAN.has(callerProfile.role)) {
+                // Este texto llega tal cual al usuario: el navegador lo lee del
+                // cuerpo de la respuesta (utils/errores.ts). Que se entienda sin
+                // saber qué es un rol de base de datos.
                 return new Response(
-                    JSON.stringify({ error: `El rol "${callerProfile.role}" no puede ejecutar flujos` }),
+                    JSON.stringify({
+                        error: 'Tu rol no puede ejecutar flujos. La ejecución del proceso es del ' +
+                               'Administrador, el Dueño de Proceso o el Autorizador Máximo.',
+                    }),
                     { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
                 );
             }

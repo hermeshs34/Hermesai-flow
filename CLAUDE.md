@@ -278,9 +278,12 @@ dueño), `cumplimiento` (aprueba, no ejecuta), `auditor`, `viewer` y los legacy.
 `resolve-approval` rechaza con 403 a quien intente aprobar una tarea del flujo
 que él mismo lanzó (`solicitante_id === approverId`).
 
-⚠️ Al estrecharlo, los **dos `supervisor` activos** de la organización dejaron
-de poder ejecutar. Si vuelven a necesitarlo, la vía es cambiarles el rol a
-`dueno_proceso` desde Ajustes → Usuarios, no reabrir la matriz.
+⚠️ Al estrecharlo, los dos `supervisor` que había dejaron de poder ejecutar y se
+les reasignó el rol. **Censo real al 12/08/2026 — 5 personas:** 2 `admin`
+(Hermes, Daniel), 1 `dueno_proceso` (Abraham), 1 `cumplimiento` (Nohemy) y
+1 `operador` (Katherine). **No hay ningún `supervisor` ni ningún `autorizador`.**
+Contrastar el censo antes de razonar sobre roles: media docena de notas de este
+documento han hablado de usuarios que ya no estaban.
 
 Hasta el 07/08/2026 la Edge Function **no miraba el rol**: leía solo
 `organization_id` del perfil, así que cualquier sesión válida de la organización
@@ -383,9 +386,25 @@ Reglas que se desprenden:
    service_role key. **El comando del job se escribe desde dentro de la base,
    con el secreto como parámetro (`$1`)**, no concatenado: así no cruza ninguna
    capa de comillas.
-2. **`cron-runner` se despliega con `--no-verify-jwt`.** Su autorización es el
-   bloque de código, no la puerta de Supabase: con verificación de JWT activada
-   el gateway rechaza al llamante *antes* y devuelve un 401 que no explica nada.
+2. **`cron-runner` y `execute-workflow` se despliegan con `--no-verify-jwt`.**
+   Su autorización es el bloque de código, no la puerta de Supabase: con
+   verificación de JWT activada el gateway rechaza al llamante *antes* y
+   devuelve un 401 que no explica nada.
+
+   ⚠️ **La bandera NO se recuerda sola: no hay `config.toml`, así que cada
+   `functions deploy` sin ella vuelve a poner `verify_jwt=true`.** Es decir, un
+   despliegue rutinario de `execute-workflow` —aunque solo cambie un texto—
+   reintroduce el fallo de los ocho días de cron muerto, porque `cron-runner`
+   invoca con `functions.invoke` pasando solo `x-cron-secret` y supabase-js deja
+   `Authorization` vacía. Pasó el 12/08/2026 al desplegar un mensaje de error.
+
+   **La forma del 401 dice quién rechaza**, y hay que sondearlo *después* de
+   cada despliegue, no antes:
+
+   | Respuesta a un POST sin cabeceras | Significa |
+   |---|---|
+   | `{"code":"UNAUTHORIZED_NO_AUTH_HEADER"}` | la **puerta** — `verify_jwt=true`, el cron está roto |
+   | un error propio de la función (`{"error":"workflowId y organizationId son requeridos"}`) | el **código** — correcto |
 3. **Comparar contra un secreto exige `token !== ''`.** Si la variable llegara
    vacía por un despliegue mal configurado, `'' === ''` haría interna toda
    petición **sin** cabecera. En `resolve-approval` eso es grave: una llamada
@@ -563,6 +582,20 @@ los únicos sitios donde aparece `timeZone`:
 Los `toLocaleString('es-VE')` que quedan en el código son de **importes**, no de
 fechas, y ahí el locale sí es lo único que hace falta.
 
+### 9.4 Un `processor:decision` sin configurar va SIEMPRE por la rama `true`
+
+Con `config_json = {}` el motor evalúa `'' === ''`: verdadero siempre. No es
+aleatorio, es determinista — y por eso engaña: el flujo se ejecuta entero, sin
+un solo error, y **la rama `false` no se recorre jamás**. Un nodo colgado de esa
+rama parece instalado y es código muerto.
+
+Es la misma familia que la regla `token !== ''` de §6.1: la cadena vacía casa
+con la cadena vacía, y una comparación que nadie configuró se convierte en un
+«sí» permanente.
+
+⚠️ Al revisar un flujo, **un `Decisión (Si/No)` sin configurar es un hallazgo**,
+no un detalle pendiente. Se detectó así el 12/08/2026 en `Prueba Flujo 02032026`.
+
 ---
 
 ## 10. Nodo IA — Claude API
@@ -677,6 +710,72 @@ que hay.
 ⚠️ `src/services/workflowService.ts` (sin punto) es un duplicado **muerto** —no
 lo importa nadie— con su propia copia de este mismo `delete`+`insert`. No lo uses
 ni lo "arregles": bórralo cuando toque.
+
+### 12.2 Un «no» legítimo mal contado sigue siendo un fallo — `utils/errores.ts`
+
+El 12/08/2026 el Oficial de Cumplimiento vio esto al guardar un flujo:
+
+```
+Error guardando flujo: new row violates row-level security policy for table "workflow_nodes"
+```
+
+La RLS acertaba: `cumplimiento` no tiene `manage_workflows` y no edita flujos.
+Lo que fallaba era todo lo demás — **el Constructor le dejaba editar, le pintaba
+`✓ Guardado`, y al chocar le recitaba la frase de Postgres.** Es el reverso del
+patrón de siempre: si una regla solo está en la RLS, la pantalla no la conoce y
+la traduce mal.
+
+Tres piezas, en `src/utils/errores.ts`:
+
+1. **`rolesQuePueden(permiso)`** arma la frase «Administrador, Dueño de Proceso o
+   Autorizador Máximo» **derivándola de `ROLE_PERMISSIONS`**, no a mano. Este
+   proyecto ya arrastra bastantes listas copiadas (§6, §6.2, §6.3, §9.3); donde
+   no hace falta duplicar, no se duplica, y así el mensaje no puede mentir.
+2. **`mensajeDeEscritura`** detecta el rechazo de RLS (`42501` **o** el texto,
+   porque las capas intermedias que envuelven en `new Error(error.message)`
+   pierden el código) y explica quién sí puede.
+3. **`mensajeDeEdgeFunction`** rescata el motivo real de una Edge Function.
+
+⚠️ **`supabase.functions.invoke` tira el cuerpo de la respuesta.** Ante cualquier
+status fuera de 2xx devuelve un `FunctionsHttpError` cuyo `.message` es siempre
+la misma frase inútil:
+
+```
+No se pudo ejecutar: Edge Function returned a non-2xx status code
+```
+
+El motivo de verdad viaja en el **cuerpo JSON**, accesible en `err.context`, que
+es la `Response`. O sea: `execute-workflow` **sí** explicaba el 403, y el
+navegador tiraba la explicación a la basura. `cron-runner` ya leía `context`
+para sus logs desde el 07/08; el frontend no. Leerlo es todo el arreglo.
+
+**Reglas:**
+- El texto de un `return new Response(..., { status: 4xx })` **llega tal cual al
+  usuario**. Escríbelo para quien no sabe qué es un rol de base de datos.
+- Comprueba el permiso **antes** de pedirle a la base algo que va a rechazar, y
+  dilo en la pantalla (distintivo *Solo lectura*). La RLS sigue mandando; esto
+  solo evita el choque.
+- **Un botón muerto no explica nada.** El de Ejecutar sigue pulsable sin permiso:
+  gris, con `title`, y al pulsarlo dice de quién es la ejecución. Desactivarlo
+  deja al usuario sin saber por qué.
+- ⚠️ **Un indicador que no mide, miente.** El `✓ Guardado` se pintaba con
+  `nodes.length > 0`, no con una escritura correcta: a un usuario de solo
+  lectura le confirmaba un guardado que nunca ocurrió. Mismo patrón que el
+  `succeeded` de pg_cron (§6.1) y que el hook aprobando un índice vacío (§15).
+
+✅ **La RLS de edición ya no es más ancha que la UI** (12/08/2026,
+`20260812_rls_edicion_igual_que_manage_workflows.sql`). `nodes_editor_write`,
+`connections_editor_write` y `workflows_editor_update` admitían `operador` y
+`operator`, que **no** tienen `manage_workflows`: no veían el botón y podían
+escribir por API. Y no era solo escribir nodos — `workflows_editor_update`
+gobierna `is_active` y `schedule_value`, así que un operador podía **activar un
+flujo y cambiarle la hora del cron**. Las tres quedan igual a los roles con
+`manage_workflows`: `admin, dueno_proceso, supervisor, editor`.
+
+⚠️ **`supervisor` sigue dentro a propósito, y debe SALIR** cuando exista el
+ciclo de vida `borrador → en_revision → publicado` (ver `CICLO_VIDA_FLUJOS.md`):
+**quien autoriza no edita**, o los cuatro ojos se rompen en el otro sentido. No
+se hizo ya porque hoy no hay permiso de autorizar que ponga en su lugar.
 
 ---
 
