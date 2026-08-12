@@ -208,6 +208,19 @@ secas: si vuelve a desviarse, que reviente.
    ```
    (la conexión directa es solo IPv6; `link` configura el pooler IPv4)
 
+   Dos cosas que cuestan un rato si no se saben:
+   - **`db dump` necesita Docker en marcha.** Corre `pg_dump` dentro de un
+     contenedor, así que sin el demonio levantado falla con
+     `LegacyDockerRunError` — que no tiene nada que ver con el `LegacyDbConfigIpv6Error`
+     de la línea de arriba, aunque los dos salgan del mismo comando.
+   - **Desde el 12/08/2026 el fichero es salida literal de `pg_dump`, sin
+     cabecera propia.** Hasta esa fecha estaba reconstruido a mano desde
+     `pg_attribute`/`pg_policies` y llevaba encima un comentario largo con estas
+     mismas reglas; se quitó porque una cabecera que hay que volver a pegar
+     después de cada regeneración es justo el tipo de paso manual que hizo
+     divergir el archivo la primera vez. Las reglas viven aquí, en §5.1, y solo
+     aquí. **No le añadas nada al fichero: se sobrescribe entero.**
+
 ---
 
 ## 6. Roles y Permisos
@@ -612,6 +625,46 @@ con la cadena vacía, y una comparación que nadie configuró se convierte en un
 ⚠️ Al revisar un flujo, **un `Decisión (Si/No)` sin configurar es un hallazgo**,
 no un detalle pendiente. Se detectó así el 12/08/2026 en `Prueba Flujo 02032026`.
 
+### 9.5 Se aprueba una versión y se ejecuta esa — huella al pausar
+
+`execute-workflow` carga nodos y conexiones **antes** de bifurcar a `resume`.
+Con eso, un run pausado esperando aprobación —hasta 48 h— reanudaba releyendo la
+definición **actual** del flujo: se aprobaba la versión A y continuaba la B.
+Podía haber cambiado el destinatario de un correo, la rama de una decisión o el
+`rol_aprobador` de un nodo posterior, y no quedaba registro en ningún sitio. Lo
+aprobado y lo ejecutado dejaban de ser lo mismo **en silencio**, que es el
+mismo mal de siempre: el sistema no mentía, es que nadie estaba midiendo.
+
+Desde el 12/08/2026, al pausar se guarda `execution_runs.definicion_huella` —un
+SHA-256 de la definición— y al reanudar se recalcula. Si no coincide, **no se
+reanuda**: el run pasa a `error`, se deja un `execution_logs` con las dos
+huellas y la función devuelve **409** con un motivo escrito para una persona.
+
+Detalles que no son accesorios:
+
+1. **La huella cubre lo que cambia el comportamiento** (id, tipo, categoría,
+   título y `config_json` de cada nodo; origen, destino y **`branch`** de cada
+   conexión) y **deja fuera la posición en el lienzo**. Mover un nodo no cambia
+   lo que hace, y un control que salta por arrastrar una caja es un control que
+   la gente aprende a ignorar. `branch` sí entra: mover una conexión de la rama
+   `true` a la `false` no cambia qué nodos hay, pero cambia todo lo que pasa.
+2. **Las claves de los objetos se ordenan antes de serializar** (`canonico`).
+   `JSON.stringify` respeta el orden de inserción, así que sin eso un
+   `config_json` reescrito con los mismos valores en otro orden daría una huella
+   distinta y bloquearía un flujo que no cambió.
+3. **Un `NULL` es un fallo, no un permiso.** Los runs anteriores a la migración
+   no tienen huella; eso significa «no se puede comprobar», y se rechaza igual.
+   Misma familia que el `token !== ''` de §6.1 y el `'' === ''` de §9.4: la
+   comparación que nadie preparó no puede acabar diciendo que sí.
+4. **El run tiene que ir a `error`, no quedarse en `esperando_aprobacion`.** La
+   expiración de `cron-runner` solo mira tareas con `estado='pendiente'`, y a
+   estas alturas la tarea ya está `aprobado`: dejarlo pausado lo cuelga para
+   siempre, que es exactamente como se paralizó "Prueba Flujo 02032026".
+
+Esto **rechaza**, no reanuda la versión aprobada. Guardar la definición entera
+—que sí permitiría continuar la buena— es el versionado de
+`CICLO_VIDA_FLUJOS.md` §3; la huella cuesta una columna y falla cerrado.
+
 ---
 
 ## 10. Nodo IA — Claude API
@@ -765,6 +818,13 @@ es la `Response`. O sea: `execute-workflow` **sí** explicaba el 403, y el
 navegador tiraba la explicación a la basura. `cron-runner` ya leía `context`
 para sus logs desde el 07/08; el frontend no. Leerlo es todo el arreglo.
 
+⚠️ **Y leerlo no basta: hay que sacar el motivo, no el sobre.** `resolve-approval`
+sí leía `context`, pero lo enseñaba crudo —`HTTP 409 — {"error":"…"}`— en el
+toast «Aprobado pero error al reanudar» de `WorkQueue.tsx` y `Governance.tsx`.
+Desde el 12/08/2026 extrae el campo `error` del JSON y deja el texto en bruto
+solo como último recurso. Mismo criterio que la regla de abajo: lo que devuelve
+un `Response` de 4xx **acaba delante de una persona**.
+
 **Reglas:**
 - El texto de un `return new Response(..., { status: 4xx })` **llega tal cual al
   usuario**. Escríbelo para quien no sabe qué es un rol de base de datos.
@@ -785,13 +845,27 @@ para sus logs desde el 07/08; el frontend no. Leerlo es todo el arreglo.
 `operator`, que **no** tienen `manage_workflows`: no veían el botón y podían
 escribir por API. Y no era solo escribir nodos — `workflows_editor_update`
 gobierna `is_active` y `schedule_value`, así que un operador podía **activar un
-flujo y cambiarle la hora del cron**. Las tres quedan igual a los roles con
-`manage_workflows`: `admin, dueno_proceso, supervisor, editor`.
+flujo y cambiarle la hora del cron**.
 
-⚠️ **`supervisor` sigue dentro a propósito, y debe SALIR** cuando exista el
-ciclo de vida `borrador → en_revision → publicado` (ver `CICLO_VIDA_FLUJOS.md`):
-**quien autoriza no edita**, o los cuatro ojos se rompen en el otro sentido. No
-se hizo ya porque hoy no hay permiso de autorizar que ponga en su lugar.
+✅ **Y `supervisor` salió esa misma tarde** (`20260812_supervisor_no_edita.sql`).
+Por la mañana se le dejó dentro a propósito, anotando que debía salir «cuando
+exista el ciclo de vida»: sin permiso de autorizar se quedaba sin nada que
+hacer. El razonamiento valía mientras el rol estuviera **vacío**, y caducó a las
+18:38 UTC del mismo día, cuando se dio de alta un supervisor real. Un solape
+teórico y uno con alguien dentro no son el mismo riesgo.
+
+Decisión de negocio de Hermes: *«el supervisor no edita el flujo, solo lo
+autoriza, porque se pierde el control; él debe remitir al dueño para su edición
+y corrección»*. **Quien autoriza no edita**, o los cuatro ojos se rompen en el
+otro sentido. Le quedan `approve_tasks` y `view_logs`.
+
+Son **cuatro** políticas, no tres: `nodes_editor_write`,
+`connections_editor_write`, `workflows_editor_update` y —comprobado en la base,
+no supuesto— `workflows_editor_write` (INSERT), porque crear un flujo es
+editarlo. Las cuatro quedan en `admin, dueno_proceso, editor`, igual que los
+roles con `manage_workflows` en `src/core/user.types.ts`. Cuando exista
+`authorize_workflows` y los estados `borrador → en_revision → publicado`
+(`CICLO_VIDA_FLUJOS.md`), ese permiso es el que ocupa el hueco que deja este.
 
 ---
 

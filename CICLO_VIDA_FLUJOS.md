@@ -113,11 +113,13 @@ regla; el versionado, si hace falta, después.**
 
 ### Permisos (`src/core/user.types.ts`)
 - Nuevo permiso `authorize_workflows`.
-- `supervisor`: **pierde** `manage_workflows`, **gana** `authorize_workflows`.
+- `supervisor`: ~~**pierde** `manage_workflows`~~ ✅ hecho el 12/08/2026;
+  **gana** `authorize_workflows` — pendiente.
 - `operador`: **gana** `execute_workflows`.
-- Actualizar la política RLS de edición para sacar a `supervisor`
-  (la migración `20260812_rls_edicion_igual_que_manage_workflows.sql` ya lo dejó
-  anotado).
+- ~~Actualizar la política RLS de edición para sacar a `supervisor`.~~
+  ✅ Hecho: `20260812_supervisor_no_edita.sql`, las **cuatro** políticas
+  (`nodes_editor_write`, `connections_editor_write`, `workflows_editor_update`
+  y `workflows_editor_write`) en `admin, dueno_proceso, editor`.
 
 ### Motor
 - `execute-workflow`: además del rol, mirar el estado.
@@ -152,16 +154,21 @@ No pueden nacer todos en `borrador`: el que está activo dejaría de correr.
    (Nahum), 1 `cumplimiento` (Nohemy), 1 `operador` (Katherine). El esquema ya
    tiene a alguien en las tres puntas.
 
-   ⚠️ **Pero hoy Nahum PUEDE editar flujos**, que es justo lo que este documento
-   dice que no debe pasar. `supervisor` tiene `manage_workflows` en
-   `ROLE_PERMISSIONS` y está en las tres políticas RLS de edición
-   (`20260812_rls_edicion_igual_que_manage_workflows.sql`). O sea: quien
-   controla también edita, y los cuatro ojos se rompen en el otro sentido.
-   Se dejó así porque no existía `authorize_workflows` que poner en su lugar —
-   pero eso era razonable mientras el rol estaba vacío. Con una persona dentro,
-   **es una decisión que hay que tomar ya**: o se le quita `manage_workflows`
-   ahora (cambio pequeño: la constante y las tres políticas) o se acepta el
-   solape a sabiendas hasta que exista el ciclo de vida.
+   ✅ **Y se le quitó la edición el mismo día** (decisión de Hermes:
+   *«el supervisor no edita el flujo, solo lo autoriza, porque se pierde el
+   control; él debe remitir al dueño para su edición y corrección»*).
+   `supervisor` pierde `manage_workflows` en `ROLE_PERMISSIONS` y sale de las
+   políticas RLS de edición (`20260812_supervisor_no_edita.sql`, aplicada en
+   producción). Le quedan `approve_tasks` y `view_logs`.
+
+   Eran **cuatro** políticas, no tres: al aplicarla se comprobó contra la base
+   que `workflows_editor_write` (INSERT) también admitía `supervisor` — crear un
+   flujo es editarlo. Las cuatro quedan en `admin, dueno_proceso, editor`.
+
+   ⚠️ Queda el hueco al revés: hasta que exista `authorize_workflows` y los
+   estados de abajo, **Nahum no tiene todavía nada que autorizar** a nivel de
+   definición. Aprueba tareas de ejecución y mira logs. Es el hueco correcto
+   —falta permiso, no sobra— pero es un motivo más para hacer §3.
 2. **¿`autorizador` también autoriza definiciones?** En la matriz de arriba sí,
    por coherencia con su nombre. Hoy tampoco tiene a nadie.
 3. ~~**¿Qué pasa con un flujo publicado que está corriendo cuando se edita?**~~
@@ -189,7 +196,7 @@ El motor carga nodos y conexiones **una vez, al arrancar**
 de run no cambia lo que ese run está haciendo, y el timeout de la Edge Function
 son 150 s: la ventana es corta. No hace falta protegerlo por sí solo.
 
-### 6.2 Run pausado esperando aprobación — GRAVE, y está abierto hoy
+### 6.2 Run pausado esperando aprobación — GRAVE. ✅ Cerrado el 12/08/2026
 
 La carga de la línea 1246 ocurre **antes** de bifurcar a `resume` (línea 1263).
 O sea: **un run reanudado relee la definición actual de la base**, no la que
@@ -211,6 +218,18 @@ Dos arreglos posibles:
 
 **Recomendación: la huella.** Falla cerrado, es una columna, y no obliga a
 decidir hoy lo del versionado. La instantánea, si hace falta, después.
+
+✅ **Implementada el 12/08/2026** — `execution_runs.definicion_huella`
+(`20260812_huella_definicion_al_pausar.sql`) y la comprobación en
+`execute-workflow`, desplegada. Al reanudar con la definición cambiada el run
+pasa a `error`, se registra un `execution_logs` con las dos huellas y la función
+devuelve 409 con un motivo legible, que `resolve-approval` reenvía al toast del
+aprobador. Detalles finos en CLAUDE.md §9.5 — entre ellos que **la huella cubre
+el `branch` de cada conexión pero no la posición en el lienzo**, y que un
+`NULL` (runs anteriores a la migración) cuenta como fallo, no como permiso.
+
+⚠️ Sigue siendo un **rechazo**, no una reanudación de la versión aprobada. Eso
+es la instantánea, y sigue siendo el §3.
 
 ### 6.3 Flujo programado — el daño es por omisión
 

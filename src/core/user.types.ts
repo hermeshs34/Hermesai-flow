@@ -55,10 +55,19 @@ export interface User {
 // y tienen que moverse juntas: la de aquí esconde el botón, la de allí es la
 // que de verdad impide ejecutar. Está copiada y no importada porque una Edge
 // Function corre en Deno y no alcanza src/. Ver CLAUDE.md §6.
+//
+// ⚠️ `supervisor` NO tiene `manage_workflows`, y es a propósito (decisión de
+// Hermes, 12/08/2026): «el supervisor no edita el flujo, solo lo autoriza,
+// porque se pierde el control; debe remitir al dueño para su edición y
+// corrección». Quien controla no edita, o los cuatro ojos se rompen en el otro
+// sentido. Lo tuvo hasta ese día, cuando el rol estaba vacío y quitárselo lo
+// habría dejado sin nada que hacer; el alta de un supervisor real acabó con esa
+// excusa. La política RLS de edición se movió a la vez
+// (20260812_supervisor_no_edita.sql): las dos capas deben decir lo mismo.
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     admin:         ['manage_users', 'manage_workflows', 'execute_workflows', 'approve_tasks', 'authorize_critical', 'manage_integrations', 'view_logs', 'view_audit', 'view_all'],
     dueno_proceso: ['manage_workflows', 'execute_workflows', 'view_logs', 'view_audit'],
-    supervisor:    ['manage_workflows', 'approve_tasks', 'view_logs'],
+    supervisor:    ['approve_tasks', 'view_logs'],
     operador:      ['view_logs'],
     autorizador:   ['execute_workflows', 'approve_tasks', 'authorize_critical', 'view_logs'],
     cumplimiento:  ['approve_tasks', 'view_logs', 'view_audit'],

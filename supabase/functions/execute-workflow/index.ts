@@ -52,6 +52,48 @@ const ROLES_APROBADORES = new Set([
     'admin', 'supervisor', 'autorizador', 'cumplimiento',
 ]);
 
+// ── Huella de la definición ─────────────────────────────────────────────────
+//
+// Los nodos se cargan al principio del handler, ANTES de saber si esto es un
+// arranque o un `resume`. Así que un run que estuvo pausado esperando
+// aprobación —hasta 48 h— reanuda con la definición que haya EN ESE MOMENTO en
+// la base, no con la que se aprobó. Se aprueba la versión A y corre la B.
+//
+// La huella se guarda al pausar y se recalcula al reanudar. Cubre lo que cambia
+// el comportamiento y deja fuera la posición en el lienzo: mover un nodo no
+// cambia lo que hace, y un control que salta por arrastrar una caja es un
+// control que la gente aprende a ignorar.
+function canonico(v: unknown): unknown {
+    if (Array.isArray(v)) return v.map(canonico);
+    if (v !== null && typeof v === 'object') {
+        const orig = v as Record<string, unknown>;
+        const out: Record<string, unknown> = {};
+        // Claves ordenadas: dos objetos iguales deben dar el mismo texto aunque
+        // Postgres los devuelva con las claves en otro orden.
+        for (const k of Object.keys(orig).sort()) out[k] = canonico(orig[k]);
+        return out;
+    }
+    return v;
+}
+
+async function huellaDefinicion(nodes: any[], connections: any[]): Promise<string> {
+    const n = [...(nodes ?? [])]
+        .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+        .map(x => [x.id, x.type, x.category, x.title ?? '', canonico(x.config_json ?? {})]);
+
+    // `branch` entra en la huella: mover una conexión de la rama `true` a la
+    // `false` no cambia qué nodos hay, pero cambia por completo lo que ocurre.
+    const c = [...(connections ?? [])]
+        .map(x => [x.source_node_id, x.target_node_id, x.branch ?? ''])
+        .sort((a, b) => `${a[0]}→${a[1]}:${a[2]}`.localeCompare(`${b[0]}→${b[1]}:${b[2]}`));
+
+    const bytes = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(JSON.stringify({ n, c })),
+    );
+    return [...new Uint8Array(bytes)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // ── Topological sort (Kahn's algorithm) ─────────────────────────────────────
 function topologicalSort(nodes: any[], connections: any[]): any[] {
     const inDegree: Record<string, number> = {};
@@ -1264,12 +1306,61 @@ serve(async (req) => {
             // Reanudar run pausado — acepta esperando_aprobacion o error (reintento tras fallo de resume)
             const { data: existingRun, error: fetchErr } = await supabase
                 .from('execution_runs')
-                .select('id, context_json, completed_node_ids')
+                .select('id, context_json, completed_node_ids, definicion_huella')
                 .eq('id', resumeRunId)
                 .in('status', ['esperando_aprobacion', 'error'])
                 .not('paused_node_id', 'is', null)
                 .single();
             if (fetchErr || !existingRun) throw new Error('Run pausado no encontrado — ya completado o sin pausa registrada');
+
+            // ── El flujo tiene que seguir siendo el que se aprobó ────────────
+            //
+            // Los nodos se cargaron arriba, así que aquí ya tenemos la
+            // definición ACTUAL. Si no coincide con la del momento de pausar,
+            // continuar significaría ejecutar algo que nadie autorizó.
+            //
+            // Falla cerrado, y una huella ausente cuenta como fallo: `null` es
+            // «no se puede comprobar», no «adelante». Es la misma trampa del
+            // `'' === ''` que ya nos costó una rama muerta (CLAUDE.md §9.4).
+            const huellaAhora = await huellaDefinicion(nodes, connections ?? []);
+            if (existingRun.definicion_huella !== huellaAhora) {
+                const motivo = existingRun.definicion_huella
+                    ? 'El flujo se modificó después de que se aprobara esta tarea, así que no se reanuda: ' +
+                      'se aprobó una versión y se ejecutaría otra. Vuelve a lanzar el flujo para que se ' +
+                      'apruebe la versión actual.'
+                    : 'No se puede comprobar que el flujo siga siendo el que se aprobó, porque la pausa es ' +
+                      'anterior a esta comprobación. Vuelve a lanzar el flujo.';
+
+                // El run NO puede quedarse en `esperando_aprobacion`: su tarea ya
+                // está aprobada, así que el vencimiento de cron-runner —que solo
+                // mira tareas pendientes— no lo tocaría nunca y quedaría colgado
+                // para siempre. Es justo cómo se paralizó "Prueba Flujo 02032026".
+                await supabase.from('execution_runs').update({
+                    status:        'error',
+                    error_message: motivo,
+                    finished_at:   new Date().toISOString(),
+                }).eq('id', existingRun.id);
+
+                await supabase.from('execution_logs').insert({
+                    organization_id:  organizationId,
+                    workflow_id:      workflowId,
+                    execution_run_id: existingRun.id,
+                    node_id:          null,
+                    status:           'error',
+                    message:          `⛔ No se reanudó: ${motivo}`,
+                    details_json:     {
+                        huella_al_aprobar: existingRun.definicion_huella,
+                        huella_ahora:      huellaAhora,
+                    },
+                    executed_at:      new Date().toISOString(),
+                });
+
+                return new Response(
+                    JSON.stringify({ error: motivo }),
+                    { status: 409, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
+
             runId            = existingRun.id;
             startedAt        = Date.now();
             restoredContext  = (existingRun.context_json as Record<string, any>) ?? {};
@@ -1427,12 +1518,28 @@ serve(async (req) => {
 
                     // Persistir contexto acumulado para reanudar después
                     // Incluir el nodo de aprobación en completedNodeIds para no re-ejecutarlo al reanudar
-                    await supabase.from('execution_runs').update({
+                    //
+                    // `definicion_huella` fija QUÉ se está aprobando. Al reanudar
+                    // se recalcula sobre la definición de entonces y, si no
+                    // coincide, no se reanuda: el flujo cambió después de
+                    // aprobarse. Sin esto se aprueba una versión y corre otra.
+                    const { error: errPausa } = await supabase.from('execution_runs').update({
                         status:             'esperando_aprobacion',
                         context_json:       context,
                         completed_node_ids: [...completedNodeIds, node.id],
                         paused_node_id:     node.id,
+                        definicion_huella:  await huellaDefinicion(nodes, connections ?? []),
                     }).eq('id', runId);
+
+                    // supabase-js no lanza: devuelve el error. Uno que nadie lee
+                    // deja el run en `running` con una tarea pendiente colgando,
+                    // y eso ya pasó en este proyecto (CLAUDE.md §5.1).
+                    if (errPausa) {
+                        console.error(`execute-workflow: no se pudo pausar el run ${runId} — ${errPausa.message}`);
+                        await addLog(node.id, 'error',
+                            `No se pudo registrar la pausa del flujo: ${errPausa.message}`
+                        );
+                    }
 
                     await addLog(node.id, 'warning',
                         `⏸ Flujo pausado — esperando aprobación de rol "${err.rolAprobador}". Vence: ${fechaHoraVE(err.venceAt)} (hora de Venezuela)`

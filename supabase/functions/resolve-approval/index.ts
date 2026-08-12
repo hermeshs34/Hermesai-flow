@@ -279,7 +279,14 @@ serve(async (req) => {
                 const ctx = (resumeErr as unknown as { context?: Response }).context;
                 if (ctx && typeof ctx.text === 'function') {
                     try {
-                        errorResume = `HTTP ${ctx.status} — ${(await ctx.text()).slice(0, 400)}`;
+                        const cuerpo = (await ctx.text()).slice(0, 600);
+                        // El motivo va en `error` del JSON. Se saca en limpio
+                        // porque este texto acaba en un toast delante del
+                        // aprobador: «El flujo se modificó después de que se
+                        // aprobara…» se entiende; «HTTP 409 — {"error":…}» no.
+                        let motivo = '';
+                        try { motivo = String(JSON.parse(cuerpo)?.error ?? ''); } catch { /* no era JSON */ }
+                        errorResume = motivo !== '' ? motivo : `HTTP ${ctx.status} — ${cuerpo}`;
                     } catch { /* cuerpo ya consumido */ }
                 }
                 console.error(`resolve-approval: no se pudo reanudar el run ${tarea.execution_run_id} — ${errorResume}`);

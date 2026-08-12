@@ -1,515 +1,1339 @@
--- ═══════════════════════════════════════════════════════════════════════════
--- HermesAI Flow — Esquema real de producción
--- Proyecto kbscaxcokxwdbnrltkup — regenerado el 02/08/2026
 --
--- ESTE ARCHIVO DESCRIBE LO QUE HAY EN LA BASE, NO LO QUE DEBERÍA HABER.
+-- PostgreSQL database dump
 --
--- La versión anterior se mantenía a mano y se declaraba "fuente de verdad".
--- No lo era: divergía de producción en más de treinta puntos y ninguno daba
--- error, porque todas las tablas se declaraban con CREATE TABLE IF NOT EXISTS
--- y una declaración posterior sobre una tabla que ya existe no hace nada.
--- Esa mentira silenciosa costó, entre el 11/06 y el 01/08/2026, un millón de
--- filas basura y 743 MB (cron-runner escribía contra columnas que solo
--- existían en este archivo), y dos meses de auditoría de aprobaciones perdida
--- (resolve-approval insertaba actor_id, columna inexistente).
+
+-- \restrict M3ddci3sy9a3hiAmCv9joIPC5JZeYBK6rDFp2ek2OpjfD0KX2x4PvZzKmjwspzi
+
+-- Dumped from database version 17.6
+-- Dumped by pg_dump version 17.6
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+-- SET transaction_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
 --
--- Por eso ahora se usa CREATE TABLE a secas. Si este archivo se aplica sobre
--- una base donde el objeto ya existe, tiene que reventar: un fallo ruidoso es
--- barato, uno silencioso ya sabemos lo que cuesta.
+-- Name: public; Type: SCHEMA; Schema: -; Owner: pg_database_owner
 --
--- CÓMO REGENERARLO
---   Opción A (preferible, pg_dump real):
---     supabase link --project-ref kbscaxcokxwdbnrltkup
---     supabase db dump --linked --schema public --keep-comments -f database/schema.sql
---     (la conexión directa es solo IPv6; link configura el pooler IPv4)
---   Opción B: consultar pg_attribute / pg_constraint / pg_indexes / pg_policies
---     y reconstruir, que es como se hizo esta versión.
+
+CREATE SCHEMA IF NOT EXISTS "public";
+
+
+ALTER SCHEMA "public" OWNER TO "pg_database_owner";
+
 --
--- REGLA: antes de escribir una columna desde una Edge Function, comprobarla
--- contra la base, no contra este archivo. Y comprobar siempre el { error } que
--- devuelve supabase-js: no lanza excepción, la devuelve, y si nadie la lee el
--- fallo se convierte en silencio.
--- ═══════════════════════════════════════════════════════════════════════════
+-- Name: SCHEMA "public"; Type: COMMENT; Schema: -; Owner: pg_database_owner
+--
 
--- ── Extensiones ───────────────────────────────────────────────────────────
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+COMMENT ON SCHEMA "public" IS 'standard public schema';
 
--- ═══ TABLAS ════════════════════════════════════════════════════════════════
 
--- ── Organizaciones (tenant raíz) ──────────────────────────────────────────
-CREATE TABLE public.organizations (
-    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name                text NOT NULL,
-    slug                text NOT NULL UNIQUE,
-    plan                text NOT NULL DEFAULT 'free'
-                        CHECK (plan IN ('free', 'pro', 'enterprise')),
-    is_active           boolean NOT NULL DEFAULT true,
-    created_at          timestamptz NOT NULL DEFAULT now(),
-    -- F2.2: preferencias de notificación
-    notif_email         text,
-    notif_errors        boolean NOT NULL DEFAULT true,
-    notif_success       boolean NOT NULL DEFAULT false,
-    -- F4: parámetros KPI configurables
-    kpi_sla_ms          integer NOT NULL DEFAULT 30000,
-    kpi_min_por_tarea   integer NOT NULL DEFAULT 15,
-    kpi_costo_hora_usd  integer NOT NULL DEFAULT 25
-);
+--
+-- Name: is_admin(); Type: FUNCTION; Schema: public; Owner: postgres
+--
 
-COMMENT ON COLUMN public.organizations.kpi_sla_ms          IS 'Umbral SLA en milisegundos (default 30s)';
-COMMENT ON COLUMN public.organizations.kpi_min_por_tarea   IS 'Minutos ahorrados por tarea exitosa (default 15)';
-COMMENT ON COLUMN public.organizations.kpi_costo_hora_usd  IS 'Costo hora-hombre en USD para calcular ahorro (default 25)';
-
--- ── Perfiles de usuario ───────────────────────────────────────────────────
--- Roles BPM (F1) + roles legacy, que siguen en uso por usuarios existentes.
--- El DEFAULT real es 'viewer'. Este archivo decía 'operador' — nunca se aplicó.
-CREATE TABLE public.profiles (
-    id                  uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    organization_id     uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-    email               text NOT NULL,
-    name                text NOT NULL,
-    role                text NOT NULL DEFAULT 'viewer'
-                        CHECK (role IN (
-                            -- Roles BPM F1
-                            'admin', 'dueno_proceso', 'supervisor', 'operador',
-                            'autorizador', 'cumplimiento', 'auditor',
-                            -- Roles legacy: no ofrecer en UI, mantener compatibilidad
-                            'editor', 'operator', 'viewer'
-                        )),
-    is_active           boolean NOT NULL DEFAULT true,
-    created_at          timestamptz NOT NULL DEFAULT now()
-);
-
--- ── Flujos de trabajo ─────────────────────────────────────────────────────
--- OJO: status NO admite 'active' en producción, aunque este archivo lo
--- declaraba. Si algo intenta escribir 'active', falla.
-CREATE TABLE public.workflows (
-    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id     uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-    name                text NOT NULL,
-    description         text,
-    is_active           boolean NOT NULL DEFAULT false,
-    schedule_type       text CHECK (schedule_type IN ('manual', 'cron', 'webhook', 'event')),
-    schedule_value      text,
-    status              text NOT NULL DEFAULT 'idle'
-                        CHECK (status IN ('idle', 'running', 'error', 'paused')),
-    created_by          uuid REFERENCES public.profiles(id),
-    created_at          timestamptz NOT NULL DEFAULT now(),
-    updated_at          timestamptz NOT NULL DEFAULT now(),
-    last_run_at         timestamptz,
-    execution_count     integer NOT NULL DEFAULT 0
-);
-
--- ── Nodos de un flujo ─────────────────────────────────────────────────────
-CREATE TABLE public.workflow_nodes (
-    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    workflow_id         uuid NOT NULL REFERENCES public.workflows(id) ON DELETE CASCADE,
-    organization_id     uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-    type                text NOT NULL CHECK (type IN ('trigger', 'connector', 'processor', 'output')),
-    category            text NOT NULL,
-    title               text NOT NULL,
-    position_x          integer NOT NULL DEFAULT 0,
-    position_y          integer NOT NULL DEFAULT 0,
-    config_json         jsonb NOT NULL DEFAULT '{}'::jsonb,
-    status              text NOT NULL DEFAULT 'idle'
-                        CHECK (status IN ('idle', 'running', 'success', 'error')),
-    created_at          timestamptz NOT NULL DEFAULT now()
-);
-
--- ── Conexiones entre nodos ────────────────────────────────────────────────
-CREATE TABLE public.workflow_connections (
-    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    workflow_id         uuid NOT NULL REFERENCES public.workflows(id) ON DELETE CASCADE,
-    source_node_id      uuid NOT NULL REFERENCES public.workflow_nodes(id) ON DELETE CASCADE,
-    target_node_id      uuid NOT NULL REFERENCES public.workflow_nodes(id) ON DELETE CASCADE,
-    created_at          timestamptz NOT NULL DEFAULT now(),
-    -- Rama del nodo Decisión: 'true' = SI, 'false' = NO, NULL = sin condición
-    branch              text CHECK (branch IN ('true', 'false')),
-    UNIQUE (source_node_id, target_node_id)
-);
-
--- ── Ejecuciones (raíz de cada run) ────────────────────────────────────────
--- status NO tiene CHECK en producción. Se documentan aquí los valores que
--- escribe el código —execute-workflow, cron-runner, resolve-approval— pero la
--- base acepta cualquier texto. Añadir el CHECK exige incluir 'rechazado' y
--- 'pending', que también se usan.
-CREATE TABLE public.execution_runs (
-    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id     uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-    workflow_id         uuid NOT NULL REFERENCES public.workflows(id) ON DELETE CASCADE,
-    triggered_by        text NOT NULL DEFAULT 'manual',   -- manual | cron | webhook | approval
-    status              text NOT NULL DEFAULT 'running',  -- running | success | error | esperando_aprobacion | rechazado | pending
-    started_at          timestamptz NOT NULL DEFAULT now(),
-    finished_at         timestamptz,
-    duration_ms         integer,
-    error_message       text,
-    logs_count          integer NOT NULL DEFAULT 0,
-    created_by          uuid REFERENCES public.profiles(id),
-    -- Estado persistido para reanudar tras una aprobación
-    context_json        jsonb,
-    completed_node_ids  text[] DEFAULT '{}'::text[],
-    -- text, no uuid, y sin FK: guarda el id de nodo tal como lo maneja el
-    -- canvas. Este archivo lo declaraba uuid REFERENCES workflow_nodes.
-    paused_node_id      text
-);
-
--- ── Log de ejecuciones (detalle por nodo) ─────────────────────────────────
-CREATE TABLE public.execution_logs (
-    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    workflow_id         uuid NOT NULL REFERENCES public.workflows(id) ON DELETE CASCADE,
-    organization_id     uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-    node_id             uuid REFERENCES public.workflow_nodes(id) ON DELETE SET NULL,
-    status              text NOT NULL CHECK (status IN ('success', 'error', 'warning', 'info')),
-    message             text NOT NULL,
-    details_json        jsonb,
-    duration_ms         integer,
-    executed_at         timestamptz NOT NULL DEFAULT now(),
-    execution_run_id    uuid REFERENCES public.execution_runs(id) ON DELETE CASCADE
-);
-
--- ── Integraciones ─────────────────────────────────────────────────────────
--- config_json solo lleva metadata NO sensible (URLs base, nombres de tablas).
--- Las API keys van en Supabase Secrets, nunca aquí.
-CREATE TABLE public.integrations (
-    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id     uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-    system_name         text NOT NULL
-                        CHECK (system_name IN ('riskguard', 'eeff', 'indicadores', 'legaltech')),
-    config_json         jsonb NOT NULL DEFAULT '{}'::jsonb,
-    is_active           boolean NOT NULL DEFAULT false,
-    created_at          timestamptz NOT NULL DEFAULT now(),
-    updated_at          timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (organization_id, system_name)
-);
-
--- ── Audit Log (F1) ────────────────────────────────────────────────────────
--- Los dos CHECK los aplicó 20260801_alinear_esquema_real.sql. Antes la tabla
--- no tenía ninguno: la creó 20260531_f1_gobierno.sql sin ellos y este archivo
--- los declaraba en vano.
--- La columna de actor es usuario_id. No existe actor_id: resolve-approval lo
--- usaba y por eso ninguna resolución de aprobación se auditó desde F2.
-CREATE TABLE public.audit_log (
-    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id     uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-    usuario_id          uuid REFERENCES public.profiles(id),
-    usuario_email       text,
-    accion              text NOT NULL
-                        CHECK (accion IN ('crear', 'modificar', 'eliminar', 'ejecutar',
-                                          'aprobar', 'rechazar', 'login', 'cambio_rol',
-                                          'escalamiento', 'vencimiento')),
-    entidad             text NOT NULL
-                        CHECK (entidad IN ('workflow', 'usuario', 'integracion',
-                                           'aprobacion', 'sesion')),
-    entidad_id          uuid,
-    descripcion         text,
-    datos_antes         jsonb,
-    datos_despues       jsonb,
-    ip_address          text,
-    created_at          timestamptz NOT NULL DEFAULT now()
-);
-
--- ── Tareas de Aprobación (F2 + escalamiento F4) ───────────────────────────
--- node_id es text NOT NULL y sin FK, no uuid: guarda el id del nodo tal como
--- lo maneja el canvas. solicitante_id y aprobador_id tampoco tienen FK.
--- Y organization_id tampoco: es la ÚNICA tabla de negocio cuyo organization_id
--- no referencia organizations. Borrar una organización deja aquí filas
--- huérfanas, y nada impide escribir un organization_id inexistente. El
--- aislamiento depende por completo de la política RLS de más abajo.
-CREATE TABLE public.tareas_aprobacion (
-    id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id         uuid NOT NULL,
-    workflow_id             uuid NOT NULL REFERENCES public.workflows(id) ON DELETE CASCADE,
-    execution_run_id        uuid NOT NULL REFERENCES public.execution_runs(id) ON DELETE CASCADE,
-    node_id                 text NOT NULL,
-    node_title              text,
-    solicitante_id          uuid,
-    rol_aprobador           text NOT NULL,
-    aprobador_id            uuid,
-    monto                   numeric,
-    categoria               text,
-    descripcion             text,
-    -- 'expirado', no 'vencido'. Y la columna de cierre es resolved_at, no
-    -- resuelto_at. cron-runner usaba los nombres equivocados: el UPDATE fallaba
-    -- en silencio, la tarea seguía 'pendiente' con vence_at pasado y el cron la
-    -- reprocesaba cada minuto durante 51 días.
-    estado                  text NOT NULL DEFAULT 'pendiente'
-                            CHECK (estado IN ('pendiente', 'aprobado', 'rechazado',
-                                              'devuelto', 'expirado')),
-    comentario              text,
-    vence_at                timestamptz,
-    created_at              timestamptz NOT NULL DEFAULT now(),
-    resolved_at             timestamptz,
-    -- F4: escalamiento automático
-    nivel_escalamiento      integer NOT NULL DEFAULT 0,
-    escalado_at             timestamptz,
-    rol_aprobador_original  text
-);
-
--- ── Matriz de Aprobación (F3.3) ───────────────────────────────────────────
--- umbral_monto y moneda son NULLABLE en producción, pese a llevar DEFAULT.
-CREATE TABLE public.matriz_aprobacion (
-    id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id         uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-    nombre                  text NOT NULL,
-    categoria               text,
-    umbral_monto            numeric DEFAULT 0,
-    moneda                  text DEFAULT 'USD',
-    rol_aprobador           text NOT NULL,
-    nivel                   integer NOT NULL DEFAULT 1,
-    activa                  boolean NOT NULL DEFAULT true,
-    created_at              timestamptz NOT NULL DEFAULT now(),
-    created_by              uuid REFERENCES public.profiles(id),
-    operador                text NOT NULL DEFAULT '>='
-                            CHECK (operador IN ('>=', '>', '<=', '<', '==', 'entre')),
-    umbral_max              numeric,
-    condicion_extra         text,
-    aprobadores_multiples   integer NOT NULL DEFAULT 1
-                            CHECK (aprobadores_multiples >= 1 AND aprobadores_multiples <= 5),
-    escalamiento_horas      integer NOT NULL DEFAULT 48,
-    aplica_automatico       boolean NOT NULL DEFAULT false,
-    descripcion_regulatoria text,
-    -- Métricas de uso
-    veces_activada          integer NOT NULL DEFAULT 0,
-    aprobaciones_count      integer NOT NULL DEFAULT 0,
-    rechazos_count          integer NOT NULL DEFAULT 0,
-    tiempo_promedio_hs      numeric
-);
-
-COMMENT ON COLUMN public.matriz_aprobacion.operador                 IS '>= | > | <= | < | == | entre (rango umbral_monto..umbral_max)';
-COMMENT ON COLUMN public.matriz_aprobacion.aprobadores_multiples    IS 'Cuántos aprobadores distintos deben autorizar (doble control = 2)';
-COMMENT ON COLUMN public.matriz_aprobacion.aplica_automatico        IS 'Si true, el Agente IA puede decidir sin aprobador humano';
-COMMENT ON COLUMN public.matriz_aprobacion.descripcion_regulatoria  IS 'Referencia normativa: SUDEBAN Circular 7, OFAC 50% Rule, etc.';
-
--- ── Delegaciones (F1 — suplencias de aprobador) ───────────────────────────
--- Tabla que este archivo no declaraba en absoluto, pese a llevar en producción
--- desde 20260531_f1_gobierno.sql.
-CREATE TABLE public.delegaciones (
-    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id     uuid NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
-    usuario_id          uuid NOT NULL REFERENCES public.profiles(id),
-    suplente_id         uuid NOT NULL REFERENCES public.profiles(id),
-    desde               timestamptz NOT NULL,
-    hasta               timestamptz NOT NULL,
-    motivo              text,
-    created_at          timestamptz NOT NULL DEFAULT now()
-);
-
--- ═══ ÍNDICES ═══════════════════════════════════════════════════════════════
-CREATE INDEX idx_workflows_org               ON public.workflows (organization_id);
-CREATE INDEX idx_workflow_nodes_workflow     ON public.workflow_nodes (workflow_id);
-CREATE INDEX idx_execution_runs_workflow     ON public.execution_runs (workflow_id);
-CREATE INDEX idx_execution_runs_org          ON public.execution_runs (organization_id, started_at DESC);
-CREATE INDEX idx_execution_logs_run          ON public.execution_logs (execution_run_id);
-CREATE INDEX idx_execution_logs_workflow     ON public.execution_logs (workflow_id);
-CREATE INDEX idx_execution_logs_org_date     ON public.execution_logs (organization_id, executed_at DESC);
-CREATE INDEX idx_audit_org_date              ON public.audit_log (organization_id, created_at DESC);
-CREATE INDEX idx_audit_entidad               ON public.audit_log (entidad, entidad_id);
-CREATE INDEX idx_tareas_aprobacion_estado    ON public.tareas_aprobacion (organization_id, estado);
-CREATE INDEX idx_tareas_aprobacion_rol       ON public.tareas_aprobacion (organization_id, rol_aprobador, estado);
-CREATE INDEX idx_tareas_aprobacion_run       ON public.tareas_aprobacion (execution_run_id);
-CREATE INDEX idx_matriz_org                  ON public.matriz_aprobacion (organization_id, nivel);
-
--- ═══ FUNCIONES HELPER ══════════════════════════════════════════════════════
--- Hubo dos funciones idénticas, my_org_id() y my_organization_id(), nacidas de
--- migraciones distintas, y las políticas usaban una u otra sin criterio.
--- Unificadas en my_organization_id() el 02/08/2026 por la migración
--- 20260803_unificar_my_organization_id.sql: my_org_id() ya no existe.
-
-CREATE OR REPLACE FUNCTION public.my_organization_id()
-RETURNS uuid LANGUAGE sql STABLE SECURITY DEFINER AS $$
-    SELECT organization_id FROM public.profiles WHERE id = auth.uid()
-$$;
-
-CREATE OR REPLACE FUNCTION public.my_role()
-RETURNS text LANGUAGE sql STABLE SECURITY DEFINER AS $$
-    SELECT role FROM public.profiles WHERE id = auth.uid()
-$$;
-
-CREATE OR REPLACE FUNCTION public.is_admin()
-RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $$
+CREATE OR REPLACE FUNCTION "public"."is_admin"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    AS $$
     SELECT EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin');
 $$;
 
-CREATE OR REPLACE FUNCTION public.set_updated_at()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
+
+ALTER FUNCTION "public"."is_admin"() OWNER TO "postgres";
+
+--
+-- Name: my_organization_id(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."my_organization_id"() RETURNS "uuid"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    AS $$
+    SELECT organization_id FROM public.profiles WHERE id = auth.uid()
+$$;
+
+
+ALTER FUNCTION "public"."my_organization_id"() OWNER TO "postgres";
+
+--
+-- Name: my_role(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."my_role"() RETURNS "text"
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    AS $$
+    SELECT role FROM public.profiles WHERE id = auth.uid()
+$$;
+
+
+ALTER FUNCTION "public"."my_role"() OWNER TO "postgres";
+
+--
+-- Name: set_updated_at(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."set_updated_at"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    AS $$
 BEGIN NEW.updated_at = now(); RETURN NEW; END;
 $$;
 
--- ═══ TRIGGERS ══════════════════════════════════════════════════════════════
-CREATE TRIGGER trg_workflows_updated
-    BEFORE UPDATE ON public.workflows
-    FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
-CREATE TRIGGER trg_integrations_updated
-    BEFORE UPDATE ON public.integrations
-    FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+ALTER FUNCTION "public"."set_updated_at"() OWNER TO "postgres";
 
--- ═══ RLS ═══════════════════════════════════════════════════════════════════
-ALTER TABLE public.organizations        ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.profiles             ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.workflows            ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.workflow_nodes       ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.workflow_connections ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.execution_runs       ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.execution_logs       ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.integrations         ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.audit_log            ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.tareas_aprobacion    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.matriz_aprobacion    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.delegaciones         ENABLE ROW LEVEL SECURITY;
+SET default_tablespace = '';
 
--- ═══ POLÍTICAS ═════════════════════════════════════════════════════════════
--- Transcritas de pg_policies. Los nombres son los reales, que no coinciden con
--- los que declaraba la versión anterior de este archivo.
+SET default_table_access_method = "heap";
 
--- organizations
-CREATE POLICY org_read_own ON public.organizations
-    FOR SELECT TO authenticated
-    USING (id = public.my_organization_id());
+--
+-- Name: audit_log; Type: TABLE; Schema: public; Owner: postgres
+--
 
-CREATE POLICY org_admin_update ON public.organizations
-    FOR UPDATE TO authenticated
-    USING      (id = public.my_organization_id() AND public.my_role() = 'admin')
-    WITH CHECK (id = public.my_organization_id() AND public.my_role() = 'admin');
+CREATE TABLE IF NOT EXISTS "public"."audit_log" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "usuario_id" "uuid",
+    "usuario_email" "text",
+    "accion" "text" NOT NULL,
+    "entidad" "text" NOT NULL,
+    "entidad_id" "uuid",
+    "descripcion" "text",
+    "datos_antes" "jsonb",
+    "datos_despues" "jsonb",
+    "ip_address" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "audit_log_accion_check" CHECK (("accion" = ANY (ARRAY['crear'::"text", 'modificar'::"text", 'eliminar'::"text", 'ejecutar'::"text", 'aprobar'::"text", 'rechazar'::"text", 'login'::"text", 'cambio_rol'::"text", 'escalamiento'::"text", 'vencimiento'::"text"]))),
+    CONSTRAINT "audit_log_entidad_check" CHECK (("entidad" = ANY (ARRAY['workflow'::"text", 'usuario'::"text", 'integracion'::"text", 'aprobacion'::"text", 'sesion'::"text"])))
+);
 
--- profiles
-CREATE POLICY profiles_read_own_org ON public.profiles
-    FOR SELECT TO authenticated
-    USING (organization_id = public.my_organization_id());
 
-CREATE POLICY profiles_admin_manage ON public.profiles
-    FOR ALL TO authenticated
-    USING      (organization_id = public.my_organization_id() AND public.is_admin())
-    WITH CHECK (organization_id = public.my_organization_id() AND public.is_admin());
+ALTER TABLE "public"."audit_log" OWNER TO "postgres";
 
--- workflows
-CREATE POLICY workflows_tenant_read ON public.workflows
-    FOR SELECT TO authenticated
-    USING (organization_id = public.my_organization_id());
+--
+-- Name: delegaciones; Type: TABLE; Schema: public; Owner: postgres
+--
 
-CREATE POLICY workflows_editor_write ON public.workflows
-    FOR INSERT TO authenticated
-    WITH CHECK (organization_id = public.my_organization_id()
-                AND public.my_role() IN ('admin', 'editor', 'dueno_proceso', 'supervisor'));
+CREATE TABLE IF NOT EXISTS "public"."delegaciones" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "usuario_id" "uuid" NOT NULL,
+    "suplente_id" "uuid" NOT NULL,
+    "desde" timestamp with time zone NOT NULL,
+    "hasta" timestamp with time zone NOT NULL,
+    "motivo" "text",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
 
-CREATE POLICY workflows_editor_update ON public.workflows
-    FOR UPDATE TO authenticated
-    USING      (organization_id = public.my_organization_id()
-                AND public.my_role() IN ('admin', 'editor', 'dueno_proceso', 'supervisor', 'operador', 'operator'))
-    WITH CHECK (organization_id = public.my_organization_id()
-                AND public.my_role() IN ('admin', 'editor', 'dueno_proceso', 'supervisor', 'operador', 'operator'));
 
-CREATE POLICY workflows_admin_delete ON public.workflows
-    FOR DELETE TO authenticated
-    USING (organization_id = public.my_organization_id() AND public.my_role() = 'admin');
+ALTER TABLE "public"."delegaciones" OWNER TO "postgres";
 
--- workflow_nodes
-CREATE POLICY nodes_tenant_read ON public.workflow_nodes
-    FOR SELECT TO authenticated
-    USING (organization_id = public.my_organization_id());
+--
+-- Name: execution_logs; Type: TABLE; Schema: public; Owner: postgres
+--
 
-CREATE POLICY nodes_editor_write ON public.workflow_nodes
-    FOR ALL TO authenticated
-    USING      (organization_id = public.my_organization_id()
-                AND public.my_role() IN ('admin', 'editor', 'dueno_proceso', 'supervisor', 'operador', 'operator'))
-    WITH CHECK (organization_id = public.my_organization_id()
-                AND public.my_role() IN ('admin', 'editor', 'dueno_proceso', 'supervisor', 'operador', 'operator'));
+CREATE TABLE IF NOT EXISTS "public"."execution_logs" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "workflow_id" "uuid" NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "node_id" "uuid",
+    "status" "text" NOT NULL,
+    "message" "text" NOT NULL,
+    "details_json" "jsonb",
+    "duration_ms" integer,
+    "executed_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "execution_run_id" "uuid",
+    CONSTRAINT "execution_logs_status_check" CHECK (("status" = ANY (ARRAY['success'::"text", 'error'::"text", 'warning'::"text", 'info'::"text"])))
+);
 
--- workflow_connections
-CREATE POLICY connections_tenant_read ON public.workflow_connections
-    FOR SELECT TO authenticated
-    USING (EXISTS (SELECT 1 FROM public.workflows w
-                   WHERE w.id = workflow_connections.workflow_id
-                     AND w.organization_id = public.my_organization_id()));
 
-CREATE POLICY connections_editor_write ON public.workflow_connections
-    FOR ALL TO authenticated
-    USING      (EXISTS (SELECT 1 FROM public.workflows w
-                        WHERE w.id = workflow_connections.workflow_id
-                          AND w.organization_id = public.my_organization_id())
-                AND public.my_role() IN ('admin', 'editor', 'dueno_proceso', 'supervisor', 'operador', 'operator'))
-    WITH CHECK (EXISTS (SELECT 1 FROM public.workflows w
-                        WHERE w.id = workflow_connections.workflow_id
-                          AND w.organization_id = public.my_organization_id())
-                AND public.my_role() IN ('admin', 'editor', 'dueno_proceso', 'supervisor', 'operador', 'operator'));
+ALTER TABLE "public"."execution_logs" OWNER TO "postgres";
 
--- execution_runs
-CREATE POLICY runs_tenant_read ON public.execution_runs
-    FOR SELECT TO authenticated
-    USING (organization_id = public.my_organization_id());
+--
+-- Name: execution_runs; Type: TABLE; Schema: public; Owner: postgres
+--
 
-CREATE POLICY runs_system_insert ON public.execution_runs
-    FOR INSERT TO authenticated
-    WITH CHECK (organization_id = public.my_organization_id());
+CREATE TABLE IF NOT EXISTS "public"."execution_runs" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "workflow_id" "uuid" NOT NULL,
+    "triggered_by" "text" DEFAULT 'manual'::"text" NOT NULL,
+    "status" "text" DEFAULT 'running'::"text" NOT NULL,
+    "started_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "finished_at" timestamp with time zone,
+    "duration_ms" integer,
+    "error_message" "text",
+    "logs_count" integer DEFAULT 0 NOT NULL,
+    "created_by" "uuid",
+    "context_json" "jsonb",
+    "completed_node_ids" "text"[] DEFAULT '{}'::"text"[],
+    "paused_node_id" "text",
+    "definicion_huella" "text"
+);
 
--- Sin WITH CHECK: se puede mover una fila fuera de la propia organización.
-CREATE POLICY runs_system_update ON public.execution_runs
-    FOR UPDATE TO authenticated
-    USING (organization_id = public.my_organization_id());
 
--- execution_logs
-CREATE POLICY logs_tenant_read ON public.execution_logs
-    FOR SELECT TO authenticated
-    USING (organization_id = public.my_organization_id());
+ALTER TABLE "public"."execution_runs" OWNER TO "postgres";
 
-CREATE POLICY logs_system_insert ON public.execution_logs
-    FOR INSERT TO authenticated
-    WITH CHECK (organization_id = public.my_organization_id());
+--
+-- Name: COLUMN "execution_runs"."definicion_huella"; Type: COMMENT; Schema: public; Owner: postgres
+--
 
--- audit_log
--- Hasta el 03/08/2026 esta política solo comprobaba organization_id: cualquier
--- usuario autenticado de la organización, incluido un 'viewer', leía la
--- auditoría completa. El archivo afirmaba desde F1 que estaba restringida, pero
--- esa política nunca llegó a existir. Cerrado por
--- 20260803_audit_read_por_rol.sql.
--- La lista de roles es la del permiso 'view_audit' de src/core/user.types.ts.
--- Si cambia una, tiene que cambiar la otra: son la misma decisión.
-CREATE POLICY audit_read_org ON public.audit_log
-    FOR SELECT TO authenticated
-    USING (
-        organization_id = public.my_organization_id()
-        AND public.my_role() IN ('admin', 'dueno_proceso', 'cumplimiento', 'auditor')
-    );
+COMMENT ON COLUMN "public"."execution_runs"."definicion_huella" IS 'SHA-256 de la definición (nodos+conexiones, sin posiciones) en el momento de pausar por aprobación. Al reanudar se recalcula: si no coincide, el flujo cambió después de aprobarse y no se reanuda.';
 
-CREATE POLICY audit_insert ON public.audit_log
-    FOR INSERT TO authenticated
-    WITH CHECK (organization_id = public.my_organization_id());
 
--- tareas_aprobacion
--- Única política de la tabla, y la única concedida a `public` (que incluye
--- anon) en vez de a `authenticated`. En la práctica anon no pasa:
--- my_organization_id() devuelve NULL sin perfil y la comparación no da ninguna fila.
-CREATE POLICY org_isolation ON public.tareas_aprobacion
-    FOR ALL TO public
-    USING (organization_id = public.my_organization_id());
+--
+-- Name: integrations; Type: TABLE; Schema: public; Owner: postgres
+--
 
--- matriz_aprobacion
-CREATE POLICY matriz_read_org ON public.matriz_aprobacion
-    FOR SELECT TO authenticated
-    USING (organization_id = public.my_organization_id());
+CREATE TABLE IF NOT EXISTS "public"."integrations" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "system_name" "text" NOT NULL,
+    "config_json" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "is_active" boolean DEFAULT false NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "integrations_system_name_check" CHECK (("system_name" = ANY (ARRAY['riskguard'::"text", 'eeff'::"text", 'indicadores'::"text", 'legaltech'::"text"])))
+);
 
-CREATE POLICY matriz_admin_write ON public.matriz_aprobacion
-    FOR ALL TO authenticated
-    USING      (organization_id = public.my_organization_id() AND public.is_admin())
-    WITH CHECK (organization_id = public.my_organization_id() AND public.is_admin());
 
--- integrations
-CREATE POLICY integrations_tenant_read ON public.integrations
-    FOR SELECT TO authenticated
-    USING (organization_id = public.my_organization_id());
+ALTER TABLE "public"."integrations" OWNER TO "postgres";
 
-CREATE POLICY integrations_admin_manage ON public.integrations
-    FOR ALL TO authenticated
-    USING      (organization_id = public.my_organization_id() AND public.my_role() = 'admin')
-    WITH CHECK (organization_id = public.my_organization_id() AND public.my_role() = 'admin');
+--
+-- Name: matriz_aprobacion; Type: TABLE; Schema: public; Owner: postgres
+--
 
--- delegaciones
-CREATE POLICY deleg_read_org ON public.delegaciones
-    FOR SELECT TO authenticated
-    USING (organization_id = public.my_organization_id());
+CREATE TABLE IF NOT EXISTS "public"."matriz_aprobacion" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "nombre" "text" NOT NULL,
+    "categoria" "text",
+    "umbral_monto" numeric DEFAULT 0,
+    "moneda" "text" DEFAULT 'USD'::"text",
+    "rol_aprobador" "text" NOT NULL,
+    "nivel" integer DEFAULT 1 NOT NULL,
+    "activa" boolean DEFAULT true NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "created_by" "uuid",
+    "operador" "text" DEFAULT '>='::"text" NOT NULL,
+    "umbral_max" numeric,
+    "condicion_extra" "text",
+    "aprobadores_multiples" integer DEFAULT 1 NOT NULL,
+    "escalamiento_horas" integer DEFAULT 48 NOT NULL,
+    "aplica_automatico" boolean DEFAULT false NOT NULL,
+    "descripcion_regulatoria" "text",
+    "veces_activada" integer DEFAULT 0 NOT NULL,
+    "aprobaciones_count" integer DEFAULT 0 NOT NULL,
+    "rechazos_count" integer DEFAULT 0 NOT NULL,
+    "tiempo_promedio_hs" numeric,
+    CONSTRAINT "matriz_aprobacion_aprobadores_multiples_check" CHECK ((("aprobadores_multiples" >= 1) AND ("aprobadores_multiples" <= 5))),
+    CONSTRAINT "matriz_aprobacion_operador_check" CHECK (("operador" = ANY (ARRAY['>='::"text", '>'::"text", '<='::"text", '<'::"text", '=='::"text", 'entre'::"text"])))
+);
 
-CREATE POLICY deleg_write ON public.delegaciones
-    FOR ALL TO authenticated
-    USING      (organization_id = public.my_organization_id()
-                AND (public.is_admin() OR usuario_id = auth.uid()))
-    WITH CHECK (organization_id = public.my_organization_id()
-                AND (public.is_admin() OR usuario_id = auth.uid()));
+
+ALTER TABLE "public"."matriz_aprobacion" OWNER TO "postgres";
+
+--
+-- Name: COLUMN "matriz_aprobacion"."operador"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."matriz_aprobacion"."operador" IS '>= | > | <= | < | == | entre (rango umbral_monto..umbral_max)';
+
+
+--
+-- Name: COLUMN "matriz_aprobacion"."aprobadores_multiples"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."matriz_aprobacion"."aprobadores_multiples" IS 'Cuántos aprobadores distintos deben autorizar (doble control = 2)';
+
+
+--
+-- Name: COLUMN "matriz_aprobacion"."aplica_automatico"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."matriz_aprobacion"."aplica_automatico" IS 'Si true, el Agente IA puede decidir sin aprobador humano';
+
+
+--
+-- Name: COLUMN "matriz_aprobacion"."descripcion_regulatoria"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."matriz_aprobacion"."descripcion_regulatoria" IS 'Referencia normativa: SUDEBAN Circular 7, OFAC 50% Rule, etc.';
+
+
+--
+-- Name: organizations; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."organizations" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "name" "text" NOT NULL,
+    "slug" "text" NOT NULL,
+    "plan" "text" DEFAULT 'free'::"text" NOT NULL,
+    "is_active" boolean DEFAULT true NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "notif_email" "text",
+    "notif_errors" boolean DEFAULT true NOT NULL,
+    "notif_success" boolean DEFAULT false NOT NULL,
+    "kpi_sla_ms" integer DEFAULT 30000 NOT NULL,
+    "kpi_min_por_tarea" integer DEFAULT 15 NOT NULL,
+    "kpi_costo_hora_usd" integer DEFAULT 25 NOT NULL,
+    CONSTRAINT "organizations_plan_check" CHECK (("plan" = ANY (ARRAY['free'::"text", 'pro'::"text", 'enterprise'::"text"])))
+);
+
+
+ALTER TABLE "public"."organizations" OWNER TO "postgres";
+
+--
+-- Name: COLUMN "organizations"."kpi_sla_ms"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."organizations"."kpi_sla_ms" IS 'Umbral SLA en milisegundos (default 30s)';
+
+
+--
+-- Name: COLUMN "organizations"."kpi_min_por_tarea"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."organizations"."kpi_min_por_tarea" IS 'Minutos ahorrados por tarea exitosa (default 15)';
+
+
+--
+-- Name: COLUMN "organizations"."kpi_costo_hora_usd"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."organizations"."kpi_costo_hora_usd" IS 'Costo hora-hombre en USD para calcular ahorro (default 25)';
+
+
+--
+-- Name: profiles; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."profiles" (
+    "id" "uuid" NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "email" "text" NOT NULL,
+    "name" "text" NOT NULL,
+    "role" "text" DEFAULT 'viewer'::"text" NOT NULL,
+    "is_active" boolean DEFAULT true NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "profiles_role_check" CHECK (("role" = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'supervisor'::"text", 'operador'::"text", 'autorizador'::"text", 'cumplimiento'::"text", 'auditor'::"text", 'editor'::"text", 'operator'::"text", 'viewer'::"text"])))
+);
+
+
+ALTER TABLE "public"."profiles" OWNER TO "postgres";
+
+--
+-- Name: tareas_aprobacion; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."tareas_aprobacion" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "workflow_id" "uuid" NOT NULL,
+    "execution_run_id" "uuid" NOT NULL,
+    "node_id" "text" NOT NULL,
+    "node_title" "text",
+    "solicitante_id" "uuid",
+    "rol_aprobador" "text" NOT NULL,
+    "aprobador_id" "uuid",
+    "monto" numeric,
+    "categoria" "text",
+    "descripcion" "text",
+    "estado" "text" DEFAULT 'pendiente'::"text" NOT NULL,
+    "comentario" "text",
+    "vence_at" timestamp with time zone,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "resolved_at" timestamp with time zone,
+    "nivel_escalamiento" integer DEFAULT 0 NOT NULL,
+    "escalado_at" timestamp with time zone,
+    "rol_aprobador_original" "text",
+    CONSTRAINT "tareas_aprobacion_estado_check" CHECK (("estado" = ANY (ARRAY['pendiente'::"text", 'aprobado'::"text", 'rechazado'::"text", 'devuelto'::"text", 'expirado'::"text"])))
+);
+
+
+ALTER TABLE "public"."tareas_aprobacion" OWNER TO "postgres";
+
+--
+-- Name: workflow_connections; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."workflow_connections" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "workflow_id" "uuid" NOT NULL,
+    "source_node_id" "uuid" NOT NULL,
+    "target_node_id" "uuid" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "branch" "text",
+    CONSTRAINT "workflow_connections_branch_check" CHECK (("branch" = ANY (ARRAY['true'::"text", 'false'::"text"])))
+);
+
+
+ALTER TABLE "public"."workflow_connections" OWNER TO "postgres";
+
+--
+-- Name: workflow_nodes; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."workflow_nodes" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "workflow_id" "uuid" NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "type" "text" NOT NULL,
+    "category" "text" NOT NULL,
+    "title" "text" NOT NULL,
+    "position_x" integer DEFAULT 0 NOT NULL,
+    "position_y" integer DEFAULT 0 NOT NULL,
+    "config_json" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
+    "status" "text" DEFAULT 'idle'::"text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "workflow_nodes_status_check" CHECK (("status" = ANY (ARRAY['idle'::"text", 'running'::"text", 'success'::"text", 'error'::"text"]))),
+    CONSTRAINT "workflow_nodes_type_check" CHECK (("type" = ANY (ARRAY['trigger'::"text", 'connector'::"text", 'processor'::"text", 'output'::"text"])))
+);
+
+
+ALTER TABLE "public"."workflow_nodes" OWNER TO "postgres";
+
+--
+-- Name: workflows; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."workflows" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "name" "text" NOT NULL,
+    "description" "text",
+    "is_active" boolean DEFAULT false NOT NULL,
+    "schedule_type" "text",
+    "schedule_value" "text",
+    "status" "text" DEFAULT 'idle'::"text" NOT NULL,
+    "created_by" "uuid",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "last_run_at" timestamp with time zone,
+    "execution_count" integer DEFAULT 0 NOT NULL,
+    CONSTRAINT "workflows_schedule_type_check" CHECK (("schedule_type" = ANY (ARRAY['manual'::"text", 'cron'::"text", 'webhook'::"text", 'event'::"text"]))),
+    CONSTRAINT "workflows_status_check" CHECK (("status" = ANY (ARRAY['idle'::"text", 'running'::"text", 'error'::"text", 'paused'::"text"])))
+);
+
+
+ALTER TABLE "public"."workflows" OWNER TO "postgres";
+
+--
+-- Name: audit_log audit_log_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."audit_log"
+    ADD CONSTRAINT "audit_log_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: delegaciones delegaciones_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."delegaciones"
+    ADD CONSTRAINT "delegaciones_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: execution_logs execution_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."execution_logs"
+    ADD CONSTRAINT "execution_logs_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: execution_runs execution_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."execution_runs"
+    ADD CONSTRAINT "execution_runs_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: integrations integrations_organization_id_system_name_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."integrations"
+    ADD CONSTRAINT "integrations_organization_id_system_name_key" UNIQUE ("organization_id", "system_name");
+
+
+--
+-- Name: integrations integrations_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."integrations"
+    ADD CONSTRAINT "integrations_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: matriz_aprobacion matriz_aprobacion_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."matriz_aprobacion"
+    ADD CONSTRAINT "matriz_aprobacion_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: organizations organizations_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."organizations"
+    ADD CONSTRAINT "organizations_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: organizations organizations_slug_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."organizations"
+    ADD CONSTRAINT "organizations_slug_key" UNIQUE ("slug");
+
+
+--
+-- Name: profiles profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."profiles"
+    ADD CONSTRAINT "profiles_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: tareas_aprobacion tareas_aprobacion_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."tareas_aprobacion"
+    ADD CONSTRAINT "tareas_aprobacion_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: workflow_connections workflow_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_connections"
+    ADD CONSTRAINT "workflow_connections_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: workflow_connections workflow_connections_source_node_id_target_node_id_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_connections"
+    ADD CONSTRAINT "workflow_connections_source_node_id_target_node_id_key" UNIQUE ("source_node_id", "target_node_id");
+
+
+--
+-- Name: workflow_nodes workflow_nodes_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_nodes"
+    ADD CONSTRAINT "workflow_nodes_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: workflows workflows_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflows"
+    ADD CONSTRAINT "workflows_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: idx_audit_entidad; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_audit_entidad" ON "public"."audit_log" USING "btree" ("entidad", "entidad_id");
+
+
+--
+-- Name: idx_audit_org_date; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_audit_org_date" ON "public"."audit_log" USING "btree" ("organization_id", "created_at" DESC);
+
+
+--
+-- Name: idx_execution_logs_org_date; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_execution_logs_org_date" ON "public"."execution_logs" USING "btree" ("organization_id", "executed_at" DESC);
+
+
+--
+-- Name: idx_execution_logs_run; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_execution_logs_run" ON "public"."execution_logs" USING "btree" ("execution_run_id");
+
+
+--
+-- Name: idx_execution_logs_workflow; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_execution_logs_workflow" ON "public"."execution_logs" USING "btree" ("workflow_id");
+
+
+--
+-- Name: idx_execution_runs_org; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_execution_runs_org" ON "public"."execution_runs" USING "btree" ("organization_id", "started_at" DESC);
+
+
+--
+-- Name: idx_execution_runs_workflow; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_execution_runs_workflow" ON "public"."execution_runs" USING "btree" ("workflow_id");
+
+
+--
+-- Name: idx_matriz_org; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_matriz_org" ON "public"."matriz_aprobacion" USING "btree" ("organization_id", "nivel");
+
+
+--
+-- Name: idx_tareas_aprobacion_estado; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_tareas_aprobacion_estado" ON "public"."tareas_aprobacion" USING "btree" ("organization_id", "estado");
+
+
+--
+-- Name: idx_tareas_aprobacion_rol; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_tareas_aprobacion_rol" ON "public"."tareas_aprobacion" USING "btree" ("organization_id", "rol_aprobador", "estado");
+
+
+--
+-- Name: idx_tareas_aprobacion_run; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_tareas_aprobacion_run" ON "public"."tareas_aprobacion" USING "btree" ("execution_run_id");
+
+
+--
+-- Name: idx_workflow_nodes_workflow; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_workflow_nodes_workflow" ON "public"."workflow_nodes" USING "btree" ("workflow_id");
+
+
+--
+-- Name: idx_workflows_org; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "idx_workflows_org" ON "public"."workflows" USING "btree" ("organization_id");
+
+
+--
+-- Name: integrations trg_integrations_updated; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "trg_integrations_updated" BEFORE UPDATE ON "public"."integrations" FOR EACH ROW EXECUTE FUNCTION "public"."set_updated_at"();
+
+
+--
+-- Name: workflows trg_workflows_updated; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "trg_workflows_updated" BEFORE UPDATE ON "public"."workflows" FOR EACH ROW EXECUTE FUNCTION "public"."set_updated_at"();
+
+
+--
+-- Name: audit_log audit_log_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."audit_log"
+    ADD CONSTRAINT "audit_log_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: audit_log audit_log_usuario_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."audit_log"
+    ADD CONSTRAINT "audit_log_usuario_id_fkey" FOREIGN KEY ("usuario_id") REFERENCES "public"."profiles"("id");
+
+
+--
+-- Name: delegaciones delegaciones_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."delegaciones"
+    ADD CONSTRAINT "delegaciones_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: delegaciones delegaciones_suplente_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."delegaciones"
+    ADD CONSTRAINT "delegaciones_suplente_id_fkey" FOREIGN KEY ("suplente_id") REFERENCES "public"."profiles"("id");
+
+
+--
+-- Name: delegaciones delegaciones_usuario_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."delegaciones"
+    ADD CONSTRAINT "delegaciones_usuario_id_fkey" FOREIGN KEY ("usuario_id") REFERENCES "public"."profiles"("id");
+
+
+--
+-- Name: execution_logs execution_logs_execution_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."execution_logs"
+    ADD CONSTRAINT "execution_logs_execution_run_id_fkey" FOREIGN KEY ("execution_run_id") REFERENCES "public"."execution_runs"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: execution_logs execution_logs_node_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."execution_logs"
+    ADD CONSTRAINT "execution_logs_node_id_fkey" FOREIGN KEY ("node_id") REFERENCES "public"."workflow_nodes"("id") ON DELETE SET NULL;
+
+
+--
+-- Name: execution_logs execution_logs_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."execution_logs"
+    ADD CONSTRAINT "execution_logs_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: execution_logs execution_logs_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."execution_logs"
+    ADD CONSTRAINT "execution_logs_workflow_id_fkey" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: execution_runs execution_runs_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."execution_runs"
+    ADD CONSTRAINT "execution_runs_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."profiles"("id");
+
+
+--
+-- Name: execution_runs execution_runs_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."execution_runs"
+    ADD CONSTRAINT "execution_runs_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: execution_runs execution_runs_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."execution_runs"
+    ADD CONSTRAINT "execution_runs_workflow_id_fkey" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: integrations integrations_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."integrations"
+    ADD CONSTRAINT "integrations_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: matriz_aprobacion matriz_aprobacion_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."matriz_aprobacion"
+    ADD CONSTRAINT "matriz_aprobacion_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."profiles"("id");
+
+
+--
+-- Name: matriz_aprobacion matriz_aprobacion_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."matriz_aprobacion"
+    ADD CONSTRAINT "matriz_aprobacion_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: profiles profiles_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."profiles"
+    ADD CONSTRAINT "profiles_id_fkey" FOREIGN KEY ("id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: profiles profiles_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."profiles"
+    ADD CONSTRAINT "profiles_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: tareas_aprobacion tareas_aprobacion_execution_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."tareas_aprobacion"
+    ADD CONSTRAINT "tareas_aprobacion_execution_run_id_fkey" FOREIGN KEY ("execution_run_id") REFERENCES "public"."execution_runs"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: tareas_aprobacion tareas_aprobacion_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."tareas_aprobacion"
+    ADD CONSTRAINT "tareas_aprobacion_workflow_id_fkey" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: workflow_connections workflow_connections_source_node_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_connections"
+    ADD CONSTRAINT "workflow_connections_source_node_id_fkey" FOREIGN KEY ("source_node_id") REFERENCES "public"."workflow_nodes"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: workflow_connections workflow_connections_target_node_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_connections"
+    ADD CONSTRAINT "workflow_connections_target_node_id_fkey" FOREIGN KEY ("target_node_id") REFERENCES "public"."workflow_nodes"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: workflow_connections workflow_connections_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_connections"
+    ADD CONSTRAINT "workflow_connections_workflow_id_fkey" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: workflow_nodes workflow_nodes_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_nodes"
+    ADD CONSTRAINT "workflow_nodes_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: workflow_nodes workflow_nodes_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_nodes"
+    ADD CONSTRAINT "workflow_nodes_workflow_id_fkey" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: workflows workflows_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflows"
+    ADD CONSTRAINT "workflows_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."profiles"("id");
+
+
+--
+-- Name: workflows workflows_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflows"
+    ADD CONSTRAINT "workflows_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: audit_log audit_insert; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "audit_insert" ON "public"."audit_log" FOR INSERT TO "authenticated" WITH CHECK (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: audit_log; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."audit_log" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: audit_log audit_read_org; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "audit_read_org" ON "public"."audit_log" FOR SELECT TO "authenticated" USING ((("organization_id" = "public"."my_organization_id"()) AND ("public"."my_role"() = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'cumplimiento'::"text", 'auditor'::"text"]))));
+
+
+--
+-- Name: workflow_connections connections_editor_write; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "connections_editor_write" ON "public"."workflow_connections" TO "authenticated" USING (((EXISTS ( SELECT 1
+   FROM "public"."workflows" "w"
+  WHERE (("w"."id" = "workflow_connections"."workflow_id") AND ("w"."organization_id" = "public"."my_organization_id"())))) AND ("public"."my_role"() = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'editor'::"text"])))) WITH CHECK (((EXISTS ( SELECT 1
+   FROM "public"."workflows" "w"
+  WHERE (("w"."id" = "workflow_connections"."workflow_id") AND ("w"."organization_id" = "public"."my_organization_id"())))) AND ("public"."my_role"() = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'editor'::"text"]))));
+
+
+--
+-- Name: workflow_connections connections_tenant_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "connections_tenant_read" ON "public"."workflow_connections" FOR SELECT TO "authenticated" USING ((EXISTS ( SELECT 1
+   FROM "public"."workflows" "w"
+  WHERE (("w"."id" = "workflow_connections"."workflow_id") AND ("w"."organization_id" = "public"."my_organization_id"())))));
+
+
+--
+-- Name: delegaciones deleg_read_org; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "deleg_read_org" ON "public"."delegaciones" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: delegaciones deleg_write; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "deleg_write" ON "public"."delegaciones" TO "authenticated" USING ((("organization_id" = "public"."my_organization_id"()) AND ("public"."is_admin"() OR ("usuario_id" = "auth"."uid"())))) WITH CHECK ((("organization_id" = "public"."my_organization_id"()) AND ("public"."is_admin"() OR ("usuario_id" = "auth"."uid"()))));
+
+
+--
+-- Name: delegaciones; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."delegaciones" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: execution_logs; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."execution_logs" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: execution_runs; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."execution_runs" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: integrations; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."integrations" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: integrations integrations_admin_manage; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "integrations_admin_manage" ON "public"."integrations" TO "authenticated" USING ((("organization_id" = "public"."my_organization_id"()) AND ("public"."my_role"() = 'admin'::"text"))) WITH CHECK ((("organization_id" = "public"."my_organization_id"()) AND ("public"."my_role"() = 'admin'::"text")));
+
+
+--
+-- Name: integrations integrations_tenant_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "integrations_tenant_read" ON "public"."integrations" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: execution_logs logs_system_insert; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "logs_system_insert" ON "public"."execution_logs" FOR INSERT TO "authenticated" WITH CHECK (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: execution_logs logs_tenant_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "logs_tenant_read" ON "public"."execution_logs" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: matriz_aprobacion matriz_admin_write; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "matriz_admin_write" ON "public"."matriz_aprobacion" TO "authenticated" USING ((("organization_id" = "public"."my_organization_id"()) AND "public"."is_admin"())) WITH CHECK ((("organization_id" = "public"."my_organization_id"()) AND "public"."is_admin"()));
+
+
+--
+-- Name: matriz_aprobacion; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."matriz_aprobacion" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: matriz_aprobacion matriz_read_org; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "matriz_read_org" ON "public"."matriz_aprobacion" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: workflow_nodes nodes_editor_write; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "nodes_editor_write" ON "public"."workflow_nodes" TO "authenticated" USING ((("organization_id" = "public"."my_organization_id"()) AND ("public"."my_role"() = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'editor'::"text"])))) WITH CHECK ((("organization_id" = "public"."my_organization_id"()) AND ("public"."my_role"() = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'editor'::"text"]))));
+
+
+--
+-- Name: workflow_nodes nodes_tenant_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "nodes_tenant_read" ON "public"."workflow_nodes" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: organizations org_admin_update; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "org_admin_update" ON "public"."organizations" FOR UPDATE TO "authenticated" USING ((("id" = "public"."my_organization_id"()) AND ("public"."my_role"() = 'admin'::"text"))) WITH CHECK ((("id" = "public"."my_organization_id"()) AND ("public"."my_role"() = 'admin'::"text")));
+
+
+--
+-- Name: tareas_aprobacion org_isolation; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "org_isolation" ON "public"."tareas_aprobacion" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: organizations org_read_own; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "org_read_own" ON "public"."organizations" FOR SELECT TO "authenticated" USING (("id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: organizations; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."organizations" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: profiles; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."profiles" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: profiles profiles_admin_manage; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "profiles_admin_manage" ON "public"."profiles" TO "authenticated" USING ((("organization_id" = "public"."my_organization_id"()) AND "public"."is_admin"())) WITH CHECK ((("organization_id" = "public"."my_organization_id"()) AND "public"."is_admin"()));
+
+
+--
+-- Name: profiles profiles_read_own_org; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "profiles_read_own_org" ON "public"."profiles" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: execution_runs runs_system_insert; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "runs_system_insert" ON "public"."execution_runs" FOR INSERT TO "authenticated" WITH CHECK (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: execution_runs runs_system_update; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "runs_system_update" ON "public"."execution_runs" FOR UPDATE TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: execution_runs runs_tenant_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "runs_tenant_read" ON "public"."execution_runs" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: tareas_aprobacion; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."tareas_aprobacion" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: workflow_connections; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."workflow_connections" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: workflow_nodes; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."workflow_nodes" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: workflows; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."workflows" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: workflows workflows_admin_delete; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "workflows_admin_delete" ON "public"."workflows" FOR DELETE TO "authenticated" USING ((("organization_id" = "public"."my_organization_id"()) AND ("public"."my_role"() = 'admin'::"text")));
+
+
+--
+-- Name: workflows workflows_editor_update; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "workflows_editor_update" ON "public"."workflows" FOR UPDATE TO "authenticated" USING ((("organization_id" = "public"."my_organization_id"()) AND ("public"."my_role"() = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'editor'::"text"])))) WITH CHECK ((("organization_id" = "public"."my_organization_id"()) AND ("public"."my_role"() = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'editor'::"text"]))));
+
+
+--
+-- Name: workflows workflows_editor_write; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "workflows_editor_write" ON "public"."workflows" FOR INSERT TO "authenticated" WITH CHECK ((("organization_id" = "public"."my_organization_id"()) AND ("public"."my_role"() = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'editor'::"text"]))));
+
+
+--
+-- Name: workflows workflows_tenant_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "workflows_tenant_read" ON "public"."workflows" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
+-- Name: SCHEMA "public"; Type: ACL; Schema: -; Owner: pg_database_owner
+--
+
+GRANT USAGE ON SCHEMA "public" TO "postgres";
+GRANT USAGE ON SCHEMA "public" TO "anon";
+GRANT USAGE ON SCHEMA "public" TO "authenticated";
+GRANT USAGE ON SCHEMA "public" TO "service_role";
+
+
+--
+-- Name: FUNCTION "is_admin"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON FUNCTION "public"."is_admin"() TO "anon";
+GRANT ALL ON FUNCTION "public"."is_admin"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."is_admin"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "my_organization_id"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON FUNCTION "public"."my_organization_id"() TO "anon";
+GRANT ALL ON FUNCTION "public"."my_organization_id"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."my_organization_id"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "my_role"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON FUNCTION "public"."my_role"() TO "anon";
+GRANT ALL ON FUNCTION "public"."my_role"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."my_role"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "set_updated_at"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "anon";
+GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "service_role";
+
+
+--
+-- Name: TABLE "audit_log"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."audit_log" TO "anon";
+GRANT ALL ON TABLE "public"."audit_log" TO "authenticated";
+GRANT ALL ON TABLE "public"."audit_log" TO "service_role";
+
+
+--
+-- Name: TABLE "delegaciones"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."delegaciones" TO "anon";
+GRANT ALL ON TABLE "public"."delegaciones" TO "authenticated";
+GRANT ALL ON TABLE "public"."delegaciones" TO "service_role";
+
+
+--
+-- Name: TABLE "execution_logs"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."execution_logs" TO "anon";
+GRANT ALL ON TABLE "public"."execution_logs" TO "authenticated";
+GRANT ALL ON TABLE "public"."execution_logs" TO "service_role";
+
+
+--
+-- Name: TABLE "execution_runs"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."execution_runs" TO "anon";
+GRANT ALL ON TABLE "public"."execution_runs" TO "authenticated";
+GRANT ALL ON TABLE "public"."execution_runs" TO "service_role";
+
+
+--
+-- Name: TABLE "integrations"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."integrations" TO "anon";
+GRANT ALL ON TABLE "public"."integrations" TO "authenticated";
+GRANT ALL ON TABLE "public"."integrations" TO "service_role";
+
+
+--
+-- Name: TABLE "matriz_aprobacion"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."matriz_aprobacion" TO "anon";
+GRANT ALL ON TABLE "public"."matriz_aprobacion" TO "authenticated";
+GRANT ALL ON TABLE "public"."matriz_aprobacion" TO "service_role";
+
+
+--
+-- Name: TABLE "organizations"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."organizations" TO "anon";
+GRANT ALL ON TABLE "public"."organizations" TO "authenticated";
+GRANT ALL ON TABLE "public"."organizations" TO "service_role";
+
+
+--
+-- Name: TABLE "profiles"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."profiles" TO "anon";
+GRANT ALL ON TABLE "public"."profiles" TO "authenticated";
+GRANT ALL ON TABLE "public"."profiles" TO "service_role";
+
+
+--
+-- Name: TABLE "tareas_aprobacion"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "anon";
+GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "authenticated";
+GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "service_role";
+
+
+--
+-- Name: TABLE "workflow_connections"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."workflow_connections" TO "anon";
+GRANT ALL ON TABLE "public"."workflow_connections" TO "authenticated";
+GRANT ALL ON TABLE "public"."workflow_connections" TO "service_role";
+
+
+--
+-- Name: TABLE "workflow_nodes"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."workflow_nodes" TO "anon";
+GRANT ALL ON TABLE "public"."workflow_nodes" TO "authenticated";
+GRANT ALL ON TABLE "public"."workflow_nodes" TO "service_role";
+
+
+--
+-- Name: TABLE "workflows"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."workflows" TO "anon";
+GRANT ALL ON TABLE "public"."workflows" TO "authenticated";
+GRANT ALL ON TABLE "public"."workflows" TO "service_role";
+
+
+--
+-- Name: DEFAULT PRIVILEGES FOR SEQUENCES; Type: DEFAULT ACL; Schema: public; Owner: postgres
+--
+
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "authenticated";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "service_role";
+
+
+--
+-- Name: DEFAULT PRIVILEGES FOR SEQUENCES; Type: DEFAULT ACL; Schema: public; Owner: supabase_admin
+--
+
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "anon";
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "authenticated";
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "service_role";
+
+
+--
+-- Name: DEFAULT PRIVILEGES FOR FUNCTIONS; Type: DEFAULT ACL; Schema: public; Owner: postgres
+--
+
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "authenticated";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "service_role";
+
+
+--
+-- Name: DEFAULT PRIVILEGES FOR FUNCTIONS; Type: DEFAULT ACL; Schema: public; Owner: supabase_admin
+--
+
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "anon";
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "authenticated";
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "service_role";
+
+
+--
+-- Name: DEFAULT PRIVILEGES FOR TABLES; Type: DEFAULT ACL; Schema: public; Owner: postgres
+--
+
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "postgres";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "authenticated";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";
+
+
+--
+-- Name: DEFAULT PRIVILEGES FOR TABLES; Type: DEFAULT ACL; Schema: public; Owner: supabase_admin
+--
+
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON TABLES TO "postgres";
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON TABLES TO "anon";
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON TABLES TO "authenticated";
+-- ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_admin" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";
+
+
+--
+-- PostgreSQL database dump complete
+--
+
+-- \unrestrict M3ddci3sy9a3hiAmCv9joIPC5JZeYBK6rDFp2ek2OpjfD0KX2x4PvZzKmjwspzi
+
