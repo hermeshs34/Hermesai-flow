@@ -765,12 +765,20 @@ function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => vo
     // Llevaba 'gerente_riesgos' y 'actuario', que no existen en el sistema: elegir
     // cualquiera de los dos creaba una tarea que no podía resolver nadie —salvo un
     // admin, y de rebote, por la salida "o eres admin" de canResolve.
+    //
+    // La primera opción vale `''` a propósito: es «no lo fijo aquí, que lo diga
+    // la matriz de aprobación». El motor distingue exactamente eso — un
+    // `approver` con contenido manda; vacío, consulta la matriz. Lo que ya no
+    // existe es un tercer camino con un rol por defecto.
     const ROLES = [
+        { value: '',                 label: '— Según la matriz de aprobación —' },
         { value: 'admin',            label: 'Administrador' },
         { value: 'supervisor',       label: 'Supervisor' },
         { value: 'autorizador',      label: 'Autorizador' },
         { value: 'cumplimiento',     label: 'Cumplimiento' },
     ];
+
+    const porMatriz = !cfg.approver;
 
     const MOTIVOS_RAPIDOS = [
         { label: '🔍 OFAC/PEP', value: 'Persona {{previous.nombre_buscado}} encontrada en lista {{previous.hits.0.tipo_lista}}. Motivo: {{previous.hits.0.motivo}}. Revisar antes de continuar.' },
@@ -787,8 +795,31 @@ function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => vo
             </div>
 
             <Field label="Rol aprobador" hint="Quién debe aprobar este paso">
-                <Select value={cfg.approver ?? 'admin'} onChange={v => set('approver', v)} options={ROLES} />
+                {/* `?? ''` y no `?? 'admin'`: el desplegable enseñaba
+                    «Administrador» en un nodo que no tenía nada guardado, así que
+                    mostraba una configuración que no existía. Un campo que
+                    inventa lo que no se ha elegido es de la misma familia que el
+                    `✓ Guardado` sin escritura. */}
+                <Select value={cfg.approver ?? ''} onChange={v => set('approver', v)} options={ROLES} />
             </Field>
+
+            {porMatriz && (
+                <div className="p-3 bg-indigo-50 border border-indigo-200 rounded-lg space-y-3">
+                    <p className="text-xs text-indigo-800">
+                        El aprobador lo decidirá la <strong>matriz de aprobación</strong> (Gobierno → Matriz)
+                        según los datos de abajo. Si ninguna regla los cubre, el flujo <strong>se detiene</strong>
+                        {' '}con un error — nunca aprueba nadie por defecto.
+                    </p>
+
+                    <Field label="Categoría" hint="Debe coincidir con la categoría de la regla. Las reglas sin categoría valen para cualquiera.">
+                        <Input value={cfg.categoria ?? ''} onChange={v => set('categoria', v)} placeholder="aml / pago / siniestro" />
+                    </Field>
+
+                    <Field label="Monto" hint="Se compara contra el umbral de cada regla. Admite variables del flujo.">
+                        <Input value={String(cfg.monto ?? '')} onChange={v => set('monto', v)} placeholder="15000 o {{previous.monto}}" />
+                    </Field>
+                </div>
+            )}
 
             <Field label="Horas para aprobar" hint="Si nadie aprueba en este tiempo, el flujo se cancela automáticamente">
                 <div className="flex gap-2 items-center">
@@ -1094,9 +1125,16 @@ function getAutoDefaults(node: WorkflowNodeData, prevNode: WorkflowNodeData | nu
     if (!prevNode) return {};
     const defaults: Record<string, any> = {};
 
-    // Aprobación después de OFAC → pre-llenar rol y motivo
+    // Aprobación después de OFAC → pre-llenar categoría y motivo.
+    //
+    // NO se pre-llena el aprobador. Ponía 'admin', y eso saltaba por encima de
+    // la regla de negocio de §6.2: los procesos de cumplimiento y legitimación
+    // de capitales los autoriza el Oficial de Cumplimiento, ni siquiera un
+    // admin. Dejándolo vacío con `categoria: 'aml'` lo decide la matriz de
+    // aprobación, que es donde esa regla está escrita y donde se puede cambiar
+    // sin tocar código.
     if (node.category === 'aprobacion' && prevNode.category === 'aml') {
-        if (!node.config?.approver) defaults.approver = 'admin';
+        if (!node.config?.categoria)  defaults.categoria  = 'aml';
         if (!node.config?.horasVence) defaults.horasVence = '48';
         if (!node.config?.reason)
             defaults.reason = 'Persona {{previous.nombre_buscado}} encontrada en lista {{previous.hits.0.tipo_lista}}. Motivo: {{previous.hits.0.motivo}}. Revisar antes de continuar.';

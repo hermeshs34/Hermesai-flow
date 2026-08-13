@@ -10,6 +10,10 @@ import { ROL_META, ROLES_ASIGNABLES, type Role, type User } from '../core/user.t
 import { authService } from '../core/auth.service';
 import { supabase } from '../core/supabase';
 import { fechaHoraVE } from '../utils/fecha';
+import {
+    resolverRegla, casaCategoria, casaMonto, comparar, norm,
+    type ReglaMatriz, type Resolucion,
+} from '../utils/matrizAprobacion';
 import { toast } from 'sonner';
 
 interface GovernanceProps {
@@ -88,7 +92,8 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [expandedRegla,   setExpandedRegla]   = useState<string | null>(null);
     const [simuladorVal,    setSimuladorVal]    = useState('');
     const [simuladorCat,    setSimuladorCat]    = useState('');
-    const [simuladorResult, setSimuladorResult] = useState<MatrizRegla[] | null>(null);
+    const [simuladorResult, setSimuladorResult] =
+        useState<{ candidatas: ReglaMatriz[]; resolucion: Resolucion } | null>(null);
     const [iaLoading,       setIaLoading]       = useState(false);
     const [iaSugerencia,    setIaSugerencia]    = useState<string | null>(null);
 
@@ -154,7 +159,12 @@ export function Governance({ currentUser }: GovernanceProps) {
         setSavingRegla(true);
         const payload = {
             nombre:                   reglaForm.nombre,
-            categoria:                reglaForm.categoria || null,
+            // La categoría es un IDENTIFICADOR, no una etiqueta: se guarda ya
+            // normalizada para que lo almacenado sea lo que el motor compara.
+            // Había una regla con «Sanciones OFAC» —espacio y mayúsculas— que
+            // solo casaba porque el emparejador normalizaba al comparar; el dato
+            // seguía siendo un rótulo que nadie sabía cómo teclear en un nodo.
+            categoria:                norm(reglaForm.categoria) || null,
             operador:                 reglaForm.operador,
             umbral_monto:             reglaForm.umbral_monto,
             umbral_max:               reglaForm.operador === 'entre' ? reglaForm.umbral_max : null,
@@ -169,13 +179,33 @@ export function Governance({ currentUser }: GovernanceProps) {
             descripcion_regulatoria:  reglaForm.descripcion_regulatoria || null,
         };
         try {
+            // Desde el 13/08/2026 esta tabla DECIDE quién autoriza cada paso de
+            // un flujo (execute-workflow la lee). Cambiar una regla es cambiar
+            // el control interno, así que se audita como tal: con el antes y el
+            // después, no solo con el nombre. Escribirla ya era solo de admin
+            // por RLS; lo que faltaba era el rastro de quién y cuándo.
             if (editingRegla) {
                 const { error } = await supabase.from('matriz_aprobacion').update(payload).eq('id', editingRegla.id);
                 if (error) throw new Error(error.message);
+                await GovernanceService.log(currentUser, 'modificar', 'matriz_aprobacion', {
+                    entidadId:   editingRegla.id,
+                    descripcion: `Regla de aprobación modificada: "${payload.nombre}"`,
+                    antes:       editingRegla,
+                    despues:     payload,
+                });
                 toast.success('Regla actualizada');
             } else {
-                const { error } = await supabase.from('matriz_aprobacion').insert({ ...payload, organization_id: currentUser.organizationId, created_by: currentUser.id });
+                const { data: creada, error } = await supabase
+                    .from('matriz_aprobacion')
+                    .insert({ ...payload, organization_id: currentUser.organizationId, created_by: currentUser.id })
+                    .select('id')
+                    .single();
                 if (error) throw new Error(error.message);
+                await GovernanceService.log(currentUser, 'crear', 'matriz_aprobacion', {
+                    entidadId:   creada?.id,
+                    descripcion: `Regla de aprobación creada: "${payload.nombre}" → ${payload.rol_aprobador}`,
+                    despues:     payload,
+                });
                 toast.success('Regla creada');
             }
             cancelarReglaForm();
@@ -188,27 +218,25 @@ export function Governance({ currentUser }: GovernanceProps) {
         }
     };
 
-    // Simulador de reglas
+    // ── Simulador de reglas ──────────────────────────────────────────────────
+    //
+    // Empareja con las MISMAS funciones que el motor (`utils/matrizAprobacion.ts`
+    // es gemelo de `_shared/matriz.ts`), no con una copia parecida. Antes tenía
+    // criterio propio y mentía en dos sitios: una categoría vacía en la consulta
+    // casaba con TODAS las reglas —el motor no hace eso—, y ordenaba por nivel
+    // sin detectar empates, así que pintaba «APLICA» sobre una regla elegida al
+    // azar entre varias equivalentes. Un simulador que no simula el sistema es
+    // de la familia del `succeeded` de pg_cron.
     const simularReglas = () => {
-        const monto = Number(simuladorVal);
-        const cat   = simuladorCat.trim().toLowerCase();
-        const activas = (matriz as MatrizRegla[]).filter(r => r.activa);
-        const matches = activas.filter(r => {
-            const catMatch = !r.categoria || r.categoria.toLowerCase() === cat || cat === '';
-            let montoMatch = true;
-            if (r.umbral_monto > 0 || r.operador !== '>=') {
-                switch (r.operador) {
-                    case '>=':    montoMatch = monto >= r.umbral_monto; break;
-                    case '>':     montoMatch = monto >  r.umbral_monto; break;
-                    case '<=':    montoMatch = monto <= r.umbral_monto; break;
-                    case '<':     montoMatch = monto <  r.umbral_monto; break;
-                    case '==':    montoMatch = monto === r.umbral_monto; break;
-                    case 'entre': montoMatch = monto >= r.umbral_monto && monto <= (r.umbral_max ?? Infinity); break;
-                }
-            }
-            return catMatch && montoMatch;
-        });
-        setSimuladorResult(matches.sort((a, b) => b.nivel - a.nivel));
+        // Vacío es «este paso no lleva importe», no «importe cero»: es lo que
+        // hace el motor cuando el nodo no configura Monto.
+        const monto = simuladorVal.trim() === '' ? null : Number(simuladorVal);
+        const cat   = simuladorCat.trim() || null;
+        const activas = (matriz as unknown as ReglaMatriz[]).filter(r => r.activa !== false);
+        const candidatas = activas
+            .filter(r => casaCategoria(r, cat) && casaMonto(r, monto))
+            .sort((a, b) => comparar(b, a));
+        setSimuladorResult({ candidatas, resolucion: resolverRegla(activas, monto, cat) });
     };
 
     // Sugerencias IA (llama a execute-workflow con un flujo especial o simplemente genera localmente)
@@ -243,10 +271,19 @@ export function Governance({ currentUser }: GovernanceProps) {
         }
     };
 
+    // Apagar una regla es tan decisivo como cambiarla: la deja fuera del
+    // emparejamiento, y si era la única que cubría un caso, el nodo de
+    // aprobación de ese flujo pasa a detenerse. Se audita igual.
     const toggleRegla = async (r: MatrizRegla) => {
         const { error } = await supabase.from('matriz_aprobacion').update({ activa: !r.activa }).eq('id', r.id);
         if (error) { toast.error(error.message); return; }
         setMatriz(prev => prev.map(m => m.id === r.id ? { ...m, activa: !r.activa } : m));
+        await GovernanceService.log(currentUser, 'modificar', 'matriz_aprobacion', {
+            entidadId:   r.id,
+            descripcion: `Regla de aprobación ${r.activa ? 'desactivada' : 'activada'}: "${r.nombre}"`,
+            antes:       { activa: r.activa },
+            despues:     { activa: !r.activa },
+        });
     };
 
     const eliminarRegla = async (r: MatrizRegla) => {
@@ -254,6 +291,12 @@ export function Governance({ currentUser }: GovernanceProps) {
         const { error } = await supabase.from('matriz_aprobacion').delete().eq('id', r.id);
         if (error) { toast.error(error.message); return; }
         setMatriz(prev => prev.filter(m => m.id !== r.id));
+        // La fila ya no existe: si no queda copia aquí, no queda en ninguna parte.
+        await GovernanceService.log(currentUser, 'eliminar', 'matriz_aprobacion', {
+            entidadId:   r.id,
+            descripcion: `Regla de aprobación eliminada: "${r.nombre}" (${r.rol_aprobador})`,
+            antes:       r,
+        });
         toast.success('Regla eliminada');
     };
 
@@ -724,8 +767,16 @@ export function Governance({ currentUser }: GovernanceProps) {
                                                 <div>
                                                     <label className="block text-[11px] font-medium text-gray-500 mb-1">Categoría del proceso</label>
                                                     <input value={reglaForm.categoria} onChange={e => setReglaForm(f => ({ ...f, categoria: e.target.value }))}
-                                                        placeholder="siniestro / pago / contrato / aml"
+                                                        placeholder="siniestro / pago / contrato / aml / ofac"
                                                         className="w-full text-sm px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-300" />
+                                                    <p className="text-[10px] text-gray-400 mt-1">
+                                                        Es un identificador, no un rótulo: se guarda en minúsculas y tiene que
+                                                        coincidir con la categoría que declare el nodo de aprobación.
+                                                        {norm(reglaForm.categoria) && norm(reglaForm.categoria) !== reglaForm.categoria && (
+                                                            <> Se guardará como <code className="text-gray-600">{norm(reglaForm.categoria)}</code>.</>
+                                                        )}
+                                                        {' '}Déjala vacía para que la regla valga para cualquier categoría.
+                                                    </p>
                                                 </div>
 
                                                 {/* Rol aprobador */}
@@ -1002,27 +1053,55 @@ export function Governance({ currentUser }: GovernanceProps) {
 
                                         {simuladorResult !== null && (
                                             <div className="mt-4">
-                                                {simuladorResult.length === 0 ? (
-                                                    <div className="flex items-center gap-2 text-sm text-gray-500 bg-gray-50 rounded-xl px-4 py-3">
-                                                        <CheckCircle className="w-4 h-4 text-emerald-400" />
-                                                        Ninguna regla activa aplica a estos parámetros — el proceso puede continuar sin aprobación.
+                                                {/* El veredicto primero: lo que hará el motor, con sus palabras.
+                                                    Sin regla que case el nodo NO continúa — falla cerrado. */}
+                                                {!simuladorResult.resolucion.ok && (
+                                                    <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl px-4 py-3 mb-3">
+                                                        <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                                                        <div>
+                                                            <p className="font-semibold text-xs mb-0.5">El nodo de aprobación se detendría con este error:</p>
+                                                            <p className="text-[12px] leading-relaxed">{simuladorResult.resolucion.motivo}</p>
+                                                        </div>
                                                     </div>
+                                                )}
+
+                                                {simuladorResult.candidatas.length === 0 ? (
+                                                    <p className="text-[11px] text-gray-400">
+                                                        Ninguna regla activa cubre estos parámetros. Ojo: eso no deja pasar el
+                                                        proceso — un nodo de aprobación sin rol fijado y sin regla que case
+                                                        se detiene, para que nadie apruebe por defecto.
+                                                    </p>
                                                 ) : (
                                                     <div className="space-y-2">
-                                                        <p className="text-xs font-semibold text-gray-600">{simuladorResult.length} regla{simuladorResult.length > 1 ? 's aplican' : ' aplica'} — se usa la de mayor nivel:</p>
-                                                        {simuladorResult.map((r, i) => (
-                                                            <div key={r.id} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border ${i === 0 ? 'border-indigo-200 bg-indigo-50' : 'border-gray-100 bg-gray-50 opacity-60'}`}>
-                                                                {i === 0 && <span className="text-[10px] font-bold bg-indigo-600 text-white px-1.5 py-0.5 rounded">APLICA</span>}
-                                                                <div className="flex-1 min-w-0">
-                                                                    <p className="text-sm font-medium text-gray-800">{r.nombre}</p>
-                                                                    <p className="text-[11px] text-gray-400">
-                                                                        Aprobador: <strong style={{ color: ROL_META[r.rol_aprobador as Role]?.color }}>{ROL_META[r.rol_aprobador as Role]?.label ?? r.rol_aprobador}</strong>
-                                                                        {r.aprobadores_multiples >= 2 && <span className="ml-2 text-blue-600 font-semibold">· Doble control</span>}
-                                                                        <span className="ml-2">· SLA {r.escalamiento_horas}h</span>
-                                                                    </p>
+                                                        <p className="text-xs font-semibold text-gray-600">
+                                                            {simuladorResult.candidatas.length} regla{simuladorResult.candidatas.length > 1 ? 's casan' : ' casa'}
+                                                            {simuladorResult.resolucion.ok
+                                                                ? ' — decide la de mayor precedencia:'
+                                                                : ' — pero la matriz no llega a una sola respuesta:'}
+                                                        </p>
+                                                        {simuladorResult.candidatas.map((r) => {
+                                                            const gana = simuladorResult.resolucion.ok && simuladorResult.resolucion.regla.id === r.id;
+                                                            const enConflicto = !simuladorResult.resolucion.ok
+                                                                && (simuladorResult.resolucion.empatadas ?? []).some(e => e.id === r.id);
+                                                            return (
+                                                                <div key={r.id} className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border ${
+                                                                    gana ? 'border-indigo-200 bg-indigo-50'
+                                                                         : enConflicto ? 'border-red-200 bg-red-50'
+                                                                         : 'border-gray-100 bg-gray-50 opacity-60'}`}>
+                                                                    {gana && <span className="text-[10px] font-bold bg-indigo-600 text-white px-1.5 py-0.5 rounded">APLICA</span>}
+                                                                    {enConflicto && <span className="text-[10px] font-bold bg-red-600 text-white px-1.5 py-0.5 rounded">EMPATE</span>}
+                                                                    <div className="flex-1 min-w-0">
+                                                                        <p className="text-sm font-medium text-gray-800">{r.nombre}</p>
+                                                                        <p className="text-[11px] text-gray-400">
+                                                                            Aprobador: <strong style={{ color: ROL_META[r.rol_aprobador as Role]?.color }}>{ROL_META[r.rol_aprobador as Role]?.label ?? r.rol_aprobador}</strong>
+                                                                            {r.aprobadores_multiples >= 2 && <span className="ml-2 text-blue-600 font-semibold">· Doble control</span>}
+                                                                            <span className="ml-2">· SLA {r.escalamiento_horas}h</span>
+                                                                            <span className="ml-2">· Nivel {r.nivel}</span>
+                                                                        </p>
+                                                                    </div>
                                                                 </div>
-                                                            </div>
-                                                        ))}
+                                                            );
+                                                        })}
                                                     </div>
                                                 )}
                                             </div>

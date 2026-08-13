@@ -23,7 +23,11 @@ export interface ManagedUser {
 }
 
 type AuditAccion = 'crear' | 'modificar' | 'eliminar' | 'ejecutar' | 'aprobar' | 'rechazar' | 'login' | 'cambio_rol';
-type AuditEntidad = 'workflow' | 'usuario' | 'integracion' | 'aprobacion' | 'sesion';
+// ⚠️ Estos valores los comprueba el CHECK `audit_log_entidad_check` en la base.
+// Añadir uno aquí sin migrarlo allí hace que el INSERT se rechace — y como el
+// audit es best-effort, se perdería en silencio. `matriz_aprobacion` entró el
+// 13/08/2026 (20260813_audit_matriz_aprobacion.sql).
+type AuditEntidad = 'workflow' | 'usuario' | 'integracion' | 'aprobacion' | 'sesion' | 'matriz_aprobacion';
 
 // ── Servicio de Gobierno ─────────────────────────────────────────────────────
 export class GovernanceService {
@@ -35,9 +39,14 @@ export class GovernanceService {
         entidad: AuditEntidad,
         opts: { entidadId?: string; descripcion?: string; antes?: unknown; despues?: unknown } = {}
     ): Promise<void> {
-        // Best-effort: el audit nunca debe romper el flujo principal
+        // Best-effort: el audit nunca debe romper el flujo principal.
+        //
+        // Pero «no romper» no es «no enterarse». supabase-js DEVUELVE el error,
+        // no lo lanza, así que este try/catch nunca lo vería: un CHECK violado
+        // o una RLS que rechaza pasarían por aquí como si se hubiera escrito
+        // (§5.1). Se comprueba y se deja rastro en consola.
         try {
-            await supabase.from('audit_log').insert({
+            const { error } = await supabase.from('audit_log').insert({
                 organization_id: actor.organizationId,
                 usuario_id:      actor.id,
                 usuario_email:   actor.email,
@@ -48,6 +57,9 @@ export class GovernanceService {
                 datos_antes:     opts.antes ?? null,
                 datos_despues:   opts.despues ?? null,
             });
+            if (error) {
+                console.error(`audit log NO escrito (${accion}/${entidad}): ${error.message}`);
+            }
         } catch (e) {
             console.error('audit log error:', e);
         }
@@ -181,13 +193,11 @@ export class GovernanceService {
         return data ?? [];
     }
 
-    // Determina qué rol debe aprobar según monto/categoría
-    static async resolverAprobador(organizationId: string, monto: number, categoria?: string): Promise<string | null> {
-        const matriz = await this.getMatriz(organizationId);
-        const aplicables = (matriz as Array<Record<string, unknown>>)
-            .filter(m => m.activa && Number(m.umbral_monto ?? 0) <= monto &&
-                (!categoria || !m.categoria || m.categoria === categoria))
-            .sort((a, b) => Number(b.umbral_monto) - Number(a.umbral_monto));
-        return aplicables.length > 0 ? (aplicables[0].rol_aprobador as string) : null;
-    }
+    // ⚠️ Aquí vivía `resolverAprobador`, que decidía el aprobador con SUS
+    // propias reglas —ignoraba el `operador`, trataba «sin categoría» como
+    // comodín en los dos sentidos y no miraba el nivel— y a la que **no llamaba
+    // nadie**. Retirada el 13/08/2026: quien decide es `resolverRegla` de
+    // `src/utils/matrizAprobacion.ts`, gemelo exacto del que usa el motor en
+    // `_shared/matriz.ts`. Un segundo emparejador con otro criterio es una
+    // respuesta distinta esperando a que alguien la llame por error.
 }

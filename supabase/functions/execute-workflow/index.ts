@@ -7,6 +7,7 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { enviarEmail as enviar, enviarEmailPersonalizado as enviarPersonalizado, canalEmail, escaparHtml } from '../_shared/email.ts';
 import { fechaHoraVE, fechaVE } from '../_shared/fecha.ts';
+import { resolverRegla, type ReglaMatriz } from '../_shared/matriz.ts';
 
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -243,10 +244,49 @@ function buildContextSummary(context: Record<string, any>): string {
         : '<p style="color:#9ca3af;font-size:13px">Sin datos disponibles</p>';
 }
 
+// ── Quién aprueba, según la matriz ──────────────────────────────────────────
+//
+// La matriz de aprobación llevaba desde F1 con CRUD completo en Gobierno y
+// **sin que la leyera ni una Edge Function**: se configuraba y no gobernaba
+// nada. Esto la conecta. El emparejamiento vive en `_shared/matriz.ts`, gemelo
+// del de `src/utils/matrizAprobacion.ts` que alimenta el simulador.
+async function reglaDeMatriz(
+    db: any,
+    organizationId: string,
+    monto: number | null,
+    categoria: string | null,
+): Promise<ReglaMatriz> {
+    const { data, error } = await db
+        .from('matriz_aprobacion')
+        .select('id, nombre, categoria, operador, umbral_monto, umbral_max, moneda, ' +
+                'rol_aprobador, nivel, aprobadores_multiples, escalamiento_horas, ' +
+                'aplica_automatico, condicion_extra, descripcion_regulatoria')
+        .eq('organization_id', organizationId)
+        .eq('activa', true);
+
+    // supabase-js devuelve el error, no lo lanza (§5.1). Y una matriz que no se
+    // ha podido leer NO es una matriz vacía: se para aquí en vez de continuar
+    // como si no hubiera reglas, que es como se acaba asignando la aprobación
+    // a quien no toca.
+    if (error) {
+        throw new Error(
+            `No se pudo consultar la matriz de aprobación (${error.message}). ` +
+            `El flujo se detiene aquí: sin matriz no hay forma de saber a quién ` +
+            `corresponde autorizar este paso.`
+        );
+    }
+
+    const resultado = resolverRegla((data ?? []) as ReglaMatriz[], monto, categoria);
+    if (!resultado.ok) throw new Error(resultado.motivo);
+    return resultado.regla;
+}
+
 // ── Ejecutor de nodo individual ──────────────────────────────────────────────
 async function executeNode(
     node: any,
     context: Record<string, any>,
+    db: any,
+    organizationId: string,
 ): Promise<any> {
     const cfg      = node.config_json ?? {};
     const nodeKey  = `${node.type}:${node.category}`;
@@ -407,26 +447,82 @@ async function executeNode(
 
         // ── Aprobación Humana — pausa real (F2) ──────────────────────────
         case 'processor:aprobacion': {
-            const rolAprobador = cfg.approver ?? 'supervisor';
+            const descripcion = resolveValue(cfg.reason ?? 'Requiere revisión manual', context);
+            const categoria   = cfg.categoria ? resolveValue(cfg.categoria, context) : null;
+
+            // El importe puede venir de una plantilla (`{{nodo.total}}`). Si se
+            // resuelve a algo que no es un número, se dice: un NaN no casaría
+            // ningún umbral y el flujo moriría más abajo con «ninguna regla
+            // cubre este paso», que es el motivo equivocado.
+            let monto: number | null = null;
+            if (cfg.monto !== undefined && cfg.monto !== null && String(cfg.monto).trim() !== '') {
+                const crudo = resolveValue(String(cfg.monto), context);
+                monto = Number(crudo);
+                if (Number.isNaN(monto)) {
+                    throw new Error(
+                        `El importe del nodo de aprobación no es un número: "${crudo}". ` +
+                        `Revisa el campo Monto en el Constructor.`
+                    );
+                }
+            }
+
+            // Dos caminos, y NINGÚN tercero con un rol por defecto:
+            //  · el nodo fija el aprobador a dedo, o
+            //  · lo dice la matriz de aprobación (Gobierno → Matriz).
+            // Antes había un `cfg.approver ?? 'supervisor'` que asignaba la
+            // tarea a un rol que durante meses no tuvo a NADIE: el flujo se
+            // pausaba y nadie podía resolverlo. Un defecto silencioso en quién
+            // autoriza no es un defecto, es un agujero de control.
+            const rolFijado = typeof cfg.approver === 'string' ? cfg.approver.trim() : '';
+            let rolAprobador: string;
+            let regla: ReglaMatriz | null = null;
+            let horasPorDefecto = 48;
+
+            if (rolFijado) {
+                rolAprobador = rolFijado;
+            } else {
+                regla           = await reglaDeMatriz(db, organizationId, monto, categoria);
+                rolAprobador    = String(regla.rol_aprobador ?? '').trim();
+                horasPorDefecto = Number(regla.escalamiento_horas) || 48;
+            }
+
             // El rol tiene que EXISTIR. El nodo del flujo "Flujo F2 NR" tenía
             // guardado "Administrador" —la etiqueta del desplegable, no el rol—,
             // así que la tarea nacía pidiendo un rol inexistente y no la podía
             // resolver nadie: ni el Oficial de Cumplimiento ni el propio rol que
             // el usuario creía haber elegido. Fallar aquí, en claro, es mucho
-            // mejor que pausar un flujo que ya nace muerto.
+            // mejor que pausar un flujo que ya nace muerto. Vale igual para un
+            // rol que venga de la matriz: se teclea a mano y se equivoca igual.
             if (!ROLES_APROBADORES.has(rolAprobador)) {
                 throw new Error(
-                    `Rol aprobador no válido: "${rolAprobador}". Abre el nodo de aprobación ` +
-                    `en el Constructor y elige uno de: ${[...ROLES_APROBADORES].join(', ')}.`
+                    regla
+                        ? `La regla "${regla.nombre}" de la matriz de aprobación pide el rol ` +
+                          `"${rolAprobador}", que no existe. Corrígela en Gobierno → Matriz de ` +
+                          `aprobación eligiendo uno de: ${[...ROLES_APROBADORES].join(', ')}.`
+                        : `Rol aprobador no válido: "${rolAprobador}". Abre el nodo de aprobación ` +
+                          `en el Constructor y elige uno de: ${[...ROLES_APROBADORES].join(', ')}.`
                 );
             }
-            const descripcion  = resolveValue(cfg.reason ?? 'Requiere revisión manual', context);
-            const monto        = cfg.monto ? Number(resolveValue(String(cfg.monto), context)) : null;
-            const categoria    = cfg.categoria ? resolveValue(cfg.categoria, context) : null;
-            const horasVence   = cfg.horasVence ? Number(cfg.horasVence) : 48;
-            const venceAt      = new Date(Date.now() + horasVence * 60 * 60 * 1000).toISOString();
+
+            // Lo que ponga el nodo manda sobre el plazo de la regla; sin ninguno
+            // de los dos, 48 h como siempre.
+            const horasVence = cfg.horasVence ? Number(cfg.horasVence) : horasPorDefecto;
+            const venceAt    = new Date(Date.now() + horasVence * 60 * 60 * 1000).toISOString();
+
+            // La regla que decidió va en la descripción: quien aprueba tiene
+            // derecho a saber POR QUÉ le ha llegado esto a él.
+            const detalle = regla
+                ? `${descripcion}\n\n— Asignado por la matriz de aprobación, regla «${regla.nombre}»` +
+                  (regla.condicion_extra          ? `\n  Condición: ${regla.condicion_extra}` : '') +
+                  (regla.descripcion_regulatoria  ? `\n  Base: ${regla.descripcion_regulatoria}` : '')
+                : descripcion;
+
             // Señal para que el loop principal pause la ejecución
-            throw { __pauseApproval: true, rolAprobador, descripcion, monto, categoria, venceAt };
+            throw {
+                __pauseApproval: true,
+                rolAprobador, descripcion: detalle, monto, categoria, venceAt,
+                reglaNombre: regla?.nombre ?? null,
+            };
         }
 
         // ── Siniestro RiskGuard ───────────────────────────────────────────
@@ -1460,7 +1556,7 @@ serve(async (req) => {
                     .update({ status: 'running' })
                     .eq('id', node.id);
 
-                const result = await executeNode(node, context);
+                const result = await executeNode(node, context, supabase, organizationId);
 
                 context[node.id] = result;
                 completedNodeIds.add(node.id);
@@ -1541,8 +1637,16 @@ serve(async (req) => {
                         );
                     }
 
+                    // Queda escrito de dónde salió el aprobador. Si mañana alguien
+                    // pregunta por qué esta tarea le llegó a este rol, la respuesta
+                    // está aquí y no hay que reconstruirla desde la matriz de hoy
+                    // —que ya puede ser otra.
                     await addLog(node.id, 'warning',
-                        `⏸ Flujo pausado — esperando aprobación de rol "${err.rolAprobador}". Vence: ${fechaHoraVE(err.venceAt)} (hora de Venezuela)`
+                        `⏸ Flujo pausado — esperando aprobación de rol "${err.rolAprobador}"` +
+                        (err.reglaNombre
+                            ? ` (matriz de aprobación, regla «${err.reglaNombre}»)`
+                            : ' (rol fijado en el nodo)') +
+                        `. Vence: ${fechaHoraVE(err.venceAt)} (hora de Venezuela)`
                     );
 
                     // ── Notificar por email a los aprobadores del rol requerido ──

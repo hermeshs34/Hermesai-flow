@@ -305,9 +305,15 @@ docena de notas de este documento han hablado de usuarios que ya no estaban.
 ⚠️ **El alta del `autorizador` enciende su rama, como la del supervisor.** Gana
 el botón de Ejecutar (`ROLES_QUE_EJECUTAN`), entra en `ROLES_APROBADORES` y
 escala a `admin` al vencer — pero **nadie escala hacia él**: solo aprueba lo que
-se le asigne a dedo en un nodo. Y tiene `authorize_critical`, que **no lo lee ni
-una línea de código**: es un permiso concedido que no gobierna nada, igual que
-`delegaciones` y que `matriz_aprobacion`.
+se le asigne a dedo en un nodo, o lo que le mande la matriz de aprobación (§6.5).
+
+✅ **`authorize_critical` ya no existe** (13/08/2026). Era un permiso concedido a
+`admin` y `autorizador` que **no leía ni una línea de código**: un candado
+pintado en la pared. Borrarlo no quitó capacidad a nadie porque no daba ninguna,
+y dejarlo era peor que no tenerlo — un permiso decorativo se lee como una
+garantía. Lo que sí gobierna la autorización de un paso crítico es
+`matriz_aprobacion`, conectada ese mismo día (§6.5). `delegaciones` sigue siendo
+el caso restante: tabla con CRUD y **cero lectores**.
 
 ⚠️ **El alta de ese `supervisor` encendió dos comportamientos que llevaban
 meses inertes**, y ninguno avisó:
@@ -317,8 +323,8 @@ meses inertes**, y ninguno avisó:
    'processor:aprobacion'`): un nodo de aprobación **sin aprobador configurado**
    ya no crea una tarea huérfana — se la asigna en silencio al supervisor. El
    defecto no era inofensivo, solo estaba desactivado por falta de censo.
-   Al conectar `matriz_aprobacion` (`CICLO_VIDA_FLUJOS.md` §7) este `??` debe
-   morir: sin regla que case, el nodo revienta.
+   ✅ **Ese `??` murió el 13/08/2026** al conectar `matriz_aprobacion` (§6.5):
+   sin regla que case, el nodo revienta.
 
 **Regla general: dar de alta a alguien en un rol vacío activa todas las ramas
 de código que apuntaban a ese rol.** Antes de crear un rol nuevo, buscar el
@@ -391,6 +397,16 @@ roles reales con permiso `approve_tasks`, y está **copiada** de la constante
 `ROLES` de `NodeConfigPanel.tsx`. Si cambias una, cambia la otra. Ese
 desplegable ofrecía además `gerente_riesgos` y `actuario`, que no existen en
 `profiles.role`: retirados el 11/08/2026.
+
+⚠️ **Desde el 13/08/2026 el campo puede ir vacío, y vacío significa «que lo
+decida la matriz» (§6.5)** — es la primera opción del desplegable, con ese texto.
+No es lo mismo que «sin configurar»: antes el `<select>` **pintaba `'admin'`
+sobre un campo que nadie había guardado**, así que el flujo prometía un aprobador
+que el motor no iba a usar. Otro instrumento que dice algo sin haberlo medido,
+como el `✓ Guardado` de §12.2. Y `getAutoDefaults` ponía `approver = 'admin'` a
+un nodo de aprobación colgado de uno de AML, **saltándose la regla del Oficial de
+Cumplimiento** (§6.2) desde el propio asistente: hoy pone `categoria = 'aml'` y
+deja que la matriz decida.
 
 ### 6.4 Recuperación de contraseña — dos caminos, una sola marca
 
@@ -473,6 +489,72 @@ ensayo de la migración lo demostró: Supabase tiene `ALTER DEFAULT PRIVILEGES`
 que dan EXECUTE a `anon`, `authenticated` y `service_role` sobre cada función
 nueva de `public`, así que tras el REVOKE **`anon` seguía con EXECUTE**. Hay que
 nombrarlo. Ensaya siempre con `ROLLBACK` antes de un `COMMIT`.
+
+### 6.5 La matriz de aprobación ya DECIDE — y falla cerrado
+
+Hasta el 13/08/2026 `matriz_aprobacion` tenía CRUD completo en Gobierno y **no
+la leía ninguna Edge Function**. La parametrización estaba pagada y desconectada:
+el usuario configuraba reglas en una pantalla y el motor seguía usando
+`config_json.approver` con aquel `?? 'supervisor'`. Cuarta variante del patrón de
+siempre —`audit_log`, `execute-workflow`, `resolve-approval`— pero al revés: **la
+regla no estaba ni en la pantalla ni en el motor; estaba en una tabla que nadie
+consultaba.**
+
+**Cómo decide ahora un `processor:aprobacion`:**
+
+1. Si el nodo trae `config_json.approver` con un rol, **manda el nodo**. Es lo
+   que hacen los 6 nodos de aprobación que hay en producción (4 `cumplimiento`,
+   2 `admin`), así que conectar la matriz **no cambió el comportamiento de ni un
+   flujo vivo**.
+2. Si el campo va **en blanco** (nueva opción «— Según la matriz de aprobación —»
+   del Constructor), se consulta la matriz con la `categoria` y el `monto` del
+   nodo, dos campos que el formulario **no tenía**: sin ellos un nodo no podía
+   dirigirse a la matriz aunque quisiera.
+3. **Sin regla que case, el nodo revienta** con un mensaje escrito para una
+   persona. No hay aprobador por defecto, y no puede haberlo: el defecto anterior
+   es exactamente lo que convertía un flujo mal configurado en uno que parecía
+   funcionar. Misma familia que `token !== ''` (§6.1), `'' === ''` (§9.4) y la
+   huella `NULL` (§9.5).
+
+**Precedencia** (mayor gana): nivel → categoría concreta por encima de comodín →
+umbral más alto. Una regla sin categoría es comodín; un nodo sin categoría **no**
+hereda las reglas de nadie, o una aprobación de AML acabaría colgada de un flujo
+que nunca dijo ser de AML.
+
+⚠️ **Un empate con efectos distintos es un error, no un desempate.** Si dos
+reglas compiten con la misma precedencia y piden cosas distintas —rol, horas de
+escalamiento o número de aprobadores— el nodo se detiene y las nombra. Elegir una
+al azar sería una configuración rota en silencio. Producción tuvo ese caso el
+mismo día que se conectó la matriz: dos reglas «Verificación OFAC/PEP —
+Cumplimiento» idénticas en nivel, categoría y umbral que diferían en
+`escalamiento_horas` (48 vs 24). **Hermes borró la duplicada el 13/08/2026.**
+
+**Estado de la matriz al 13/08/2026 — dos reglas, las dos activas y de
+`cumplimiento`, nivel 1, sin umbral:** `aml` («Verificación OFAC/PEP», 24 h,
+`aplica_automatico`, condición *solo si en_lista = true*) y `ofac` («Listas
+Restrictivas», 48 h). Categorías distintas ⇒ no pueden empatar.
+
+**Las categorías también se guardan por SLUG**, como los roles (§6.3), y desde el
+13/08/2026 el formulario **las normaliza al guardar** (`norm`, exportada del
+gemelo): lo que se almacena es lo que el motor compara. Antes solo se normalizaba
+**al comparar**, que tapaba el síntoma y dejaba en la tabla rótulos humanos —
+había una regla con `categoria = "Sanciones OFAC"`, con espacio y mayúsculas, que
+casaba de milagro y que un auditor leía sin saber qué teclear en el nodo. Se
+corrigió a `ofac`, el slug que ya nombraba el propio asesor de `Governance.tsx`.
+
+⚠️ **`src/utils/matrizAprobacion.ts` y `supabase/functions/_shared/matriz.ts` son
+gemelos copiados**, como `fecha.ts` (§9.3): Deno no alcanza `src/`. **El de Deno
+manda** —es el que crea la tarea—; el de `src/` solo alimenta el simulador de
+Gobierno. Y son idénticos a propósito: un simulador que empareja con otras reglas
+que el motor no es un simulador, es una segunda opinión que nadie pidió. Se
+verifican con `diff` a partir de la línea 16 (todo salvo la cabecera). Por lo
+mismo se retiró `resolverAprobador` de `governance.service.ts`: un segundo
+emparejador con otro criterio y cero llamantes es una respuesta distinta
+esperando a que alguien la invoque por error.
+
+Tocar la matriz deja rastro en `audit_log` (`entidad='matriz_aprobacion'`, valor
+añadido al CHECK por `20260813_audit_matriz_aprobacion.sql`). En cuanto una tabla
+gobierna un control interno, editarla es un hecho auditable.
 
 ### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
 

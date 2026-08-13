@@ -270,6 +270,10 @@ serlo, y lo más valioso ya está construido y sin conectar.**
 
 ### 7.1 Lo que ya está pagado y no se usa — barato y de alto valor
 
+> ✅ **HECHO el 13/08/2026.** La matriz ya decide. Lo que sigue es el diagnóstico
+> original; el detalle de cómo quedó está en `CLAUDE.md` §6.5. De este apartado
+> queda abierto solo **`delegaciones`** (último párrafo).
+
 **`matriz_aprobacion` existe, tiene pantalla de mantenimiento completa en
 `Governance.tsx` (alta, edición, activar, borrar) y NINGUNA Edge Function la
 lee.** El motor saca el aprobador de `config_json.approver` del nodo y punto.
@@ -289,8 +293,14 @@ claro**; nunca un aprobador por defecto. Hoy la línea 368 tiene
 misma trampa del `'' === ''` del §9.4: lo que no se configuró se convierte en un
 «sí» permanente.
 
-Lo mismo con **`delegaciones`**: la tabla existe y no la lee ni una línea. Es lo
-que convierte «solo hay una Nohemy» de riesgo en incidencia gestionable.
+> ✅ Cableado y desplegado el 13/08/2026, fallando cerrado tal como dice el
+> párrafo de arriba. Salió además un caso que el diseño no había previsto: **dos
+> reglas empatadas en precedencia que piden cosas distintas**. Elegir una al azar
+> es la misma configuración rota en silencio, así que también detiene el nodo.
+
+⚠️ **ABIERTO — `delegaciones`**: la tabla existe y no la lee ni una línea. Es lo
+que convierte «solo hay una Nohemy» de riesgo en incidencia gestionable. Sigue
+siendo el mismo tipo de deuda que era la matriz: pantalla sin motor.
 
 ### 7.2 Las listas copiadas — coste medio, y es la enfermedad crónica
 

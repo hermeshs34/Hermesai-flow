@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict M3ddci3sy9a3hiAmCv9joIPC5JZeYBK6rDFp2ek2OpjfD0KX2x4PvZzKmjwspzi
+-- \restrict f7hcJH18CECxRwQgYBYPMpIvYnEQk08ZVrEJNuRc58FjhS6tSSUgNbV1mf2OdZF
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -47,6 +47,29 @@ $$;
 
 
 ALTER FUNCTION "public"."is_admin"() OWNER TO "postgres";
+
+--
+-- Name: marcar_clave_cambiada(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."marcar_clave_cambiada"() RETURNS "void"
+    LANGUAGE "sql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+                UPDATE public.profiles
+                   SET debe_cambiar_clave = false
+                 WHERE id = auth.uid();
+            $$;
+
+
+ALTER FUNCTION "public"."marcar_clave_cambiada"() OWNER TO "postgres";
+
+--
+-- Name: FUNCTION "marcar_clave_cambiada"(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION "public"."marcar_clave_cambiada"() IS 'Limpia debe_cambiar_clave del usuario autenticado tras cambiar su contrasena. SECURITY DEFINER porque profiles solo lo escribe un admin.';
+
 
 --
 -- Name: my_organization_id(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -322,11 +345,19 @@ CREATE TABLE IF NOT EXISTS "public"."profiles" (
     "role" "text" DEFAULT 'viewer'::"text" NOT NULL,
     "is_active" boolean DEFAULT true NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "debe_cambiar_clave" boolean DEFAULT false NOT NULL,
     CONSTRAINT "profiles_role_check" CHECK (("role" = ANY (ARRAY['admin'::"text", 'dueno_proceso'::"text", 'supervisor'::"text", 'operador'::"text", 'autorizador'::"text", 'cumplimiento'::"text", 'auditor'::"text", 'editor'::"text", 'operator'::"text", 'viewer'::"text"])))
 );
 
 
 ALTER TABLE "public"."profiles" OWNER TO "postgres";
+
+--
+-- Name: COLUMN "profiles"."debe_cambiar_clave"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."profiles"."debe_cambiar_clave" IS 'true cuando la clave vigente la asigno un administrador (olvido). La pantalla obliga a cambiarla antes de dejar entrar. Lo pone admin-reset-password; lo quita marcar_clave_cambiada().';
+
 
 --
 -- Name: tareas_aprobacion; Type: TABLE; Schema: public; Owner: postgres
@@ -1137,6 +1168,15 @@ GRANT ALL ON FUNCTION "public"."is_admin"() TO "service_role";
 
 
 --
+-- Name: FUNCTION "marcar_clave_cambiada"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."marcar_clave_cambiada"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."marcar_clave_cambiada"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."marcar_clave_cambiada"() TO "service_role";
+
+
+--
 -- Name: FUNCTION "my_organization_id"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -1335,5 +1375,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict M3ddci3sy9a3hiAmCv9joIPC5JZeYBK6rDFp2ek2OpjfD0KX2x4PvZzKmjwspzi
+-- \unrestrict f7hcJH18CECxRwQgYBYPMpIvYnEQk08ZVrEJNuRc58FjhS6tSSUgNbV1mf2OdZF
 

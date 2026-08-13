@@ -19,7 +19,6 @@ export type Permission =
     | 'manage_workflows'   // crear/editar/eliminar flujos
     | 'execute_workflows'  // ejecutar flujos
     | 'approve_tasks'      // aprobar/rechazar tareas humanas
-    | 'authorize_critical' // autorizar operaciones sobre umbral crítico
     | 'manage_integrations'// conectar/configurar integraciones
     | 'view_logs'          // ver monitoreo/ejecuciones
     | 'view_audit'         // ver audit trail (gobierno)
@@ -68,12 +67,22 @@ export interface User {
 // habría dejado sin nada que hacer; el alta de un supervisor real acabó con esa
 // excusa. La política RLS de edición se movió a la vez
 // (20260812_supervisor_no_edita.sql): las dos capas deben decir lo mismo.
+//
+// ⚠️ Aquí NO hay permisos decorativos. Se retiró `authorize_critical`
+// (13/08/2026): estaba concedido a `admin` y `autorizador` y **no lo leía ni
+// una línea de código** — ni un `hasPermission`, ni una política RLS, ni una
+// Edge Function. Un permiso que no gobierna nada es peor que no tenerlo: se
+// mira la tabla de roles, se da por cubierto un control que no existe, y nadie
+// vuelve a preguntarse quién autoriza las operaciones críticas. Lo que sí
+// gobierna eso es la matriz de aprobación (Gobierno → Matriz), que desde hoy
+// lee `execute-workflow`. Si algún día hace falta un permiso nuevo, se añade
+// junto al código que lo comprueba, no antes.
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
-    admin:         ['manage_users', 'manage_workflows', 'execute_workflows', 'approve_tasks', 'authorize_critical', 'manage_integrations', 'view_logs', 'view_audit', 'view_all'],
+    admin:         ['manage_users', 'manage_workflows', 'execute_workflows', 'approve_tasks', 'manage_integrations', 'view_logs', 'view_audit', 'view_all'],
     dueno_proceso: ['manage_workflows', 'execute_workflows', 'view_logs', 'view_audit'],
     supervisor:    ['approve_tasks', 'view_logs'],
     operador:      ['view_logs'],
-    autorizador:   ['execute_workflows', 'approve_tasks', 'authorize_critical', 'view_logs'],
+    autorizador:   ['execute_workflows', 'approve_tasks', 'view_logs'],
     cumplimiento:  ['approve_tasks', 'view_logs', 'view_audit'],
     auditor:       ['view_all', 'view_logs', 'view_audit'],
     // legacy
