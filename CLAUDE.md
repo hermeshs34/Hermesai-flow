@@ -109,6 +109,8 @@ project/
 │       ├── resolve-approval/        ← aprobar / rechazar una tarea
 │       ├── health-check/            ← estado de integraciones (lo llama el Sidebar)
 │       ├── admin-create-user/       ← alta de usuarios
+│       ├── admin-reset-password/    ← clave temporal por olvido — solo admin (§6.4)
+│       ├── request-password-reset/  ← enlace de recuperación — PÚBLICA (§6.4)
 │       ├── design-assistant/        ← asistente de diseño de flujos
 │       └── get-bcv-rate/            ← tasa BCV
 └── .claude/
@@ -292,12 +294,20 @@ dueño), `cumplimiento` (aprueba, no ejecuta), `auditor`, `viewer` y los legacy.
 que él mismo lanzó (`solicitante_id === approverId`).
 
 ⚠️ Al estrecharlo, los dos `supervisor` que había dejaron de poder ejecutar y se
-les reasignó el rol. **Censo real al 12/08/2026 (18:38 UTC) — 6 personas:**
-2 `admin` (Hermes, Daniel), 1 `dueno_proceso` (Abraham), 1 `supervisor` (Nahum
-Azevedo, dado de alta ese mismo día), 1 `cumplimiento` (Nohemy) y 1 `operador`
-(Katherine). **Sigue sin haber ningún `autorizador`.** Contrastar el censo
-antes de razonar sobre roles: media docena de notas de este documento han
-hablado de usuarios que ya no estaban.
+les reasignó el rol. **Censo contrastado contra la base el 13/08/2026 —
+7 personas, todas activas:** 2 `admin` (Hermes Sánchez, Daniel Sanchez),
+1 `dueno_proceso` (Abraham Espejo), 1 `supervisor` (Nahum Azevedo, alta el
+12/08 18:38 UTC), 1 `autorizador` (**Khris Azevedo**, alta el 12/08 19:06 UTC),
+1 `cumplimiento` (Nohemy Romero) y 1 `operador` (Katherine Sanchez). El único
+rol vacío es `auditor`. Contrastar el censo antes de razonar sobre roles: media
+docena de notas de este documento han hablado de usuarios que ya no estaban.
+
+⚠️ **El alta del `autorizador` enciende su rama, como la del supervisor.** Gana
+el botón de Ejecutar (`ROLES_QUE_EJECUTAN`), entra en `ROLES_APROBADORES` y
+escala a `admin` al vencer — pero **nadie escala hacia él**: solo aprueba lo que
+se le asigne a dedo en un nodo. Y tiene `authorize_critical`, que **no lo lee ni
+una línea de código**: es un permiso concedido que no gobierna nada, igual que
+`delegaciones` y que `matriz_aprobacion`.
 
 ⚠️ **El alta de ese `supervisor` encendió dos comportamientos que llevaban
 meses inertes**, y ninguno avisó:
@@ -381,6 +391,88 @@ roles reales con permiso `approve_tasks`, y está **copiada** de la constante
 `ROLES` de `NodeConfigPanel.tsx`. Si cambias una, cambia la otra. Ese
 desplegable ofrecía además `gerente_riesgos` y `actuario`, que no existen en
 `profiles.role`: retirados el 11/08/2026.
+
+### 6.4 Recuperación de contraseña — dos caminos, una sola marca
+
+Hasta el 13/08/2026 **un olvido de contraseña dejaba a la persona fuera para
+siempre**: no había autoservicio (cero llamadas a `resetPasswordForEmail` en
+todo `src/`), `ChangePasswordModal` solo servía estando ya dentro, y
+`admin-create-user` generaba clave temporal **únicamente en el alta**. Con un
+solo `cumplimiento`, si la que se quedaba fuera era Nohemy se paraba **toda**
+aprobación de AML (§6.2). Encargo de Hermes.
+
+Dos vías, y las dos acaban en el mismo sitio:
+
+1. **El administrador asigna una clave temporal** — `admin-reset-password`.
+   Solo `admin`, y la organización sale del **perfil del llamante, nunca del
+   cuerpo**. Rechaza restablecerse a uno mismo: para eso está «Cambiar mi
+   contraseña», que **sí pide la actual**; saltarse esa comprobación desde
+   Gobierno le daría a cualquiera con una sesión de admin abierta una forma de
+   cambiar su propia clave sin conocerla. La clave vuelve **una vez** y no se
+   guarda en ningún sitio: la auditoría registra **el hecho, jamás el secreto**.
+2. **El usuario se lo pide él mismo** — `request-password-reset`, endpoint
+   **público** (`--no-verify-jwt`). Responde **exactamente lo mismo** exista la
+   cuenta, esté inactiva o haya superado el límite: si distinguiera, sería un
+   comprobador de «¿trabaja fulano aquí?» abierto a internet. Máximo 3 peticiones
+   por cuenta cada 15 minutos, contadas sobre `audit_log`
+   (`entidad='sesion'`) — sin tabla nueva y a la vista de un auditor.
+
+⚠️ **El enlace lo manda Resend, no el mailer de Supabase.** Se usa
+`generateLink({type:'recovery'})` para *fabricar* el enlace y se envía por
+`_shared/email.ts`. `resetPasswordForEmail` habría abierto un segundo canal de
+salida —otro remitente, otra plantilla, otra reputación de dominio— contra §9.1.
+Necesita el secreto **`APP_URL`** (Edge Functions → Secrets) y esa misma URL en
+*Authentication → URL Configuration → Redirect URLs*, o Supabase descarta el
+`redirectTo`. Sin `APP_URL` la función **falla con 500 y lo dice**: un correo con
+un enlace roto es peor que un error en pantalla.
+
+⚠️ **El enlace de recuperación NO inicia sesión — `detectSessionInUrl: false`.**
+`createClient` viene con esa opción activada, y así supabase-js canjea los tokens
+del hash y **guarda la sesión antes de que corra una línea de la aplicación**. La
+persona queda dentro: cierra la pestaña, vuelve a entrar y sigue dentro **sin
+haber recordado nunca su contraseña**. Un enlace de correo que hace eso vale
+tanto como la clave, y entonces olvidarla deja de importar. Se vio el 13/08/2026
+en la primera prueba real de Hermes.
+
+Cómo queda, y por qué cada pieza:
+- El cliente arranca con `detectSessionInUrl: false` (`src/core/supabase.ts`).
+  Ese hash pasa a ser texto. Se puede apagar porque aquí **solo se entra con
+  usuario y contraseña**: ni OAuth ni enlaces mágicos.
+- `App.tsx` lee los tokens en el cuerpo del módulo y **borra el hash de la barra
+  de direcciones acto seguido** — dentro va un `refresh_token`, y dejarlo en el
+  historial del navegador es dejar una credencial escrita en la pared. Después
+  solo viven en memoria: un refresco obliga a pedir otro enlace, y eso es lo
+  correcto.
+- `authService.setNewPassword(tokens, clave)` abre la sesión, cambia la clave y
+  **la cierra en un `finally`**. El cierre no es limpieza, es el control: si el
+  enlace caducó, si la clave se rechaza o si se cae la red, tampoco puede quedar
+  una sesión abierta. `signOut()` es `scope: 'global'` por defecto, así que
+  además echa a las demás sesiones de esa cuenta — cambiar la contraseña debe
+  hacer eso.
+- Se retiró el escuchador de `PASSWORD_RECOVERY`: ese evento **lo dispara
+  `detectSessionInUrl`**, así que apagada la opción no puede saltar nunca. Una
+  red de seguridad que ya no puede atrapar nada es de la familia del `succeeded`
+  de pg_cron (§6.1) y del `✓ Guardado` sin escritura (§12.2).
+
+**La marca: `profiles.debe_cambiar_clave`.** Mientras una clave la conozca quien
+la generó, la cuenta tiene **dos dueños**. La columna es `NOT NULL DEFAULT
+false` y el frontend la lee `p.debe_cambiar_clave !== false`: **ausente ⇒
+obligar el cambio**. Misma familia que `token !== ''` (§6.1), `'' === ''` (§9.4)
+y la huella `NULL` (§9.5) — lo que no se puede comprobar no puede acabar
+diciendo que sí. Con la marca puesta **no se pinta la aplicación**: el modal
+sale sin X, sin cancelar y sin cerrarse al pulsar fuera, y la única salida es
+cerrar sesión.
+
+La quita `marcar_clave_cambiada()`, **`SECURITY DEFINER` sin parámetros**, porque
+`profiles` solo lo escribe un admin y debe seguir así: una política de «edita tu
+propia fila» dejaría a cualquiera cambiarse el `role`. Toca una columna de una
+fila, la de `auth.uid()`.
+
+⚠️ **`REVOKE ... FROM PUBLIC` NO quita un permiso concedido por nombre**, y el
+ensayo de la migración lo demostró: Supabase tiene `ALTER DEFAULT PRIVILEGES`
+que dan EXECUTE a `anon`, `authenticated` y `service_role` sobre cada función
+nueva de `public`, así que tras el REVOKE **`anon` seguía con EXECUTE**. Hay que
+nombrarlo. Ensaya siempre con `ROLLBACK` antes de un `COMMIT`.
 
 ### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
 
@@ -695,6 +787,11 @@ VITE_SUPABASE_ANON_KEY=
 # Resend (email)
 # ⚠️ Solo en Edge Functions — NUNCA en frontend
 RESEND_API_KEY=
+
+# URL pública de la app — a donde vuelve el enlace de recuperación (§6.4)
+# ⚠️ Solo en Edge Functions. Tiene que estar además en
+#    Authentication → URL Configuration → Redirect URLs, o Supabase la descarta.
+APP_URL=
 
 # Anthropic (IA)
 # ⚠️ Solo en Edge Functions — NUNCA en frontend

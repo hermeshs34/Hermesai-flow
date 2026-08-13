@@ -40,6 +40,10 @@ export interface User {
     role:           Role;
     organizationId: string;
     isActive:       boolean;
+    // true cuando la clave vigente se la puso un administrador por olvido.
+    // Mientras siga puesta, la cuenta tiene dos dueños: la app obliga a
+    // cambiarla antes de dejar usar nada.
+    debeCambiarClave: boolean;
 }
 
 // ── Matriz rol → permisos ────────────────────────────────────────────────────

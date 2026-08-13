@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { generarClaveTemporal } from '../_shared/clave.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -58,9 +59,13 @@ serve(async (req) => {
         if (!ROLES_VALIDOS.includes(role)) return json({ error: `Rol inválido: ${role}` }, 400);
 
         const cleanEmail = String(email).trim().toLowerCase();
+        // Hasta el 13/08/2026 la clave autogenerada salía de
+        // `Math.random().toString(36)`, que no es un generador criptográfico:
+        // su estado se reconstruye observando unas pocas salidas. Ahora la pone
+        // _shared/clave.ts con crypto.getRandomValues.
         const tempPassword = password && String(password).length >= 8
             ? String(password)
-            : `Hermes${Math.random().toString(36).slice(2, 10)}!`;
+            : generarClaveTemporal();
 
         // 4. Crear usuario en Auth (confirmado, sin email de verificación)
         const { data: created, error: createErr } = await admin.auth.admin.createUser({

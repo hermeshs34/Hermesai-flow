@@ -1,21 +1,52 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Zap, Shield, GitBranch, Bell, Activity } from 'lucide-react';
+import { Zap, Shield, GitBranch, Bell, Activity, Mail, Loader2, ArrowLeft } from 'lucide-react';
 import { authService } from '../../core/auth.service.ts';
 import type { User } from '../../core/user.types.ts';
 
 interface LoginViewProps {
     onLogin: (user: User) => void;
+    /** Aviso traído desde la URL, p. ej. un enlace de recuperación caducado. */
+    mensajeInicial?: string;
 }
 
 
-export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
+export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial }) => {
     const [email, setEmail]           = useState('');
     const [password, setPassword]     = useState('');
-    const [error, setError]           = useState('');
+    const [error, setError]           = useState(mensajeInicial ?? '');
     const [isLoading, setIsLoading]   = useState(false);
     const [lockoutSecs, setLockoutSecs] = useState(0);
     const [attempts, setAttempts]     = useState(0);
     const lockoutInterval             = useRef<ReturnType<typeof setInterval> | null>(null);
+
+    // ── Olvidé mi contraseña ──────────────────────────────────────────────
+    const [modoOlvido,   setModoOlvido]   = useState(false);
+    const [correoOlvido, setCorreoOlvido] = useState('');
+    const [enviando,     setEnviando]     = useState(false);
+    const [avisoOlvido,  setAvisoOlvido]  = useState('');
+
+    const pedirEnlace = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (enviando || !correoOlvido.trim()) return;
+        setEnviando(true);
+        try {
+            // La función responde lo mismo exista o no la cuenta, y ese mensaje
+            // se enseña tal cual: distinguir aquí convertiría el login en un
+            // comprobador de «¿trabaja fulano aquí?» abierto a internet.
+            setAvisoOlvido(await authService.requestPasswordReset(correoOlvido));
+        } catch (err) {
+            setAvisoOlvido((err as Error)?.message ?? 'No se pudo enviar el enlace. Inténtalo de nuevo en unos minutos.');
+        } finally {
+            setEnviando(false);
+        }
+    };
+
+    const abrirOlvido = () => {
+        setCorreoOlvido(email);   // si ya escribió el correo arriba, no lo repite
+        setAvisoOlvido('');
+        setError('');
+        setModoOlvido(true);
+    };
 
     useEffect(() => () => { if (lockoutInterval.current) clearInterval(lockoutInterval.current); }, []);
 
@@ -129,6 +160,76 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
                 </div>
 
                 <div style={{ width: '100%', maxWidth: '400px' }}>
+                    {modoOlvido ? (
+                    <>
+                        <div style={{ marginBottom: '2rem' }}>
+                            <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.4rem', letterSpacing: '-0.02em' }}>
+                                Recuperar acceso
+                            </h2>
+                            <p style={{ fontSize: '0.875rem', color: '#64748b', lineHeight: 1.6 }}>
+                                Te enviamos un enlace para elegir una contraseña nueva. Si no te llega en unos
+                                minutos, revisa la carpeta de correo no deseado o pídele al administrador que te
+                                asigne una clave temporal.
+                            </p>
+                        </div>
+
+                        <form onSubmit={pedirEnlace} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                            <div>
+                                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', marginBottom: '6px' }}>
+                                    Correo electrónico
+                                </label>
+                                <input
+                                    type="email" value={correoOlvido} onChange={e => setCorreoOlvido(e.target.value)}
+                                    placeholder="usuario@empresa.com" disabled={enviando} autoFocus
+                                    style={{
+                                        width: '100%', padding: '0.875rem 1rem', borderRadius: '10px',
+                                        border: '1px solid rgba(255,255,255,0.08)', fontSize: '0.9rem',
+                                        color: '#f1f5f9', backgroundColor: 'rgba(255,255,255,0.05)',
+                                        outline: 'none', boxSizing: 'border-box',
+                                    }}
+                                />
+                            </div>
+
+                            {avisoOlvido && (
+                                <div style={{
+                                    padding: '0.75rem 1rem', borderRadius: '10px',
+                                    background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)',
+                                    fontSize: '0.85rem', color: '#c7d2fe', lineHeight: 1.6,
+                                }}>
+                                    {avisoOlvido}
+                                </div>
+                            )}
+
+                            <button
+                                type="submit" disabled={enviando || !correoOlvido.trim()}
+                                style={{
+                                    width: '100%', padding: '0.9rem', borderRadius: '10px', border: 'none',
+                                    background: enviando || !correoOlvido.trim() ? 'rgba(255,255,255,0.05)' : 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                                    color: enviando || !correoOlvido.trim() ? '#475569' : '#fff',
+                                    fontSize: '0.95rem', fontWeight: 700,
+                                    cursor: enviando || !correoOlvido.trim() ? 'default' : 'pointer',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+                                    boxShadow: enviando || !correoOlvido.trim() ? 'none' : '0 4px 15px rgba(99,102,241,0.3)',
+                                }}
+                            >
+                                {enviando ? <Loader2 size={18} className="animate-spin" /> : <Mail size={18} />}
+                                {enviando ? 'Enviando...' : 'Enviarme el enlace'}
+                            </button>
+
+                            <button
+                                type="button" onClick={() => setModoOlvido(false)}
+                                style={{
+                                    background: 'none', border: 'none', color: '#64748b', fontSize: '0.8rem',
+                                    cursor: 'pointer', padding: '0.25rem', display: 'flex',
+                                    alignItems: 'center', justifyContent: 'center', gap: '6px',
+                                }}
+                            >
+                                <ArrowLeft size={14} /> Volver a iniciar sesión
+                            </button>
+                        </form>
+                    </>
+                    ) : (
+                    <>
                     <div style={{ marginBottom: '2rem' }}>
                         <h2 style={{ fontSize: '1.6rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.4rem', letterSpacing: '-0.02em' }}>
                             Iniciar Sesión
@@ -217,7 +318,21 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
                             <Shield size={18} />
                             {isLoading ? 'Verificando...' : 'Ingresar al Sistema'}
                         </button>
+
+                        {/* Sin esto, un olvido de contraseña deja a la persona fuera
+                            del sistema sin ninguna vía de vuelta. */}
+                        <button
+                            type="button" onClick={abrirOlvido}
+                            style={{
+                                background: 'none', border: 'none', color: '#818cf8', fontSize: '0.8rem',
+                                fontWeight: 600, cursor: 'pointer', padding: '0.25rem', textAlign: 'center',
+                            }}
+                        >
+                            ¿Olvidaste tu contraseña?
+                        </button>
                     </form>
+                    </>
+                    )}
 
                     <p style={{ marginTop: '2rem', fontSize: '0.75rem', color: '#334155', textAlign: 'center' }}>
                         HermesAI Flow v1.0 — Acceso restringido a usuarios autorizados

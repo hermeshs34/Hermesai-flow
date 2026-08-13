@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { KeyRound, X, Loader2, Eye, EyeOff, CheckCircle } from 'lucide-react';
+import { KeyRound, X, Loader2, Eye, EyeOff, CheckCircle, ShieldAlert } from 'lucide-react';
 import { authService } from '../core/auth.service';
 import { GovernanceService } from '../services/governance.service';
 import type { User } from '../core/user.types';
@@ -8,9 +8,19 @@ import { toast } from 'sonner';
 interface ChangePasswordModalProps {
     user:    User;
     onClose: () => void;
+    /**
+     * Cambio obligatorio: la clave vigente se la puso un administrador.
+     *
+     * Mientras siga puesta, la cuenta tiene dos dueños, así que el modal no se
+     * puede cerrar ni esquivar — ni con la X, ni pulsando fuera, ni cancelando.
+     * Quien no quiera cambiarla todavía tiene la salida honesta: cerrar sesión.
+     */
+    forced?: boolean;
+    /** Salida en modo obligatorio: si no cambias la clave, sales. */
+    onLogout?: () => void;
 }
 
-export function ChangePasswordModal({ user, onClose }: ChangePasswordModalProps) {
+export function ChangePasswordModal({ user, onClose, forced = false, onLogout }: ChangePasswordModalProps) {
     const [current, setCurrent] = useState('');
     const [next,    setNext]    = useState('');
     const [confirm, setConfirm] = useState('');
@@ -43,14 +53,22 @@ export function ChangePasswordModal({ user, onClose }: ChangePasswordModalProps)
     };
 
     return (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !saving && onClose()}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            onClick={() => !saving && !forced && onClose()}>
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
-                <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
+                <div className={`px-5 py-4 border-b flex items-center justify-between ${forced ? 'border-amber-100 bg-amber-50/70' : 'border-gray-100 bg-gray-50/60'}`}>
                     <div className="flex items-center gap-2">
-                        <KeyRound className="w-4 h-4 text-indigo-600" />
-                        <h3 className="font-semibold text-gray-800 text-sm">Cambiar mi contraseña</h3>
+                        {forced
+                            ? <ShieldAlert className="w-4 h-4 text-amber-600" />
+                            : <KeyRound className="w-4 h-4 text-indigo-600" />}
+                        <h3 className="font-semibold text-gray-800 text-sm">
+                            {forced ? 'Debes cambiar tu contraseña' : 'Cambiar mi contraseña'}
+                        </h3>
                     </div>
-                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                    {/* Sin X en modo obligatorio: no hay forma de esquivarlo. */}
+                    {!forced && (
+                        <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                    )}
                 </div>
 
                 {done ? (
@@ -59,13 +77,23 @@ export function ChangePasswordModal({ user, onClose }: ChangePasswordModalProps)
                             <CheckCircle className="w-6 h-6 text-emerald-500" />
                         </div>
                         <p className="text-sm font-semibold text-gray-800">Contraseña actualizada</p>
-                        <p className="text-xs text-gray-500">Usa tu nueva contraseña la próxima vez que inicies sesión.</p>
+                        <p className="text-xs text-gray-500">
+                            {forced
+                                ? 'La clave que te dio el administrador ya no sirve. A partir de ahora solo la conoces tú.'
+                                : 'Usa tu nueva contraseña la próxima vez que inicies sesión.'}
+                        </p>
                         <button onClick={onClose} className="w-full mt-2 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
-                            Listo
+                            {forced ? 'Continuar' : 'Listo'}
                         </button>
                     </div>
                 ) : (
                     <div className="p-5 space-y-4">
+                        {forced && (
+                            <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5 text-[11px] text-amber-800 leading-relaxed">
+                                Tu contraseña actual la generó un administrador porque la habías olvidado, así que
+                                <strong> hay otra persona que la conoce</strong>. Elige una nueva para seguir.
+                            </div>
+                        )}
                         <div>
                             <label className="block text-xs font-semibold text-gray-600 mb-1">Contraseña actual</label>
                             <input type={show ? 'text' : 'password'} value={current} onChange={e => setCurrent(e.target.value)}
@@ -106,9 +134,10 @@ export function ChangePasswordModal({ user, onClose }: ChangePasswordModalProps)
                         </div>
 
                         <div className="flex gap-2 pt-1">
-                            <button onClick={onClose} disabled={saving}
+                            {/* En modo obligatorio no se cancela: la única salida es salir. */}
+                            <button onClick={forced ? onLogout : onClose} disabled={saving}
                                 className="flex-1 py-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50">
-                                Cancelar
+                                {forced ? 'Cerrar sesión' : 'Cancelar'}
                             </button>
                             <button onClick={handleSave} disabled={!valid || saving}
                                 className="flex-1 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-40 flex items-center justify-center gap-2">

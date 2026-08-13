@@ -1,5 +1,6 @@
 import { supabase } from '../core/supabase.ts';
 import type { Role, User } from '../core/user.types.ts';
+import { mensajeDeEdgeFunction } from '../utils/errores.ts';
 
 // ── Tipos ────────────────────────────────────────────────────────────────────
 export interface AuditEntry {
@@ -87,9 +88,34 @@ export class GovernanceService {
         payload: { email: string; name: string; role: Role; password?: string }
     ): Promise<{ tempPassword?: string }> {
         const { data, error } = await supabase.functions.invoke('admin-create-user', { body: payload });
-        if (error) throw new Error(error.message);
+        if (error) throw new Error(await mensajeDeEdgeFunction(error, 'No se pudo crear el usuario.'));
         if (data?.error) throw new Error(data.error);
         return { tempPassword: data?.temp_password };
+    }
+
+    /**
+     * Asigna una clave temporal a alguien que olvidó la suya.
+     *
+     * La clave la inventa el servidor y vuelve UNA vez: no se guarda en ningún
+     * sitio ni se escribe en la auditoría, que registra el hecho y no el
+     * secreto. La cuenta queda marcada para forzar el cambio en el primer
+     * acceso — mientras esa clave siga puesta, la conocen dos personas.
+     *
+     * Quién puede hacerlo lo decide la Edge Function con el JWT (solo admin de
+     * la misma organización); esto es la pantalla, no el control.
+     */
+    static async resetPassword(userId: string): Promise<{ tempPassword: string }> {
+        const { data, error } = await supabase.functions.invoke('admin-reset-password', {
+            body: { userId },
+        });
+        if (error) throw new Error(await mensajeDeEdgeFunction(error, 'No se pudo restablecer la contraseña.'));
+        if (data?.error) throw new Error(data.error);
+        if (!data?.temp_password) {
+            // Sin clave que enseñar no hay nada que entregar: decirlo, y no
+            // dejar un «hecho» que el admin no pueda usar.
+            throw new Error('El servidor no devolvió la clave temporal. Vuelve a intentarlo.');
+        }
+        return { tempPassword: data.temp_password as string };
     }
 
     // ¿Cuántos administradores ACTIVOS hay? (salvaguarda último admin)

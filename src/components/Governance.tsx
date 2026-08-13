@@ -3,7 +3,7 @@ import {
     Users, ShieldCheck, ScrollText, Loader2, Search,
     CheckCircle, XCircle, Lock, AlertTriangle, UserPlus, X, Copy, ClipboardCheck,
     Plus, Pencil, Trash2, ToggleLeft, ToggleRight, Sparkles, FlaskConical,
-    TrendingUp, Clock, ChevronDown, ChevronUp, BookOpen,
+    TrendingUp, Clock, ChevronDown, ChevronUp, BookOpen, KeyRound,
 } from 'lucide-react';
 import { GovernanceService, type ManagedUser, type AuditEntry } from '../services/governance.service';
 import { ROL_META, ROLES_ASIGNABLES, type Role, type User } from '../core/user.types';
@@ -97,6 +97,11 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [creating,   setCreating]   = useState(false);
     const [form, setForm] = useState<{ name: string; email: string; role: Role }>({ name: '', email: '', role: 'operador' });
     const [tempPass, setTempPass] = useState<string | null>(null);
+
+    // Restablecer la clave de otro (olvido)
+    const [resetUser,  setResetUser]  = useState<ManagedUser | null>(null);
+    const [resetting,  setResetting]  = useState(false);
+    const [resetPass,  setResetPass]  = useState<string | null>(null);
 
     const isAdmin      = authService.hasPermission(currentUser, 'manage_users');
     const canApprove   = authService.hasPermission(currentUser, 'approve_tasks');
@@ -374,6 +379,24 @@ export function Governance({ currentUser }: GovernanceProps) {
         } finally { setSavingId(null); }
     };
 
+    // Clave temporal para quien olvidó la suya.
+    //
+    // Invalida la contraseña actual de esa persona en el acto, así que se
+    // confirma antes: el usuario que estuviera dentro seguirá con su sesión,
+    // pero no podrá volver a entrar con lo que sabía.
+    const handleReset = async () => {
+        if (!resetUser || resetting) return;
+        setResetting(true);
+        try {
+            const { tempPassword } = await GovernanceService.resetPassword(resetUser.id);
+            setResetPass(tempPassword);
+        } catch (e) {
+            toast.error((e as Error)?.message ?? 'No se pudo restablecer la contraseña');
+        } finally { setResetting(false); }
+    };
+
+    const cerrarReset = () => { setResetUser(null); setResetPass(null); };
+
     // Sin ningún permiso relevante — bloquear completamente
     if (!isAdmin && !canApprove && !canViewAudit) {
         return (
@@ -479,6 +502,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                                             <th className="text-left px-5 py-2 font-bold">Usuario</th>
                                             <th className="text-left px-3 py-2 font-bold">Rol</th>
                                             <th className="text-center px-3 py-2 font-bold">Estado</th>
+                                            <th className="text-center px-3 py-2 font-bold">Clave</th>
                                             <th className="text-right px-5 py-2 font-bold">Creado</th>
                                         </tr>
                                     </thead>
@@ -524,6 +548,25 @@ export function Governance({ currentUser }: GovernanceProps) {
                                                         {u.isActive ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
                                                         {u.isActive ? 'Activo' : 'Inactivo'}
                                                     </button>
+                                                </td>
+                                                <td className="px-3 py-3 text-center">
+                                                    {/* Para uno mismo no: «Cambiar mi contraseña» pide la actual,
+                                                        y saltarse esa comprobación desde aquí sería regalarle a
+                                                        cualquiera con la sesión de un admin abierta una forma de
+                                                        cambiarle la clave sin conocerla. */}
+                                                    {u.id === currentUser.id ? (
+                                                        <span className="text-[10px] text-gray-300">—</span>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => { setResetPass(null); setResetUser(u); }}
+                                                            disabled={savingId === u.id}
+                                                            title={`Asignar una clave temporal a ${u.name} (olvidó la suya)`}
+                                                            className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+                                                        >
+                                                            <KeyRound className="w-3 h-3" />
+                                                            Restablecer
+                                                        </button>
+                                                    )}
                                                 </td>
                                                 <td className="px-5 py-3 text-right text-[11px] text-gray-400">{fmtDate(u.createdAt)}</td>
                                             </tr>
@@ -1088,6 +1131,74 @@ export function Governance({ currentUser }: GovernanceProps) {
                     </>
                 )}
             </div>
+
+            {/* ── Modal Restablecer contraseña ─────────────────────────── */}
+            {resetUser && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !resetting && cerrarReset()}>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
+                        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
+                            <div className="flex items-center gap-2">
+                                <KeyRound className="w-4 h-4 text-amber-600" />
+                                <h3 className="font-semibold text-gray-800 text-sm">Restablecer contraseña</h3>
+                            </div>
+                            <button onClick={cerrarReset} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+                        </div>
+
+                        {resetPass ? (
+                            <div className="p-6 text-center space-y-3">
+                                <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center mx-auto">
+                                    <CheckCircle className="w-6 h-6 text-emerald-500" />
+                                </div>
+                                <p className="text-sm font-semibold text-gray-800">Clave temporal generada</p>
+                                <p className="text-xs text-gray-500">
+                                    Entrégasela a <strong>{resetUser.name}</strong> por un medio que no sea este.
+                                    El sistema le obligará a cambiarla en cuanto entre.
+                                </p>
+                                <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                                    <code className="flex-1 text-sm font-mono text-gray-800 text-left">{resetPass}</code>
+                                    <button
+                                        onClick={() => { navigator.clipboard.writeText(resetPass); toast.success('Clave copiada'); }}
+                                        className="text-gray-400 hover:text-indigo-600"><Copy className="w-4 h-4" /></button>
+                                </div>
+                                {/* No se guarda en ningún sitio: si se cierra sin copiarla, hay que repetir. */}
+                                <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                                    Cópiala ahora. No se guarda en ninguna parte y no se puede volver a consultar.
+                                </p>
+                                <button onClick={cerrarReset}
+                                    className="w-full mt-2 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+                                    Entendido
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="p-5 space-y-4">
+                                <p className="text-sm text-gray-700">
+                                    Vas a generar una clave temporal para <strong>{resetUser.name}</strong>
+                                    <span className="text-gray-400"> ({resetUser.email})</span>.
+                                </p>
+                                <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5 space-y-1.5">
+                                    <p className="text-[11px] text-amber-800">
+                                        Su contraseña actual dejará de funcionar <strong>inmediatamente</strong>.
+                                    </p>
+                                    <p className="text-[11px] text-amber-800">
+                                        Hazlo solo si esa persona te lo ha pedido y sabes que es ella.
+                                    </p>
+                                </div>
+                                <div className="flex gap-2 pt-1">
+                                    <button onClick={cerrarReset} disabled={resetting}
+                                        className="flex-1 py-2 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-50">
+                                        Cancelar
+                                    </button>
+                                    <button onClick={handleReset} disabled={resetting}
+                                        className="flex-1 py-2 text-sm font-semibold bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 flex items-center justify-center gap-2">
+                                        {resetting ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
+                                        {resetting ? 'Generando...' : 'Generar clave temporal'}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* ── Modal Nuevo Usuario ──────────────────────────────────── */}
             {showCreate && (

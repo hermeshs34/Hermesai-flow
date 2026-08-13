@@ -1141,7 +1141,10 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
 
                 {/* ── Hero personalizado por rol + score de salud ──────────── */}
                 <RoleHeroCard
-                    user={currentUser ?? { id: '', email: '', name: 'Sistema', role: 'admin', organizationId: '', isActive: true }}
+                    // Relleno de pintado cuando aún no hay usuario; no gobierna
+                    // ningún permiso. El cambio de clave obligatorio lo decide
+                    // App.tsx con el usuario real, nunca este marcador.
+                    user={currentUser ?? { id: '', email: '', name: 'Sistema', role: 'admin', organizationId: '', isActive: true, debeCambiarClave: false }}
                     runs={runs}
                     pendingCount={pendingAppr}
                     workflows={workflows}
