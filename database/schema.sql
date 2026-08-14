@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict f7hcJH18CECxRwQgYBYPMpIvYnEQk08ZVrEJNuRc58FjhS6tSSUgNbV1mf2OdZF
+-- \restrict I9PDfr9RcGokdG7WUICXw0nMzSCbQ3OntXnS0nbxVeXmIkLDY7UVoHNbFmYpUNz
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -33,6 +33,203 @@ ALTER SCHEMA "public" OWNER TO "pg_database_owner";
 --
 
 COMMENT ON SCHEMA "public" IS 'standard public schema';
+
+
+--
+-- Name: delegaciones_validar(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."delegaciones_validar"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+DECLARE
+    v_rol_titular  text;
+    v_org_titular  uuid;
+    v_org_suplente uuid;
+    v_act_suplente boolean;
+BEGIN
+    IF NEW.usuario_id = NEW.suplente_id THEN
+        RAISE EXCEPTION 'No se puede delegar en uno mismo.';
+    END IF;
+
+    IF NEW.hasta <= NEW.desde THEN
+        RAISE EXCEPTION 'La delegación tiene que terminar después de empezar.';
+    END IF;
+
+    SELECT p.role, p.organization_id INTO v_rol_titular, v_org_titular
+      FROM profiles p WHERE p.id = NEW.usuario_id;
+
+    SELECT p.organization_id, p.is_active INTO v_org_suplente, v_act_suplente
+      FROM profiles p WHERE p.id = NEW.suplente_id;
+
+    IF v_rol_titular IS NULL OR v_org_suplente IS NULL THEN
+        RAISE EXCEPTION 'No se pudo comprobar la delegación: alguna de las dos personas no existe.';
+    END IF;
+
+    IF v_org_titular <> NEW.organization_id OR v_org_suplente <> NEW.organization_id THEN
+        RAISE EXCEPTION 'Las dos personas de una delegación tienen que ser de la misma organización.';
+    END IF;
+
+    IF v_act_suplente IS NOT TRUE THEN
+        RAISE EXCEPTION 'El suplente elegido está desactivado: no puede recibir una delegación.';
+    END IF;
+
+    IF v_rol_titular = 'cumplimiento' AND NEW.usuario_id IS DISTINCT FROM auth.uid() THEN
+        RAISE EXCEPTION 'Una delegación del Oficial de Cumplimiento solo puede crearla esa misma persona. Ni un administrador puede nombrarse su suplente.';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM delegaciones d
+         WHERE d.usuario_id = NEW.usuario_id
+           AND d.id IS DISTINCT FROM NEW.id
+           AND d.desde < NEW.hasta
+           AND d.hasta > NEW.desde
+    ) THEN
+        RAISE EXCEPTION 'Ya hay otra delegación de esa persona que se solapa con estas fechas. Anula la anterior antes de crear esta.';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."delegaciones_validar"() OWNER TO "postgres";
+
+--
+-- Name: guardar_lienzo("uuid", "jsonb", "jsonb"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."guardar_lienzo"("p_workflow_id" "uuid", "p_nodes" "jsonb", "p_connections" "jsonb") RETURNS "jsonb"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO 'public'
+    AS $$
+DECLARE
+    v_org        uuid;
+    v_ids        uuid[];
+    v_ids_conn   uuid[];
+    v_esperados  integer;
+    v_borrados   integer;
+    v_tocado     integer;
+BEGIN
+    IF p_nodes IS NULL OR p_connections IS NULL THEN
+        RAISE EXCEPTION 'No se guardó nada: el editor no envió la lista de nodos o la de conexiones. Vuelve a abrir el flujo e inténtalo otra vez.';
+    END IF;
+
+    IF jsonb_typeof(p_nodes) <> 'array' OR jsonb_typeof(p_connections) <> 'array' THEN
+        RAISE EXCEPTION 'No se guardó nada: el editor envió los nodos o las conexiones en un formato inesperado.';
+    END IF;
+
+    SELECT w.organization_id INTO v_org
+      FROM workflows w
+     WHERE w.id = p_workflow_id;
+
+    IF v_org IS NULL THEN
+        RAISE EXCEPTION 'No se guardó nada: el flujo no existe o no pertenece a tu organización.';
+    END IF;
+
+    v_ids      := ARRAY(SELECT (e->>'id')::uuid FROM jsonb_array_elements(p_nodes)       AS e);
+    v_ids_conn := ARRAY(SELECT (e->>'id')::uuid FROM jsonb_array_elements(p_connections) AS e);
+
+    IF EXISTS (
+        SELECT 1 FROM workflow_nodes n
+         WHERE n.id = ANY (v_ids) AND n.workflow_id <> p_workflow_id
+    ) THEN
+        RAISE EXCEPTION 'No se guardó nada: uno de los nodos que se intentaba guardar pertenece a otro flujo. Cierra el editor, vuelve a abrir el flujo y repite el cambio.';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM workflow_connections c
+         WHERE c.id = ANY (v_ids_conn) AND c.workflow_id <> p_workflow_id
+    ) THEN
+        RAISE EXCEPTION 'No se guardó nada: una de las conexiones que se intentaba guardar pertenece a otro flujo. Cierra el editor, vuelve a abrir el flujo y repite el cambio.';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+          FROM jsonb_to_recordset(p_connections) AS c(source_node_id uuid, target_node_id uuid)
+         WHERE c.source_node_id IS NULL
+            OR c.target_node_id IS NULL
+            OR NOT (c.source_node_id = ANY (v_ids))
+            OR NOT (c.target_node_id = ANY (v_ids))
+    ) THEN
+        RAISE EXCEPTION 'No se guardó nada: hay una conexión que apunta a un nodo que ya no está en el flujo. Borra esa conexión y vuelve a guardar.';
+    END IF;
+
+    DELETE FROM workflow_connections c
+     WHERE c.workflow_id = p_workflow_id
+       AND NOT (c.id = ANY (v_ids_conn));
+
+    SELECT count(*) INTO v_esperados
+      FROM workflow_nodes n
+     WHERE n.workflow_id = p_workflow_id
+       AND NOT (n.id = ANY (v_ids));
+
+    DELETE FROM workflow_nodes n
+     WHERE n.workflow_id = p_workflow_id
+       AND NOT (n.id = ANY (v_ids));
+    GET DIAGNOSTICS v_borrados = ROW_COUNT;
+
+    IF v_borrados <> v_esperados THEN
+        RAISE EXCEPTION 'No se guardó nada: tu rol no puede modificar los nodos de este flujo.'
+            USING ERRCODE = '42501';
+    END IF;
+
+    INSERT INTO workflow_nodes (
+        id, workflow_id, organization_id, type, category, title,
+        position_x, position_y, config_json, status
+    )
+    SELECT x.id, p_workflow_id, v_org, x.type, x.category, x.title,
+           round(COALESCE(x.position_x, 0))::integer,
+           round(COALESCE(x.position_y, 0))::integer,
+           COALESCE(x.config_json, '{}'::jsonb),
+           COALESCE(NULLIF(x.status, ''), 'idle')
+      FROM jsonb_to_recordset(p_nodes) AS x(
+           id uuid, type text, category text, title text,
+           position_x numeric, position_y numeric, config_json jsonb, status text)
+    ON CONFLICT (id) DO UPDATE SET
+           type            = EXCLUDED.type,
+           category        = EXCLUDED.category,
+           title           = EXCLUDED.title,
+           position_x      = EXCLUDED.position_x,
+           position_y      = EXCLUDED.position_y,
+           config_json     = EXCLUDED.config_json,
+           status          = EXCLUDED.status;
+
+    INSERT INTO workflow_connections (id, workflow_id, source_node_id, target_node_id, branch)
+    SELECT y.id, p_workflow_id, y.source_node_id, y.target_node_id, y.branch
+      FROM jsonb_to_recordset(p_connections) AS y(
+           id uuid, source_node_id uuid, target_node_id uuid, branch text)
+    ON CONFLICT (id) DO UPDATE SET
+           source_node_id = EXCLUDED.source_node_id,
+           target_node_id = EXCLUDED.target_node_id,
+           branch         = EXCLUDED.branch;
+
+    UPDATE workflows w SET updated_at = now() WHERE w.id = p_workflow_id;
+    GET DIAGNOSTICS v_tocado = ROW_COUNT;
+
+    IF v_tocado <> 1 THEN
+        RAISE EXCEPTION 'No se guardó nada: tu rol no puede modificar este flujo.'
+            USING ERRCODE = '42501';
+    END IF;
+
+    RETURN jsonb_build_object(
+        'workflow_id',        p_workflow_id,
+        'nodos',              cardinality(v_ids),
+        'conexiones',         cardinality(v_ids_conn),
+        'nodos_eliminados',   v_borrados
+    );
+END;
+$$;
+
+
+ALTER FUNCTION "public"."guardar_lienzo"("p_workflow_id" "uuid", "p_nodes" "jsonb", "p_connections" "jsonb") OWNER TO "postgres";
+
+--
+-- Name: FUNCTION "guardar_lienzo"("p_workflow_id" "uuid", "p_nodes" "jsonb", "p_connections" "jsonb"); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION "public"."guardar_lienzo"("p_workflow_id" "uuid", "p_nodes" "jsonb", "p_connections" "jsonb") IS 'Guarda nodos y conexiones de un flujo en una sola transacción, reconciliando en vez de borrar y reinsertar. SECURITY INVOKER: la RLS sigue mandando.';
 
 
 --
@@ -132,7 +329,7 @@ CREATE TABLE IF NOT EXISTS "public"."audit_log" (
     "ip_address" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "audit_log_accion_check" CHECK (("accion" = ANY (ARRAY['crear'::"text", 'modificar'::"text", 'eliminar'::"text", 'ejecutar'::"text", 'aprobar'::"text", 'rechazar'::"text", 'login'::"text", 'cambio_rol'::"text", 'escalamiento'::"text", 'vencimiento'::"text"]))),
-    CONSTRAINT "audit_log_entidad_check" CHECK (("entidad" = ANY (ARRAY['workflow'::"text", 'usuario'::"text", 'integracion'::"text", 'aprobacion'::"text", 'sesion'::"text"])))
+    CONSTRAINT "audit_log_entidad_check" CHECK (("entidad" = ANY (ARRAY['workflow'::"text", 'usuario'::"text", 'integracion'::"text", 'aprobacion'::"text", 'sesion'::"text", 'matriz_aprobacion'::"text", 'delegacion'::"text"])))
 );
 
 
@@ -384,11 +581,19 @@ CREATE TABLE IF NOT EXISTS "public"."tareas_aprobacion" (
     "nivel_escalamiento" integer DEFAULT 0 NOT NULL,
     "escalado_at" timestamp with time zone,
     "rol_aprobador_original" "text",
+    "delegacion_id" "uuid",
     CONSTRAINT "tareas_aprobacion_estado_check" CHECK (("estado" = ANY (ARRAY['pendiente'::"text", 'aprobado'::"text", 'rechazado'::"text", 'devuelto'::"text", 'expirado'::"text"])))
 );
 
 
 ALTER TABLE "public"."tareas_aprobacion" OWNER TO "postgres";
+
+--
+-- Name: COLUMN "tareas_aprobacion"."delegacion_id"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON COLUMN "public"."tareas_aprobacion"."delegacion_id" IS 'Si la tarea se resolvió por delegación, el id de la delegación usada. Sin FK a propósito: borrar la delegación no debe borrar el hecho de que se usó.';
+
 
 --
 -- Name: workflow_connections; Type: TABLE; Schema: public; Owner: postgres
@@ -576,6 +781,20 @@ ALTER TABLE ONLY "public"."workflows"
 
 
 --
+-- Name: delegaciones_suplente_vigencia_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "delegaciones_suplente_vigencia_idx" ON "public"."delegaciones" USING "btree" ("suplente_id", "desde", "hasta");
+
+
+--
+-- Name: delegaciones_usuario_vigencia_idx; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "delegaciones_usuario_vigencia_idx" ON "public"."delegaciones" USING "btree" ("usuario_id", "desde", "hasta");
+
+
+--
 -- Name: idx_audit_entidad; Type: INDEX; Schema: public; Owner: postgres
 --
 
@@ -664,6 +883,13 @@ CREATE INDEX "idx_workflow_nodes_workflow" ON "public"."workflow_nodes" USING "b
 --
 
 CREATE INDEX "idx_workflows_org" ON "public"."workflows" USING "btree" ("organization_id");
+
+
+--
+-- Name: delegaciones delegaciones_validar_trg; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "delegaciones_validar_trg" BEFORE INSERT OR UPDATE ON "public"."delegaciones" FOR EACH ROW EXECUTE FUNCTION "public"."delegaciones_validar"();
 
 
 --
@@ -1159,6 +1385,24 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 --
+-- Name: FUNCTION "delegaciones_validar"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."delegaciones_validar"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."delegaciones_validar"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."delegaciones_validar"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "guardar_lienzo"("p_workflow_id" "uuid", "p_nodes" "jsonb", "p_connections" "jsonb"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."guardar_lienzo"("p_workflow_id" "uuid", "p_nodes" "jsonb", "p_connections" "jsonb") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."guardar_lienzo"("p_workflow_id" "uuid", "p_nodes" "jsonb", "p_connections" "jsonb") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."guardar_lienzo"("p_workflow_id" "uuid", "p_nodes" "jsonb", "p_connections" "jsonb") TO "service_role";
+
+
+--
 -- Name: FUNCTION "is_admin"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -1375,5 +1619,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict f7hcJH18CECxRwQgYBYPMpIvYnEQk08ZVrEJNuRc58FjhS6tSSUgNbV1mf2OdZF
+-- \unrestrict I9PDfr9RcGokdG7WUICXw0nMzSCbQ3OntXnS0nbxVeXmIkLDY7UVoHNbFmYpUNz
 

@@ -26,8 +26,9 @@ type AuditAccion = 'crear' | 'modificar' | 'eliminar' | 'ejecutar' | 'aprobar' |
 // ⚠️ Estos valores los comprueba el CHECK `audit_log_entidad_check` en la base.
 // Añadir uno aquí sin migrarlo allí hace que el INSERT se rechace — y como el
 // audit es best-effort, se perdería en silencio. `matriz_aprobacion` entró el
-// 13/08/2026 (20260813_audit_matriz_aprobacion.sql).
-type AuditEntidad = 'workflow' | 'usuario' | 'integracion' | 'aprobacion' | 'sesion' | 'matriz_aprobacion';
+// 13/08/2026 (20260813_audit_matriz_aprobacion.sql) y `delegacion` el 14/08
+// (20260814_delegaciones_operativas.sql).
+type AuditEntidad = 'workflow' | 'usuario' | 'integracion' | 'aprobacion' | 'sesion' | 'matriz_aprobacion' | 'delegacion';
 
 // ── Servicio de Gobierno ─────────────────────────────────────────────────────
 export class GovernanceService {

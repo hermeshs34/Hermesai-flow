@@ -3,10 +3,11 @@ import {
     Users, ShieldCheck, ScrollText, Loader2, Search,
     CheckCircle, XCircle, Lock, AlertTriangle, UserPlus, X, Copy, ClipboardCheck,
     Plus, Pencil, Trash2, ToggleLeft, ToggleRight, Sparkles, FlaskConical,
-    TrendingUp, Clock, ChevronDown, ChevronUp, BookOpen, KeyRound,
+    TrendingUp, Clock, ChevronDown, ChevronUp, BookOpen, KeyRound, UserCog,
 } from 'lucide-react';
 import { GovernanceService, type ManagedUser, type AuditEntry } from '../services/governance.service';
-import { ROL_META, ROLES_ASIGNABLES, type Role, type User } from '../core/user.types';
+import { ROL_META, ROLES_ASIGNABLES, ROLES_REGULATORIOS, puedeResolverTarea, type Role, type User } from '../core/user.types';
+import { useRolesDelegados } from '../utils/delegaciones';
 import { authService } from '../core/auth.service';
 import { supabase } from '../core/supabase';
 import { fechaHoraVE } from '../utils/fecha';
@@ -20,7 +21,18 @@ interface GovernanceProps {
     currentUser: User;
 }
 
-type Tab = 'usuarios' | 'auditoria' | 'matriz' | 'aprobaciones';
+type Tab = 'usuarios' | 'auditoria' | 'matriz' | 'aprobaciones' | 'delegaciones';
+
+interface DelegacionFila {
+    id:              string;
+    usuario_id:      string;
+    suplente_id:     string;
+    desde:           string;
+    hasta:           string;
+    motivo:          string | null;
+    titular:  { name: string | null; email: string | null; role: string | null } | null;
+    suplente: { name: string | null; email: string | null; role: string | null } | null;
+}
 
 interface TareaAprobacion {
     id: string;
@@ -29,6 +41,10 @@ interface TareaAprobacion {
     node_id: string;
     node_title: string;
     rol_aprobador: string;
+    // Quien lanzó el flujo. Declarado explícitamente porque de él depende la
+    // segregación de funciones: si no viniera en el `select`, `puedeResolverTarea`
+    // lo vería `undefined` y dejaría aprobar al propio solicitante sin decir nada.
+    solicitante_id: string | null;
     descripcion: string;
     monto: number | null;
     categoria: string | null;
@@ -66,6 +82,16 @@ export function Governance({ currentUser }: GovernanceProps) {
     const [resolvingId,  setResolvingId]  = useState<string | null>(null);
     const [comentario,   setComentario]   = useState<Record<string, string>>({});
     const [savingId,     setSavingId]     = useState<string | null>(null);
+
+    // ── Delegaciones (suplencias) ────────────────────────────────────────────
+    const rolesDelegados = useRolesDelegados(currentUser.id, currentUser.organizationId);
+    const [delegaciones,   setDelegaciones]   = useState<DelegacionFila[]>([]);
+    const [showDelegForm,  setShowDelegForm]  = useState(false);
+    const [savingDeleg,    setSavingDeleg]    = useState(false);
+    const [anulandoDeleg,  setAnulandoDeleg]  = useState<string | null>(null);
+    const [delegForm,      setDelegForm]      = useState({
+        usuario_id: currentUser.id, suplente_id: '', desde: '', hasta: '', motivo: '',
+    });
 
     // Matriz CRUD — F3.3
     type MatrizRegla = {
@@ -117,15 +143,98 @@ export function Governance({ currentUser }: GovernanceProps) {
     // (20260803_audit_read_por_rol.sql). Una sola fuente de verdad.
     const canViewAudit = authService.hasPermission(currentUser, 'view_audit');
 
-    // Roles regulatorios (AML/CFT) — el admin NO puede aprobar sus tareas (segregación de funciones)
-    // ⚠️ Copiada en `WorkQueue.tsx`, `Sidebar.tsx` y en la Edge Function
-    // `resolve-approval`, que es quien manda de verdad. Si cambias una, las cuatro.
-    const ROLES_REGULATORIOS = ['cumplimiento'];
-    const canResolve = (tarea: TareaAprobacion) => {
-        if (ROLES_REGULATORIOS.includes(tarea.rol_aprobador)) {
-            return currentUser.role === tarea.rol_aprobador;
+    // La regla vive en `user.types.ts` (gemela de `resolve-approval`, que es la
+    // que manda). Aquí faltaba la segregación de funciones: se pintaba «Aprobar»
+    // en tareas del propio solicitante y la Edge Function las rechazaba con 403.
+    const canResolve = (tarea: TareaAprobacion) => puedeResolverTarea(currentUser, tarea, rolesDelegados);
+
+    // ── Handlers Delegaciones ────────────────────────────────────────────────
+    //
+    // La tabla existía desde F1 sin que la leyera una sola línea de código.
+    // Conectarla resuelve un riesgo concreto: hay UN Oficial de Cumplimiento y
+    // sus aprobaciones no las puede resolver nadie más —ni un admin, §6.2— ni
+    // escalan al vencer. Sin suplencia, una baja es una parada de todas las
+    // aprobaciones regulatorias.
+    const esVigente = (d: DelegacionFila) => {
+        const ahora = Date.now();
+        return new Date(d.desde).getTime() <= ahora && new Date(d.hasta).getTime() >= ahora;
+    };
+
+    // Un admin puede dejar una suplencia por otro, PERO no por alguien con rol
+    // regulatorio: eso convertiría la delegación en la puerta de al lado de §6.2
+    // —un admin nombrándose suplente del Oficial de Cumplimiento con un clic—.
+    // Lo impide de verdad el trigger `delegaciones_validar()` de la base; esto
+    // solo evita que la pantalla ofrezca algo que la base va a rechazar (§12.2).
+    const puedeDelegarPor = (u: ManagedUser) =>
+        u.id === currentUser.id ||
+        (isAdmin && !ROLES_REGULATORIOS.includes(u.role as Role));
+
+    const guardarDelegacion = async () => {
+        const { usuario_id, suplente_id, desde, hasta, motivo } = delegForm;
+        if (!usuario_id || !suplente_id || !desde || !hasta) {
+            toast.error('Titular, suplente y las dos fechas son obligatorios');
+            return;
         }
-        return isAdmin || currentUser.role === tarea.rol_aprobador;
+        setSavingDeleg(true);
+        try {
+            const titular  = users.find(u => u.id === usuario_id);
+            const suplente = users.find(u => u.id === suplente_id);
+
+            const { data: creada, error } = await supabase
+                .from('delegaciones')
+                .insert({
+                    organization_id: currentUser.organizationId,
+                    usuario_id, suplente_id,
+                    // `datetime-local` da hora local sin zona; el ISO la fija.
+                    desde: new Date(desde).toISOString(),
+                    hasta: new Date(hasta).toISOString(),
+                    motivo: motivo.trim() || null,
+                })
+                .select('id')
+                .single();
+            // El trigger de la base devuelve mensajes escritos para una persona
+            // («solo puede crearla esa misma persona», «se solapa con otra»):
+            // se enseñan tal cual, que para eso están.
+            if (error) throw new Error(error.message);
+
+            await GovernanceService.log(currentUser, 'crear', 'delegacion', {
+                entidadId:   creada?.id,
+                descripcion: `Delegación: ${titular?.name ?? usuario_id} (${titular?.role ?? '—'}) → ` +
+                             `${suplente?.name ?? suplente_id}, del ${fechaHoraVE(desde)} al ${fechaHoraVE(hasta)}` +
+                             `${motivo.trim() ? ` — ${motivo.trim()}` : ''}`,
+                despues:     { usuario_id, suplente_id, desde, hasta, motivo: motivo.trim() || null },
+            });
+
+            toast.success('Delegación creada');
+            setShowDelegForm(false);
+            setDelegForm({ usuario_id: currentUser.id, suplente_id: '', desde: '', hasta: '', motivo: '' });
+            load();
+        } catch (err: any) {
+            toast.error(err.message);
+        } finally {
+            setSavingDeleg(false);
+        }
+    };
+
+    const anularDelegacion = async (d: DelegacionFila) => {
+        setAnulandoDeleg(d.id);
+        try {
+            const { error } = await supabase.from('delegaciones').delete().eq('id', d.id);
+            if (error) throw new Error(error.message);
+            // Se borra la delegación, no el rastro: las tareas que se resolvieron
+            // con ella guardan `delegacion_id`, y el audit_log guarda los nombres.
+            await GovernanceService.log(currentUser, 'eliminar', 'delegacion', {
+                entidadId:   d.id,
+                descripcion: `Delegación anulada: ${d.titular?.name ?? d.usuario_id} → ${d.suplente?.name ?? d.suplente_id}`,
+                antes:       d,
+            });
+            toast.success('Delegación anulada');
+            load();
+        } catch (err: any) {
+            toast.error(err.message);
+        } finally {
+            setAnulandoDeleg(null);
+        }
     };
 
     // ── Handlers Matriz ──────────────────────────────────────────────────────
@@ -321,6 +430,18 @@ export function Governance({ currentUser }: GovernanceProps) {
                 .eq('estado', 'pendiente')
                 .order('created_at', { ascending: false });
             setAprobaciones((tareas ?? []) as TareaAprobacion[]);
+
+            // Las delegaciones las lee toda la organización (`deleg_read_org`), y
+            // está bien que así sea: quién autoriza en nombre de quién no es un
+            // dato privado, es parte del control interno.
+            const { data: delegs, error: errDelegs } = await supabase
+                .from('delegaciones')
+                .select('id, usuario_id, suplente_id, desde, hasta, motivo, ' +
+                        'titular:usuario_id(name, email, role), suplente:suplente_id(name, email, role)')
+                .eq('organization_id', currentUser.organizationId)
+                .order('desde', { ascending: false });
+            if (errDelegs) throw new Error(errDelegs.message);
+            setDelegaciones((delegs ?? []) as unknown as DelegacionFila[]);
         } catch {
             toast.error('Error cargando datos de gobierno');
         } finally {
@@ -468,17 +589,30 @@ export function Governance({ currentUser }: GovernanceProps) {
     // dueño de proceso y a cumplimiento, no solo al admin.
     const ALL_TABS: { id: Tab; label: string; icon: typeof Users; badge?: number; visible: boolean }[] = [
         { id: 'usuarios',      label: 'Usuarios y Roles',      icon: Users,          visible: isAdmin },
-        { id: 'aprobaciones',  label: 'Bandeja de Aprobación', icon: ClipboardCheck, visible: isAdmin || canApprove, badge: aprobaciones.filter(t => isAdmin || currentUser.role === t.rol_aprobador).length },
+        // El globo cuenta lo que este usuario puede resolver DE VERDAD, no lo que
+        // ve. Antes usaba `isAdmin || role === rol_aprobador`, que ignoraba la
+        // regla del Oficial de Cumplimiento y la segregación de funciones: a un
+        // admin le anunciaba tareas de AML que no puede aprobar. Un contador que
+        // no mide lo que dice es de la misma familia que el `✓ Guardado`.
+        { id: 'aprobaciones',  label: 'Bandeja de Aprobación', icon: ClipboardCheck, visible: isAdmin || canApprove, badge: aprobaciones.filter(canResolve).length },
         { id: 'matriz',        label: 'Matriz de Aprobación',  icon: ShieldCheck,    visible: isAdmin },
+        // Visible a quien aprueba: la suplencia se deja, sobre todo, uno mismo.
+        // Un Oficial de Cumplimiento TIENE que poder entrar aquí — es el único
+        // que puede dejar la suya, ni el admin puede hacerlo por él.
+        { id: 'delegaciones',  label: 'Delegaciones',          icon: UserCog,        visible: isAdmin || canApprove,
+          badge: delegaciones.filter(esVigente).length },
         { id: 'auditoria',     label: 'Auditoría',             icon: ScrollText,     visible: canViewAudit },
     ];
     const TABS = ALL_TABS.filter(t => t.visible);
     // Caer en la primera pestaña disponible, no en 'aprobaciones' fija: un
     // auditor no tiene bandeja, así que ese destino le dejaba la vista en blanco.
     const efectiveTab = TABS.find(t => t.id === tab)?.id ?? TABS[0]?.id;
+    // Los roles delegados cuentan para VER la bandeja igual que para resolver:
+    // enseñarle a un suplente una bandeja vacía mientras le llega el correo
+    // «requiere tu aprobación» es la incoherencia de §12.2 en la otra dirección.
     const misBandeja = isAdmin
         ? aprobaciones
-        : aprobaciones.filter(t => currentUser.role === t.rol_aprobador);
+        : aprobaciones.filter(t => currentUser.role === t.rol_aprobador || rolesDelegados.includes(t.rol_aprobador));
 
     return (
         <div className="h-full overflow-y-auto bg-[#f0f2f5]">
@@ -699,6 +833,175 @@ export function Governance({ currentUser }: GovernanceProps) {
                                         ))}
                                     </div>
                                 )}
+                            </div>
+                        )}
+
+                        {/* ── DELEGACIONES ──────────────────────────────── */}
+                        {efectiveTab === 'delegaciones' && (
+                            <div className="space-y-4">
+                                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                                    <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between bg-gray-50/60">
+                                        <div>
+                                            <h2 className="font-semibold text-gray-800 text-sm">
+                                                Delegaciones de autorización
+                                            </h2>
+                                            <p className="text-xs text-gray-500 mt-0.5">
+                                                Mientras esté vigente, el suplente puede resolver las aprobaciones del titular. Queda registrado que actuó en su nombre.
+                                            </p>
+                                        </div>
+                                        <button
+                                            onClick={() => setShowDelegForm(v => !v)}
+                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700"
+                                        >
+                                            {showDelegForm ? <><X className="w-3.5 h-3.5" /> Cancelar</> : <><Plus className="w-3.5 h-3.5" /> Nueva delegación</>}
+                                        </button>
+                                    </div>
+
+                                    {showDelegForm && (
+                                        <div className="px-5 py-4 border-b border-gray-100 bg-indigo-50/40 space-y-3">
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                <label className="block">
+                                                    <span className="text-xs font-semibold text-gray-600">Titular (quien delega)</span>
+                                                    <select
+                                                        value={delegForm.usuario_id}
+                                                        onChange={e => setDelegForm(f => ({ ...f, usuario_id: e.target.value }))}
+                                                        className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                                                    >
+                                                        <option value={currentUser.id}>
+                                                            Yo — {currentUser.name} ({ROL_META[currentUser.role as Role]?.label ?? currentUser.role})
+                                                        </option>
+                                                        {users
+                                                            .filter(u => u.id !== currentUser.id && u.isActive && puedeDelegarPor(u))
+                                                            .map(u => (
+                                                                <option key={u.id} value={u.id}>
+                                                                    {u.name} ({ROL_META[u.role as Role]?.label ?? u.role})
+                                                                </option>
+                                                            ))}
+                                                    </select>
+                                                    {isAdmin && (
+                                                        // Se dice por qué faltan, en vez de que la lista salga corta sin
+                                                        // explicación. La regla la impone la base, no esta pantalla.
+                                                        <span className="text-[11px] text-amber-700 mt-1 block">
+                                                            El Oficial de Cumplimiento no aparece aquí: su delegación solo puede dejarla él mismo, ni un administrador puede hacerlo por él.
+                                                        </span>
+                                                    )}
+                                                </label>
+
+                                                <label className="block">
+                                                    <span className="text-xs font-semibold text-gray-600">Suplente (quien recibe)</span>
+                                                    <select
+                                                        value={delegForm.suplente_id}
+                                                        onChange={e => setDelegForm(f => ({ ...f, suplente_id: e.target.value }))}
+                                                        className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                                                    >
+                                                        <option value="">— Elegir persona —</option>
+                                                        {users
+                                                            .filter(u => u.isActive && u.id !== delegForm.usuario_id)
+                                                            .map(u => (
+                                                                <option key={u.id} value={u.id}>
+                                                                    {u.name} ({ROL_META[u.role as Role]?.label ?? u.role})
+                                                                </option>
+                                                            ))}
+                                                    </select>
+                                                </label>
+
+                                                <label className="block">
+                                                    <span className="text-xs font-semibold text-gray-600">Desde (hora de Venezuela)</span>
+                                                    <input
+                                                        type="datetime-local" value={delegForm.desde}
+                                                        onChange={e => setDelegForm(f => ({ ...f, desde: e.target.value }))}
+                                                        className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                                                    />
+                                                </label>
+                                                <label className="block">
+                                                    <span className="text-xs font-semibold text-gray-600">Hasta (hora de Venezuela)</span>
+                                                    <input
+                                                        type="datetime-local" value={delegForm.hasta}
+                                                        onChange={e => setDelegForm(f => ({ ...f, hasta: e.target.value }))}
+                                                        className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                                                    />
+                                                </label>
+                                            </div>
+                                            <label className="block">
+                                                <span className="text-xs font-semibold text-gray-600">Motivo (opcional)</span>
+                                                <input
+                                                    type="text" value={delegForm.motivo} placeholder="Vacaciones, reposo médico, viaje…"
+                                                    onChange={e => setDelegForm(f => ({ ...f, motivo: e.target.value }))}
+                                                    className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                                                />
+                                            </label>
+                                            <button
+                                                onClick={guardarDelegacion} disabled={savingDeleg}
+                                                className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                                            >
+                                                {savingDeleg ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                                                Crear delegación
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {delegaciones.length === 0 ? (
+                                        <div className="px-5 py-10 text-center text-sm text-gray-400">
+                                            No hay delegaciones registradas.
+                                        </div>
+                                    ) : (
+                                        <div className="divide-y divide-gray-100">
+                                            {delegaciones.map(d => {
+                                                const vigente  = esVigente(d);
+                                                const futura   = new Date(d.desde).getTime() > Date.now();
+                                                const regulatoria = ROLES_REGULATORIOS.includes(d.titular?.role as Role);
+                                                // Anular es de quien la dejó o de un admin — pero un admin NO
+                                                // puede anular la de un rol regulatorio, por lo mismo que no
+                                                // puede crearla: sería quitarle la suplencia al Oficial de
+                                                // Cumplimiento sin que él lo decida.
+                                                const puedeAnular = d.usuario_id === currentUser.id || (isAdmin && !regulatoria);
+                                                return (
+                                                    <div key={d.id} className="px-5 py-3.5 flex items-center justify-between gap-4">
+                                                        <div className="min-w-0">
+                                                            <div className="flex items-center gap-2 flex-wrap">
+                                                                <span className="text-sm font-semibold text-gray-800">
+                                                                    {d.titular?.name ?? '—'}
+                                                                </span>
+                                                                <span className="text-xs text-gray-400">delega en</span>
+                                                                <span className="text-sm font-semibold text-gray-800">
+                                                                    {d.suplente?.name ?? '—'}
+                                                                </span>
+                                                                <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-medium">
+                                                                    {ROL_META[d.titular?.role as Role]?.label ?? d.titular?.role ?? '—'}
+                                                                </span>
+                                                                {vigente && (
+                                                                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-semibold">Vigente</span>
+                                                                )}
+                                                                {futura && (
+                                                                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold">Programada</span>
+                                                                )}
+                                                                {!vigente && !futura && (
+                                                                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-semibold">Terminada</span>
+                                                                )}
+                                                            </div>
+                                                            <p className="text-xs text-gray-500 mt-0.5">
+                                                                {fechaHoraVE(d.desde)} → {fechaHoraVE(d.hasta)} (hora de Venezuela)
+                                                                {d.motivo ? ` · ${d.motivo}` : ''}
+                                                            </p>
+                                                        </div>
+                                                        {puedeAnular && (
+                                                            <button
+                                                                onClick={() => anularDelegacion(d)}
+                                                                disabled={anulandoDeleg === d.id}
+                                                                title="Anular delegación"
+                                                                className="p-1.5 text-gray-400 hover:text-red-600 disabled:opacity-50 shrink-0"
+                                                            >
+                                                                {anulandoDeleg === d.id
+                                                                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                                                                    : <Trash2 className="w-4 h-4" />}
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         )}
 

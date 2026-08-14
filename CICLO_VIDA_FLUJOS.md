@@ -298,9 +298,13 @@ misma trampa del `'' === ''` del §9.4: lo que no se configuró se convierte en 
 > reglas empatadas en precedencia que piden cosas distintas**. Elegir una al azar
 > es la misma configuración rota en silencio, así que también detiene el nodo.
 
-⚠️ **ABIERTO — `delegaciones`**: la tabla existe y no la lee ni una línea. Es lo
-que convierte «solo hay una Nohemy» de riesgo en incidencia gestionable. Sigue
-siendo el mismo tipo de deuda que era la matriz: pantalla sin motor.
+✅ **HECHO el 14/08/2026 — `delegaciones`**. Era peor de lo que decía este
+párrafo: no solo no la leía nadie, es que **tampoco había pantalla**. Ya está
+conectada en los tres sitios que hacían falta —quién puede resolver, a quién se
+avisa al pausar y a quién se avisa al escalar—, con la puerta de §6.2 cerrada en
+un trigger de la base. Detalle en `CLAUDE.md` §6.6.
+
+Con esto **§7.1 queda cerrado**: no quedan tablas pagadas y sin motor.
 
 ### 7.2 Las listas copiadas — coste medio, y es la enfermedad crónica
 

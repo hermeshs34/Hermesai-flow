@@ -194,8 +194,17 @@ tabla se declaraba con `CREATE TABLE IF NOT EXISTS` y una declaración sobre una
 tabla existente no hace nada. Costó un millón de filas basura y 743 MB
 (`cron-runner` escribía `estado='vencido'` y `resuelto_at`, que solo existían en
 el archivo) y dos meses de auditoría de aprobaciones perdida (`resolve-approval`
-insertaba `actor_id`, columna inexistente). Por eso ahora usa `CREATE TABLE` a
-secas: si vuelve a desviarse, que reviente.
+insertaba `actor_id`, columna inexistente).
+
+⚠️ **Este párrafo decía que el archivo «usa `CREATE TABLE` a secas: si vuelve a
+desviarse, que reviente». Es falso, y comprobado el 14/08/2026:** las doce tablas
+siguen declaradas con `CREATE TABLE IF NOT EXISTS`, porque eso es lo que emite
+`supabase db dump` y la regeneración del 12/08 lo devolvió tal cual. La red de
+seguridad que este documento daba por puesta no existe. **Da igual mientras el
+archivo no se ejecute** —es un espejo, no un guion—, y por eso el mecanismo real
+sigue siendo la regla 1 de abajo: comprobar contra la base, no contra el archivo.
+Se anota porque una salvaguarda que solo está escrita aquí es otra vez el patrón
+del `succeeded` de pg_cron.
 
 **Reglas:**
 1. Antes de escribir una columna desde una Edge Function, **comprobarla contra
@@ -312,8 +321,9 @@ se le asigne a dedo en un nodo, o lo que le mande la matriz de aprobación (§6.
 pintado en la pared. Borrarlo no quitó capacidad a nadie porque no daba ninguna,
 y dejarlo era peor que no tenerlo — un permiso decorativo se lee como una
 garantía. Lo que sí gobierna la autorización de un paso crítico es
-`matriz_aprobacion`, conectada ese mismo día (§6.5). `delegaciones` sigue siendo
-el caso restante: tabla con CRUD y **cero lectores**.
+`matriz_aprobacion`, conectada ese mismo día (§6.5). ✅ **`delegaciones` se
+conectó el 14/08/2026 (§6.6)** — y resultó que no tenía «CRUD y cero lectores»
+como decía esta nota: **no tenía tampoco el CRUD**. Ni una pantalla la escribía.
 
 ⚠️ **El alta de ese `supervisor` encendió dos comportamientos que llevaban
 meses inertes**, y ninguno avisó:
@@ -354,15 +364,23 @@ Ojo: la frase que justificaba la vuelta por el frontend —*«las llamadas
 inter-función tienen problemas de JWT»*— era cierta hasta el 07/08 y dejó de
 serlo sin que nadie repasara lo que dependía de ella.
 
-### 6.2 Aprobaciones — `ROLES_REGULATORIOS` manda en CUATRO capas
+### 6.2 Aprobaciones — `ROLES_REGULATORIOS` manda en DOS capas
 
 Los procesos de **cumplimiento y legitimación de capitales** los autoriza solo
 el Oficial de Cumplimiento, **ni siquiera un admin**. Es decisión de negocio de
 Hermes. El resto de tareas las resuelve el rol de `rol_aprobador` o un `admin`.
 
-La lista vive copiada en cuatro sitios que se mueven juntos — `WorkQueue.tsx`,
-`Governance.tsx`, `Sidebar.tsx` y **`resolve-approval/index.ts`, que es el
-único que manda de verdad**; los tres primeros solo deciden qué botón se pinta.
+✅ **Desde el 14/08/2026 la lista vive en dos sitios, no en cuatro.**
+`WorkQueue.tsx`, `Governance.tsx` y `Sidebar.tsx` tenían cada uno su copia de la
+lista **y de la regla que la usa**; hoy las tres llaman a `puedeResolverTarea`
+de `src/core/user.types.ts`, que es donde vive `ROLES_REGULATORIOS` en el
+frontend. Quedan **`user.types.ts`** y **`resolve-approval/index.ts`, que es el
+único que manda de verdad** — el primero solo decide qué botón se pinta. Esa
+copia sí es irreducible: una Edge Function corre en Deno y no alcanza `src/`.
+
+No era duplicación cosmética: las tres copias podían responder cosas distintas a
+la misma pregunta, y la de la pantalla es la que decide si a alguien se le ofrece
+un botón que luego se come un 403 (§12.2).
 
 Hasta el 11/08/2026 la Edge Function **no miraba `rol_aprobador` ni una vez**:
 validaba organización y segregación de funciones y nada más. La regla del
@@ -555,6 +573,73 @@ esperando a que alguien la invoque por error.
 Tocar la matriz deja rastro en `audit_log` (`entidad='matriz_aprobacion'`, valor
 añadido al CHECK por `20260813_audit_matriz_aprobacion.sql`). En cuanto una tabla
 gobierna un control interno, editarla es un hecho auditable.
+
+### 6.6 Delegaciones — una suplencia acotada, y la puerta de §6.2 cerrada
+
+Hasta el 14/08/2026 `delegaciones` era una tabla con RLS, claves foráneas y
+**cero referencias en todo el código**: ni una línea que la leyera ni una
+pantalla que la escribiera. (Esta sección decía que sí tenía CRUD; no lo tenía.)
+
+Lo que arregla conectarla es concreto: hay **un** `cumplimiento` (Nohemy Romero),
+las tareas de AML no las resuelve nadie más —ni un admin (§6.2)— y desde el
+11/08 tampoco escalan: al vencer **cancelan el flujo**. Que esa persona esté de
+baja una semana no era un contratiempo, era la parada de todas las aprobaciones
+regulatorias.
+
+**La decisión que gobierna el diseño.** Una delegación **sí** alcanza a las
+tareas regulatorias — si no las alcanzara no resolvería nada, porque el único
+punto único de fallo real es justo ese. Pero eso la convierte en la puerta de al
+lado de §6.2, y este proyecto ya sabe cómo acaba eso (el escalamiento rodeaba la
+regla del Oficial de Cumplimiento con solo esperar 48 h). Así que la puerta se
+cierra **en la base, no en la pantalla**:
+
+> **Una delegación de alguien con rol regulatorio solo puede crearla esa misma
+> persona.** Un admin no puede nombrarse suplente del Oficial de Cumplimiento; si
+> pudiera, §6.2 sería decorativa — bastaría un clic.
+
+La RLS que ya había (`deleg_write`: `is_admin() OR usuario_id = auth.uid()`) **no
+basta** para eso: deja al admin escribir cualquier fila. Por eso hay un trigger,
+`delegaciones_validar()` (`20260814_delegaciones_operativas.sql`), que además
+rechaza delegar en uno mismo, fechas invertidas, suplente desactivado, personas
+de otra organización y **solapes con otra delegación viva de la misma persona**
+—dos suplentes a la vez es una ambigüedad, y §6.5 ya enseñó que un empate con
+efectos distintos se resuelve mal solo—. Es `SECURITY DEFINER` porque necesita
+leer `profiles` de otros, con `search_path` fijo y EXECUTE retirado **a `anon`
+por su nombre** (§6.4).
+
+**Dónde entra la suplencia — son TRES sitios, no uno.** Esto es lo que hay que
+recordar si algún día se toca:
+
+1. **Quién puede resolver** — `resolve-approval/index.ts`, la única capa que
+   manda. Un rol delegado cuenta igual que el propio; la **segregación de
+   funciones no la levanta ninguna delegación** (quien lanzó el flujo sigue sin
+   poder aprobarlo).
+2. **A quién se avisa cuando un flujo se pausa** — `execute-workflow`.
+3. **A quién se avisa al escalar** — `cron-runner`.
+
+Los dos últimos filtraban con un `.eq('role', …)` a secas. Sin tocarlos, el
+suplente habría sido **la única persona del sistema a la que nadie avisaba de que
+tenía algo que aprobar**: la delegación funcionaría y no serviría de nada. Hoy
+los tres pasan por `destinatariosDelRol` / `delegacionesVigentes`, y el correo al
+suplente dice de parte de quién le llega.
+
+**Qué queda registrado.** `tareas_aprobacion.delegacion_id` guarda la delegación
+usada, **adrede sin clave foránea**: un `ON DELETE SET NULL` borraría el hecho al
+limpiar la delegación, y un control cuya evidencia se puede borrar no es un
+control. El registro legible vive además en `audit_log`, cuya descripción termina
+en `[por delegación de …]`. Tocar `delegaciones` es auditable
+(`entidad='delegacion'`), por lo mismo que `matriz_aprobacion`.
+
+⚠️ **`src/utils/delegaciones.ts` y `supabase/functions/_shared/delegaciones.ts`
+son gemelos**, como `fecha.ts` (§9.3) y `matriz.ts` (§6.5): **manda el de Deno**.
+Aquí, a diferencia de los otros pares, **el manejo de errores es distinto a
+propósito**: el de Deno **lanza** —un `{ error }` sin leer convertiría un fallo
+de lectura en un 403 mentiroso—, y el del navegador se lo traga y devuelve `[]`.
+El peor caso del navegador es que un botón no se pinte; nunca que se pinte de
+más.
+
+**No hay cadenas de delegación.** Si A delega en B y B delega en C, C no hereda
+el rol de A: una cadena es una autorización que no tomó nadie.
 
 ### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
 
@@ -950,14 +1035,34 @@ historial.
 4. Un flujo **recién creado** sí está vacío de verdad: ahí se marca como cargado
    a mano (`handleCreateWorkflow`, y la plantilla del Dashboard).
 
-⚠️ Sigue abierto que el borrado y la inserción **no son atómicos**: si falla el
-`insert` después del `delete`, los nodos se pierden igual. La solución es una
-función SQL transaccional; hasta entonces, la invariante de arriba es lo único
-que hay.
+✅ **El borrado y la inserción ya son atómicos** (14/08/2026,
+`20260814_guardar_lienzo_transaccional.sql`). `saveNodes`/`saveConnections`
+llamaban a `delete` y luego a `insert` en dos viajes distintos: si el segundo
+fallaba —RLS, red, un tipo mal— el flujo se quedaba **sin nodos**, que es
+exactamente el daño del incidente de arriba pero por otra puerta. Hoy las dos
+escriben con una sola llamada a `supabase.rpc('guardar_lienzo', …)`, que hace el
+`delete`+`insert` **dentro de una transacción**: o se guarda entero o no se toca
+nada.
 
-⚠️ `src/services/workflowService.ts` (sin punto) es un duplicado **muerto** —no
-lo importa nadie— con su propia copia de este mismo `delete`+`insert`. No lo uses
-ni lo "arregles": bórralo cuando toque.
+Dos cosas que no son accesorias:
+- **`SECURITY INVOKER`, no DEFINER.** Una función que reescribe el lienzo con los
+  permisos de quien la creó sería una vía para saltarse la RLS de edición que se
+  estrechó dos veces el 12/08. La RLS sigue mandando, y un `cumplimiento` que
+  llame a la RPC se lleva el mismo «no» que antes —bien contado por §12.2.
+- **`REVOKE ... FROM PUBLIC` no basta**, hay que nombrar a `anon` (§6.4): con los
+  `ALTER DEFAULT PRIVILEGES` de Supabase, `anon` se queda con EXECUTE. El GRANT
+  va solo a `authenticated`.
+
+La invariante de arriba (`cargadoDe`) **sigue haciendo falta igual**: la
+atomicidad protege de un guardado a medias, no de un guardado con la lista
+equivocada. Un borrado transaccional de los nodos correctos sigue siendo un
+borrado.
+
+✅ `src/services/workflowService.ts` (sin punto), duplicado muerto con su propia
+copia del viejo `delete`+`insert`, **borrado el 14/08/2026**. Si reaparece en el
+árbol de trabajo sin que nadie lo haya creado, sospecha del FreeFileSync contra
+Box: ese mismo día restauró versiones antiguas de `CLAUDE.md` y de
+`CICLO_VIDA_FLUJOS.md` encima de las buenas.
 
 ### 12.2 Un «no» legítimo mal contado sigue siendo un fallo — `utils/errores.ts`
 
@@ -1101,6 +1206,20 @@ Antes de dar por completado cualquier módulo:
 2. Revisar `ROADMAP.md` para contexto del sprint actual
 3. Si la tarea involucra Supabase, revisar `SECURITY.md`
 4. Si la tarea involucra integraciones, revisar `INTEGRATIONS.md`
+
+### Al comprobar tipos
+
+⚠️ **`npx tsc --noEmit` no comprueba NADA en este repositorio.** El
+`tsconfig.json` raíz es un stub de referencias (`"files": []`), así que ese
+comando compila un programa vacío, sale con 0 y no imprime una línea — y un cero
+que nadie ha medido se lee igual que un cero limpio. Se citó como prueba más de
+una vez antes del 14/08/2026.
+
+Los comandos que sí miden:
+```
+npm run typecheck     # tsc --noEmit -p tsconfig.app.json
+npm run build         # tsc -b && vite build  (el build sí typechea)
+```
 
 ### Al hacer commits
 - Después de cada `git commit`, reportar explícitamente el resultado del hook de seguridad

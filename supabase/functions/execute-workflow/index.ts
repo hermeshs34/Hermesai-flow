@@ -8,6 +8,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { enviarEmail as enviar, enviarEmailPersonalizado as enviarPersonalizado, canalEmail, escaparHtml } from '../_shared/email.ts';
 import { fechaHoraVE, fechaVE } from '../_shared/fecha.ts';
 import { resolverRegla, type ReglaMatriz } from '../_shared/matriz.ts';
+import { destinatariosDelRol } from '../_shared/delegaciones.ts';
 
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -1652,12 +1653,14 @@ serve(async (req) => {
                     // ── Notificar por email a los aprobadores del rol requerido ──
                     if (canalEmail() !== 'ninguno') {
                         try {
-                            const { data: aprobadores } = await supabase
-                                .from('profiles')
-                                .select('name, email')
-                                .eq('organization_id', organizationId)
-                                .eq('role', err.rolAprobador)
-                                .eq('is_active', true);
+                            // Los que TIENEN el rol más los suplentes con una
+                            // delegación vigente. Antes era un `.eq('role', …)` a
+                            // secas: la persona a la que se le había delegado la
+                            // firma habría sido la única del sistema que no se
+                            // entera de que hay algo que aprobar.
+                            const aprobadores = await destinatariosDelRol(
+                                supabase, organizationId, err.rolAprobador,
+                            );
 
                             // Un correo distinto para cada aprobador (saluda por su
                             // nombre), pero UNA sola petición: antes era un bucle con
@@ -1676,6 +1679,7 @@ serve(async (req) => {
   <div style="padding:24px;background:#f8fafc">
     <p style="color:#374151;font-size:14px">Hola <strong>${escaparHtml(ap.name)}</strong>,</p>
     <p style="color:#374151;font-size:14px">El flujo <strong>"${escaparHtml(workflow.name)}"</strong> requiere tu aprobación para continuar.</p>
+    ${ap.porDelegacionDe ? `<p style="color:#92400e;font-size:13px;background:#fef3c7;border-left:3px solid #f59e0b;padding:10px 12px;margin:12px 0">Te llega por la <strong>delegación vigente de ${escaparHtml(ap.porDelegacionDe)}</strong>. Al resolverla quedará registrado que actuaste en su nombre.</p>` : ''}
     <table style="width:100%;border-collapse:collapse;margin:16px 0;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
       <tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px;width:40%">Descripción</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.descripcion ?? '—')}</td></tr>
       ${err.monto ? `<tr><td style="padding:10px 16px;color:#6b7280;font-size:12px;background:#f8fafc">Monto</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.monto)}</td></tr>` : ''}

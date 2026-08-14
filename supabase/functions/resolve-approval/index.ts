@@ -5,6 +5,7 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { enviarEmail as enviar, canalEmail, escaparHtml } from '../_shared/email.ts';
+import { delegacionesVigentes } from '../_shared/delegaciones.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -15,9 +16,14 @@ const CRON_SECRET      = Deno.env.get('CRON_SECRET') ?? '';
 // el Oficial de Cumplimiento — ni siquiera el admin. El resto de tareas las
 // resuelve el rol indicado en `rol_aprobador` o un admin.
 //
-// ⚠️ Esta lista está COPIADA en el frontend (`WorkQueue.tsx`, `Governance.tsx`
-// y `Sidebar.tsx`), porque Deno no alcanza `src/`. Es el mismo caso que
-// ROLES_QUE_EJECUTAN (CLAUDE.md §6): si cambias una, cambia las otras.
+// ⚠️ GEMELO de `puedeResolverTarea` en `src/core/user.types.ts`, porque Deno no
+// alcanza `src/`. Es el mismo caso que ROLES_QUE_EJECUTAN (CLAUDE.md §6): si
+// cambias una, cambia la otra. **Manda esta**: el frontend solo pinta botones.
+//
+// Hasta el 14/08/2026 el frontend tenía la regla suelta en CINCO sitios y los
+// cinco decían cosas distintas —a un supervisor le contaban tareas de `admin`,
+// a un solicitante le pintaban «Aprobar» sobre su propia tarea—. Ahora el
+// frontend tiene UNA copia; esta sigue siendo la que impide de verdad.
 //
 // Hasta el 11/08/2026 esta comprobación NO EXISTÍA aquí: la función validaba
 // organización y segregación de funciones, pero nunca que el aprobador tuviera
@@ -111,21 +117,46 @@ serve(async (req) => {
         }
 
         // 2b. El aprobador debe tener el rol que la tarea exige (ver ROLES_REGULATORIOS)
-        const rolAprobador   = aprobadorProfile.role;
+        //
+        // Un rol se puede tener de dos maneras: por el propio perfil, o por una
+        // delegación vigente de quien sí lo tiene. La suplencia alcanza también a
+        // las tareas regulatorias —si no, no serviría de nada: el único punto
+        // único de fallo real es que hay un solo Oficial de Cumplimiento—, y lo
+        // que impide que se convierta en la puerta de al lado de §6.2 es que un
+        // admin NO puede crear una delegación en nombre de un rol regulatorio.
+        // Eso lo guarda `delegaciones_validar()` en la base, no este código.
+        const rolAprobador = aprobadorProfile.role;
+
+        // Si esto falla, falla la resolución. Tragarse el error convertiría «no
+        // se pudo comprobar» en «no tienes permiso», que es un 403 mintiendo.
+        const delegaciones = await delegacionesVigentes(supabase, approverId, tarea.organization_id);
+        const delegacionUsada = delegaciones.find(d => d.rol === tarea.rol_aprobador)
+            ?? (ROLES_REGULATORIOS.includes(tarea.rol_aprobador)
+                    ? undefined
+                    : delegaciones.find(d => d.rol === 'admin'));
+
+        const roles = [rolAprobador, ...delegaciones.map(d => d.rol)];
         const esRegulatoria  = ROLES_REGULATORIOS.includes(tarea.rol_aprobador);
         const puedeResolver  = esRegulatoria
-            ? rolAprobador === tarea.rol_aprobador
-            : rolAprobador === 'admin' || rolAprobador === tarea.rol_aprobador;
+            ? roles.includes(tarea.rol_aprobador)
+            : roles.includes('admin') || roles.includes(tarea.rol_aprobador);
         if (!puedeResolver) {
             return new Response(
                 JSON.stringify({
                     error: esRegulatoria
-                        ? `Esta aprobación es de "${tarea.rol_aprobador}" y solo la resuelve ese rol — ni siquiera un administrador`
+                        ? `Esta aprobación es de "${tarea.rol_aprobador}" y solo la resuelve ese rol — ni siquiera un administrador. Si esa persona no está disponible, puede dejar una delegación desde Gobierno → Delegaciones.`
                         : `El rol "${rolAprobador}" no puede resolver una aprobación de "${tarea.rol_aprobador}"`,
                 }),
                 { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
             );
         }
+
+        // Si el rol propio ya bastaba, no se anota delegación aunque exista una:
+        // el hecho a registrar es «resolvió POR delegación», no «además tenía una».
+        const rolPropioBastaba = esRegulatoria
+            ? rolAprobador === tarea.rol_aprobador
+            : rolAprobador === 'admin' || rolAprobador === tarea.rol_aprobador;
+        const delegacion = rolPropioBastaba ? undefined : delegacionUsada;
 
         // 2c. Verificar SoD: el aprobador no puede ser quien SOLICITÓ/EJECUTÓ esta tarea
         // (se compara con solicitante_id, no created_by — el diseñador puede ser el aprobador)
@@ -137,12 +168,28 @@ serve(async (req) => {
         }
 
         // 3. Marcar tarea resuelta
-        await supabase.from('tareas_aprobacion').update({
-            estado:      decision,
-            aprobador_id: approverId,
-            comentario:  comentario ?? null,
-            resolved_at: new Date().toISOString(),
+        const { error: errResolver } = await supabase.from('tareas_aprobacion').update({
+            estado:        decision,
+            aprobador_id:  approverId,
+            comentario:    comentario ?? null,
+            resolved_at:   new Date().toISOString(),
+            // Queda escrito que se resolvió por suplencia. `delegaciones` se
+            // puede borrar, así que inferirlo después mirando la tabla no
+            // serviría: un control cuya evidencia se puede borrar no es un
+            // control. Los nombres, en `audit_log`, unas líneas más abajo.
+            delegacion_id: delegacion?.delegacionId ?? null,
         }).eq('id', tareaId);
+
+        // Esto NO puede fallar en silencio: si el UPDATE no entra, la tarea sigue
+        // 'pendiente' y abajo se reanudaría un run cuya aprobación no consta. Es
+        // el fallo de siempre —supabase-js devuelve el error, no lo lanza— y ya
+        // costó dos meses de auditoría de aprobaciones perdida (§5.1).
+        if (errResolver) {
+            return new Response(
+                JSON.stringify({ error: `No se pudo registrar la decisión: ${errResolver.message}` }),
+                { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }
+            );
+        }
 
         // 4. Registrar en audit_log
         // La columna es usuario_id, no actor_id: audit_log la creó
@@ -159,7 +206,12 @@ serve(async (req) => {
             accion:          decision === 'aprobado' ? 'aprobar' : 'rechazar',
             entidad:         'aprobacion',
             entidad_id:      tareaId,
-            descripcion:     `${decision === 'aprobado' ? 'Aprobado' : 'Rechazado'}: ${tarea.descripcion ?? ''}${comentario ? ` — ${comentario}` : ''}`,
+            descripcion:     `${decision === 'aprobado' ? 'Aprobado' : 'Rechazado'}: ${tarea.descripcion ?? ''}` +
+                             // Los DOS nombres, en texto y aquí mismo. Un auditor
+                             // no debería tener que cruzar tres tablas para saber
+                             // quién autorizó en nombre de quién.
+                             (delegacion ? ` [por delegación de ${delegacion.titularNombre} (${tarea.rol_aprobador})]` : '') +
+                             `${comentario ? ` — ${comentario}` : ''}`,
         });
 
         // El audit no debe tumbar la resolución —la tarea ya está resuelta— pero

@@ -10,6 +10,7 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { enviarEmail as enviar, canalEmail, escaparHtml } from '../_shared/email.ts';
 import { fechaHoraVE } from '../_shared/fecha.ts';
+import { destinatariosDelRol } from '../_shared/delegaciones.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -327,14 +328,14 @@ serve(async (req) => {
                     details_json:     { escalamiento: nivel + 1, rol_anterior: tarea.rol_aprobador, rol_nuevo: rolSube },
                 });
 
-                // Notificar por email a los usuarios activos del rol que recibe
-                const { data: aprobadores } = await supabase
-                    .from('profiles')
-                    .select('email, name')
-                    .eq('organization_id', tarea.organization_id)
-                    .eq('role', rolSube)
-                    .eq('is_active', true);
-                const emails = (aprobadores ?? []).map((p: any) => p.email).filter(Boolean);
+                // Notificar a los usuarios activos del rol que recibe **y a sus
+                // suplentes con delegación vigente**. Escalar a un rol cuyo
+                // titular está de baja y no avisar a quien le cubre es escalar
+                // al vacío otra vez, con más pasos.
+                const aprobadores = await destinatariosDelRol(
+                    supabase, tarea.organization_id, rolSube,
+                );
+                const emails = aprobadores.map(p => p.email).filter(Boolean);
                 await enviarEmail(
                     emails,
                     `⏫ Aprobación escalada — ${wfName}`,

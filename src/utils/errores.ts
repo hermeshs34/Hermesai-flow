@@ -59,6 +59,24 @@ export function mensajeDeEscritura(err: unknown, que: string): string {
 }
 
 /**
+ * Traduce el fallo de un `supabase.rpc(...)`.
+ *
+ * Una función de la base puede fallar por dos motivos muy distintos, y no se
+ * cuentan igual:
+ *
+ *   · `P0001` (raise_exception) — lo levantó un `RAISE EXCEPTION` NUESTRO, y
+ *     ese texto está escrito para quien está editando un flujo. Pasarlo tal
+ *     cual: envolverlo en «No se pudieron guardar…: » solo lo empeora.
+ *   · cualquier otro — se cuenta como una escritura fallida normal, incluido
+ *     el 42501 de la RLS, que `mensajeDeEscritura` sí sabe explicar.
+ */
+export function mensajeDeRpc(err: unknown, que: string): string {
+    const e = err as { code?: string; message?: string };
+    if (e?.code === 'P0001' && e.message?.trim()) return e.message;
+    return mensajeDeEscritura(err, que);
+}
+
+/**
  * Saca el mensaje REAL del error de una Edge Function.
  *
  * `supabase.functions.invoke` no mira el cuerpo de la respuesta: ante cualquier

@@ -1,5 +1,5 @@
 import { supabase } from '../core/supabase.ts';
-import { mensajeDeEscritura } from '../utils/errores.ts';
+import { mensajeDeRpc } from '../utils/errores.ts';
 import type { Workflow, WorkflowNodeData, WorkflowConnection } from '../types/workflow.ts';
 
 // ─── Helpers de mapeo ────────────────────────────────────────────────────────
@@ -28,8 +28,8 @@ function mapWorkflow(row: Record<string, unknown>): Workflow {
 // ─── La invariante que protege los nodos ─────────────────────────────────────
 
 /**
- * `saveNodes` y `saveConnections` BORRAN todo lo del flujo antes de insertar, así
- * que un guardado con la lista equivocada no es un guardado malo: es un borrado.
+ * `saveLienzo` REEMPLAZA el contenido del flujo, así que un guardado con la
+ * lista equivocada no es un guardado malo: es un borrado.
  *
  * Solo se permite escribir sobre **el flujo que el lienzo cargó de verdad**. Eso
  * cubre las dos formas de perder datos:
@@ -173,69 +173,71 @@ export class WorkflowService {
         if (error) throw new Error(error.message);
     }
 
-    // ── Nodos ─────────────────────────────────────────────────────────────
+    // ── Lienzo (nodos + conexiones, en una sola transacción) ──────────────
 
-    static async saveNodes(
+    /**
+     * Guarda el lienzo entero llamando a la función `guardar_lienzo` de la base
+     * (`database/migrations/20260814_guardar_lienzo_transaccional.sql`).
+     *
+     * Antes eran dos métodos —`saveNodes` y `saveConnections`— y esa separación
+     * no era un detalle de estilo: era el fallo.
+     *
+     *   · Cada uno hacía `delete` + `insert` sin transacción, así que un insert
+     *     fallido dejaba el flujo vacío. Quedó anotado como deuda abierta en
+     *     CLAUDE.md §12.1 y esto es lo que la cierra.
+     *   · Al ser dos llamadas, el CASCADE del FK de `workflow_connections`
+     *     borraba TODAS las conexiones en la primera; si la segunda fallaba, el
+     *     flujo quedaba con nodos sueltos y sin conexiones — y un flujo sin
+     *     conexiones no da error: arranca el trigger y se para ahí.
+     *
+     * `exigirLienzoCargado` sigue siendo la segunda línea de defensa en el
+     * navegador; la base repite la comprobación por su cuenta (un nodo que ya
+     * pertenece a otro flujo se rechaza allí también). Dos capas, porque el
+     * 12/08 se perdieron cuatro flujos teniendo solo una.
+     */
+    static async saveLienzo(
         workflowId: string,
-        organizationId: string,
         nodes: WorkflowNodeData[],
-        cargadoDe: string | null
-    ): Promise<void> {
-        exigirLienzoCargado(workflowId, cargadoDe, nodes.length);
-
-        // Borrar nodos anteriores y reemplazar (estrategia simple para canvas)
-        await supabase.from('workflow_nodes').delete().eq('workflow_id', workflowId);
-
-        if (nodes.length === 0) return;
-
-        const rows = nodes.map(n => ({
-            id:              n.id,
-            workflow_id:     workflowId,
-            organization_id: organizationId,
-            type:            n.type,
-            category:        n.category,
-            title:           n.title,
-            position_x:      Math.round(n.position.x),
-            position_y:      Math.round(n.position.y),
-            config_json:     n.config,
-            status:          n.status ?? 'idle',
-        }));
-
-        const { error } = await supabase.from('workflow_nodes').insert(rows);
-        if (error) throw new Error(mensajeDeEscritura(error, 'los nodos'));
-    }
-
-    static async saveConnections(
-        workflowId: string,
         connections: WorkflowConnection[],
         cargadoDe: string | null
     ): Promise<void> {
-        exigirLienzoCargado(workflowId, cargadoDe, connections.length);
+        exigirLienzoCargado(workflowId, cargadoDe, nodes.length + connections.length);
 
-        await supabase.from('workflow_connections').delete().eq('workflow_id', workflowId);
+        const nodosPayload = nodes.map(n => ({
+            id:          n.id,
+            type:        n.type,
+            category:    n.category,
+            title:       n.title,
+            position_x:  Math.round(n.position.x),
+            position_y:  Math.round(n.position.y),
+            config_json: n.config ?? {},
+            status:      n.status ?? 'idle',
+        }));
 
-        if (connections.length === 0) return;
-
-        // Deduplicar por source+target antes de enviar
-        const seen  = new Set<string>();
-        const rows  = connections
+        // Deduplicar por source+target antes de enviar. Se queda aquí y no en
+        // SQL porque es una peculiaridad del lienzo —arrastrar dos veces la
+        // misma flecha—, no una regla del modelo de datos.
+        const vistas = new Set<string>();
+        const conexionesPayload = connections
             .filter(c => {
-                const key = `${c.sourceId}→${c.targetId}`;
-                if (seen.has(key)) return false;
-                seen.add(key);
+                const clave = `${c.sourceId}→${c.targetId}`;
+                if (vistas.has(clave)) return false;
+                vistas.add(clave);
                 return true;
             })
             .map(c => ({
                 id:             c.id,
-                workflow_id:    workflowId,
                 source_node_id: c.sourceId,
                 target_node_id: c.targetId,
                 branch:         c.branch ?? null,
             }));
 
-        const { error } = await supabase
-            .from('workflow_connections')
-            .insert(rows);
-        if (error) throw new Error(mensajeDeEscritura(error, 'las conexiones'));
+        const { error } = await supabase.rpc('guardar_lienzo', {
+            p_workflow_id: workflowId,
+            p_nodes:       nodosPayload,
+            p_connections: conexionesPayload,
+        });
+
+        if (error) throw new Error(mensajeDeRpc(error, 'el flujo'));
     }
 }

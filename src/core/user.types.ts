@@ -107,3 +107,70 @@ export const ROL_META: Record<Role, { label: string; color: string; descripcion:
 
 // Roles asignables desde la UI (los legacy no se ofrecen para nuevos usuarios)
 export const ROLES_ASIGNABLES: Role[] = ['admin', 'dueno_proceso', 'supervisor', 'operador', 'autorizador', 'cumplimiento', 'auditor'];
+
+// ── Quién puede resolver una tarea de aprobación ─────────────────────────────
+//
+// Los procesos de cumplimiento y legitimación de capitales los autoriza SOLO el
+// Oficial de Cumplimiento, ni siquiera un admin (decisión de negocio de Hermes,
+// CLAUDE.md §6.2). El resto de tareas las resuelve el rol de `rol_aprobador` o
+// un admin. Y sobre todo: quien lanzó el flujo nunca aprueba su propia tarea.
+//
+// ⚠️ Esto es GEMELO del bloque de autorización de
+// `supabase/functions/resolve-approval/index.ts` (líneas 113-137), que es **el
+// que manda de verdad**: la Edge Function es la que impide resolver; esto de
+// aquí solo decide qué botón se pinta y qué contador se enseña. Está copiado y
+// no importado porque Deno no alcanza `src/`, igual que `fecha.ts` y
+// `ROLES_QUE_EJECUTAN`. **Si cambias uno, cambia el otro.**
+//
+// Antes del 14/08/2026 esto vivía suelto en CUATRO sitios del frontend y los
+// cuatro decían cosas distintas, que es la forma que tiene una lista copiada de
+// pudrirse sin avisar:
+//   · `Governance.tsx`  — sin comprobar segregación de funciones: pintaba
+//                          «Aprobar» en una tarea del propio solicitante, y al
+//                          pulsarlo llegaba un 403 de la Edge Function.
+//   · `Sidebar.tsx`     — lo mismo, así que el globo de pendientes contaba
+//                          tareas que ese usuario no podía resolver.
+//   · `Dashboard.tsx`   — tenía la segregación, pero su idea de «admin» era
+//                          ['admin','supervisor','autorizador']: a un supervisor
+//                          le contaba como suyas tareas de rol `admin` que
+//                          `resolve-approval` le rechaza.
+//   · `WorkQueue.tsx`   — la única que coincidía con la Edge Function.
+// Ninguna de las tres se saltaba un control —la puerta la sigue guardando la
+// función—, pero las tres mentían al usuario, que es el fallo de §12.2.
+export const ROLES_REGULATORIOS: Role[] = ['cumplimiento'];
+
+/** Lo mínimo de una tarea para decidir quién la resuelve. */
+export interface TareaResoluble {
+    rol_aprobador:   string;
+    solicitante_id?: string | null;
+}
+
+/**
+ * @param rolesDelegados  roles que esta persona ejerce por una suplencia vigente
+ *   (`src/utils/delegaciones.ts`). Por defecto vacío: quien no le pase nada
+ *   obtiene el comportamiento de siempre, nunca uno más permisivo.
+ */
+export function puedeResolverTarea(
+    usuario: { id: string; role: Role | string },
+    tarea:   TareaResoluble,
+    rolesDelegados: string[] = [],
+): boolean {
+    // Segregación de funciones: quien ejecutó el flujo no lo aprueba. Va primero
+    // porque no la levanta ningún rol, ni el de admin — **ni una delegación**.
+    // Recibir la suplencia de otro no borra que fuiste tú quien lanzó el flujo.
+    if (tarea.solicitante_id && tarea.solicitante_id === usuario.id) return false;
+
+    // Una delegación vigente hace que ejerzas el rol del titular, además del
+    // tuyo. Alcanza también a las tareas regulatorias, y tiene que alcanzarlas:
+    // si no, no resolvería nada — el único punto único de fallo real es que hay
+    // un solo Oficial de Cumplimiento (§6.2). Lo que impide que eso convierta la
+    // delegación en la puerta de al lado de §6.2 es que un admin NO puede
+    // crearle una delegación a un rol regulatorio: solo esa persona puede, y eso
+    // lo guarda un trigger de la base, no esta función.
+    const roles = [usuario.role, ...rolesDelegados];
+
+    if (ROLES_REGULATORIOS.includes(tarea.rol_aprobador as Role)) {
+        return roles.includes(tarea.rol_aprobador);
+    }
+    return roles.includes('admin') || roles.includes(tarea.rol_aprobador);
+}

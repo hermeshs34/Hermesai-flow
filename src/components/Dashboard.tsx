@@ -10,9 +10,10 @@ import {
 import { supabase } from '../core/supabase';
 import type { Workflow, WorkflowNodeData, WorkflowConnection } from '../types/workflow';
 import type { User, Role } from '../core/user.types';
-import { ROL_META } from '../core/user.types';
+import { ROL_META, puedeResolverTarea } from '../core/user.types';
 import { WorkflowService } from '../services/workflow.service';
 import { fechaHoraVE, fechaVE } from '../utils/fecha';
+import { useRolesDelegados } from '../utils/delegaciones';
 import { toast } from 'sonner';
 
 // ── Clasificación de vista por rol ─────────────────────────────────────────────
@@ -879,6 +880,7 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
     const [kpiParams, setKpiParams] = useState({ sla_ms: 30000, min_por_tarea: 15, costo_hora_usd: 25 });
 
     const orgId = currentUser?.organizationId ?? '';
+    const rolesDelegados = useRolesDelegados(currentUser?.id, orgId || undefined);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -949,13 +951,11 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                 .select('rol_aprobador, solicitante_id')
                 .eq('organization_id', currentUser.organizationId)
                 .eq('estado', 'pendiente');
-            const ROLES_REG = ['cumplimiento'];
-            const count = (data ?? []).filter(t => {
-                if (t.solicitante_id === currentUser.id) return false; // SoD: no puede aprobar su propio flujo
-                if (ROLES_REG.includes(t.rol_aprobador)) return currentUser.role === t.rol_aprobador;
-                const isAdmin = ['admin', 'supervisor', 'autorizador'].includes(currentUser.role);
-                return isAdmin || currentUser.role === t.rol_aprobador;
-            }).length;
+            // Misma regla que la Edge Function que manda. La copia que había aquí
+            // trataba como «admin» a ['admin','supervisor','autorizador'], así que
+            // a un supervisor le contaba tareas de rol `admin` que
+            // `resolve-approval` le rechaza con 403.
+            const count = (data ?? []).filter(t => puedeResolverTarea(currentUser, t, rolesDelegados)).length;
             setPendingAppr(count);
         };
         fetchPending();
@@ -963,7 +963,7 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
             .on('postgres_changes', { event: '*', schema: 'public', table: 'tareas_aprobacion' }, fetchPending)
             .subscribe();
         return () => { supabase.removeChannel(ch); };
-    }, [currentUser?.organizationId, currentUser?.role]);
+    }, [currentUser?.organizationId, currentUser?.role, rolesDelegados]);
 
     // Cargar parámetros KPI configurables de la organización
     useEffect(() => {
@@ -1044,15 +1044,18 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                 const nodes: WorkflowNodeData[] = blueprint.nodes.map(n => ({ ...n, connections: [] }));
                 // El flujo acaba de crearse aquí mismo y está vacío: escribir la
                 // plantilla sobre él es legítimo, así que se declara como cargado.
-                await WorkflowService.saveNodes(wf.id, orgId, nodes, wf.id);
-                await WorkflowService.saveConnections(wf.id, blueprint.connections, wf.id);
+                await WorkflowService.saveLienzo(wf.id, nodes, blueprint.connections, wf.id);
             }
             localStorage.setItem('hermesai_open_workflow', wf.id);
             toast.success(`✅ Flujo "${name}" creado con ${blueprint.nodes.length} nodos — abriendo en el Constructor`);
             setWizardTemplate(null);
             onNavigate?.('canvas');
-        } catch {
-            toast.error('No se pudo crear el flujo — intenta de nuevo');
+        } catch (err) {
+            // El motivo real ya viene escrito para una persona (§12.2): si es un
+            // rechazo de permisos dice quién sí puede. Tragárselo y responder
+            // «intenta de nuevo» manda al usuario a repetir algo que no puede
+            // salir bien.
+            toast.error((err as Error)?.message || 'No se pudo crear el flujo — intenta de nuevo');
         } finally {
             setCreating(null);
         }

@@ -8,7 +8,8 @@ import {
 import { supabase } from '../core/supabase';
 import { horaVE } from '../utils/fecha';
 import { authService } from '../core/auth.service';
-import { ROL_META } from '../core/user.types';
+import { ROL_META, puedeResolverTarea, type TareaResoluble } from '../core/user.types';
+import { useRolesDelegados } from '../utils/delegaciones';
 import type { ViewType } from '../App';
 import type { User } from '../core/user.types';
 
@@ -48,31 +49,32 @@ const INIT: SystemHealth[] = [
 
 interface SidebarBadges { errors: number; pending: number; }
 
-// ⚠️ Copiada en `WorkQueue.tsx`, `Governance.tsx` y en la Edge Function
-// `resolve-approval`, que es quien manda de verdad. Si cambias una, las cuatro.
-const ROLES_REGULATORIOS_SIDEBAR = ['cumplimiento'];
-
-function useSidebarBadges(organizationId: string | undefined, role: string | undefined, isAdmin: boolean): SidebarBadges {
+function useSidebarBadges(organizationId: string | undefined, userId: string | undefined, role: string | undefined): SidebarBadges {
     const [badges, setBadges] = useState<SidebarBadges>({ errors: 0, pending: 0 });
+    // Los roles que ejerce por suplencia cuentan igual que el propio: si a
+    // alguien le delegaron la firma, sus pendientes son suyos de verdad.
+    const delegados = useRolesDelegados(userId, organizationId);
 
     const fetch = useCallback(async () => {
         const [errRes, pendRes] = await Promise.all([
             supabase.from('execution_runs').select('id', { count: 'exact', head: true }).eq('status', 'error'),
             organizationId
-                ? supabase.from('tareas_aprobacion').select('rol_aprobador')
+                // `solicitante_id` hace falta para la segregación de funciones:
+                // sin él el globo contaba tareas que este usuario no puede
+                // aprobar por ser quien lanzó el flujo.
+                ? supabase.from('tareas_aprobacion').select('rol_aprobador, solicitante_id')
                     .eq('organization_id', organizationId).eq('estado', 'pendiente')
                 : Promise.resolve({ data: [], error: null }),
         ]);
 
-        // Filtrar solo aprobaciones que puede resolver este usuario (igual que WorkQueue/Governance)
-        const tareas = (pendRes as { data: { rol_aprobador: string }[] | null }).data ?? [];
-        const pendingCount = tareas.filter(t => {
-            if (ROLES_REGULATORIOS_SIDEBAR.includes(t.rol_aprobador)) return role === t.rol_aprobador;
-            return isAdmin || role === t.rol_aprobador;
-        }).length;
+        // Misma regla que WorkQueue, Governance y —la que manda— resolve-approval.
+        const tareas = (pendRes as { data: TareaResoluble[] | null }).data ?? [];
+        const pendingCount = (userId && role)
+            ? tareas.filter(t => puedeResolverTarea({ id: userId, role }, t, delegados)).length
+            : 0;
 
         setBadges({ errors: errRes.count ?? 0, pending: pendingCount });
-    }, [organizationId, role, isAdmin]);
+    }, [organizationId, userId, role, delegados]);
 
     useEffect(() => {
         fetch();
@@ -121,8 +123,7 @@ const NAV_BASE = [
 
 export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePassword, currentUser, onLogout }: SidebarProps) {
     const systems  = useSystemHealth();
-    const isAdmin  = authService.hasPermission(currentUser ?? null, 'manage_users');
-    const badges   = useSidebarBadges(currentUser?.organizationId, currentUser?.role, isAdmin);
+    const badges   = useSidebarBadges(currentUser?.organizationId, currentUser?.id, currentUser?.role);
     const initials = currentUser?.name
         ?.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase() ?? 'HS';
 

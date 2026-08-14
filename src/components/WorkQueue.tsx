@@ -4,15 +4,9 @@ import {
     Loader2, Clock, Play, RotateCcw, Inbox,
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
-import { authService } from '../core/auth.service';
 import { toast } from 'sonner';
-import type { User } from '../core/user.types';
-
-// Roles regulatorios (AML/CFT): sus tareas las resuelve SOLO ese rol, ni el admin.
-// ⚠️ Copiada en `Governance.tsx`, `Sidebar.tsx` y en la Edge Function
-// `resolve-approval` (que es quien manda de verdad — el navegador solo pinta
-// botones). Si cambias una, cambia las cuatro.
-const ROLES_REGULATORIOS = ['cumplimiento'];
+import { puedeResolverTarea, type User } from '../core/user.types';
+import { useRolesDelegados } from '../utils/delegaciones';
 
 interface WorkQueueProps { currentUser: User; }
 
@@ -111,6 +105,7 @@ function Section({ color, icon, title, count, children }: {
 }
 
 export function WorkQueue({ currentUser }: WorkQueueProps) {
+    const rolesDelegados = useRolesDelegados(currentUser.id, currentUser.organizationId);
     const [pendientes,  setPendientes]  = useState<TareaAprobacion[]>([]);
     const [errores,     setErrores]     = useState<RunRow[]>([]);
     const [enCurso,     setEnCurso]     = useState<RunRow[]>([]);
@@ -221,15 +216,10 @@ export function WorkQueue({ currentUser }: WorkQueueProps) {
         }
     };
 
-    const isAdmin = authService.hasPermission(currentUser, 'manage_users');
-    const canResolve = (tarea: TareaAprobacion): boolean => {
-        // SoD: quien disparó el flujo no puede aprobarlo (misma regla que en resolve-approval Edge Fn)
-        if (tarea.solicitante_id && tarea.solicitante_id === currentUser.id) return false;
-        if (ROLES_REGULATORIOS.includes(tarea.rol_aprobador)) {
-            return currentUser.role === tarea.rol_aprobador;
-        }
-        return isAdmin || currentUser.role === tarea.rol_aprobador;
-    };
+    // La regla vive en `user.types.ts`, gemela de `resolve-approval` (que es la
+    // que manda — el navegador solo pinta botones).
+    const canResolve = (tarea: TareaAprobacion): boolean =>
+        puedeResolverTarea(currentUser, tarea, rolesDelegados);
 
     // Mostrar todas las aprobaciones pendientes de la org; canResolve controla los botones de acci�n
     const pendientesVisibles = pendientes;

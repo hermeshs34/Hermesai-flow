@@ -414,7 +414,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     // ── Auto-guardar con debounce (1.5s) ──────────────────────────────────
     // ⚠️ Este efecto también se dispara al CAMBIAR de flujo, no solo al editar,
     // porque `activeWorkflowId` está en las dependencias. En ese instante `nodes`
-    // todavía es del flujo anterior y `saveNodes` borra antes de insertar: si la
+    // todavía es del flujo anterior y `saveLienzo` reemplaza el contenido: si la
     // carga tardaba más de 1,5 s, el temporizador ganaba y vaciaba el flujo recién
     // abierto. Así se perdieron cuatro flujos el 12/08/2026. `cargadoPara` es la
     // condición que faltaba: no se guarda lo que no se ha terminado de cargar.
@@ -430,8 +430,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             if (cargadoPara.current !== idAlArmar) return;
             setSaving(true);
             try {
-                await WorkflowService.saveNodes(idAlArmar, currentUser.organizationId, nodes, cargadoPara.current);
-                await WorkflowService.saveConnections(idAlArmar, connections, cargadoPara.current);
+                await WorkflowService.saveLienzo(idAlArmar, nodes, connections, cargadoPara.current);
             } catch (err: any) {
                 toast.error(`Error guardando flujo: ${err.message ?? 'fallo desconocido'}`);
             } finally {
