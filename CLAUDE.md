@@ -690,7 +690,7 @@ tiene nodos, si no tiene ningún `type='trigger'`, o si le queda un
 flujos de producción: **4 no pasarían** (3 con una decisión sin configurar, entre
 ellos "Prueba Flujo 02032026"; 1 sin disparador, "Score AML Automático").
 
-**Dos triggers, porque la pantalla no es una capa de seguridad:**
+**Tres triggers, porque la pantalla no es una capa de seguridad:**
 
 1. `workflows_estado_guard` — un `UPDATE` normal **no puede promover** un flujo
    (hace falta el marcador de sesión que solo pone la RPC), y **no se puede
@@ -709,6 +709,29 @@ Mover una caja por el lienzo (`position_x/y`) y escribir `status` **no** degrada
 ni bloquean — es el mismo criterio de la huella de §9.5, y los tres triggers
 comparten una sola definición de «cambio» a propósito. Tampoco degradan `name`,
 `description` ni `is_active`: renombrar un flujo no es rediseñarlo.
+
+En una **conexión** eso son `source_node_id`, `target_node_id`, `branch` y
+`workflow_id`. Nada más: la tabla no tiene otra columna de conducta.
+
+⚠️ **Los dos guardas exoneraban el UPDATE inocuo de un NODO y no el de una
+CONEXIÓN** (corregido el 14/08/2026, `20260814_definicion_cambiada_conexiones.sql`).
+Como `guardar_lienzo` reenvía **todas** las conexiones en cada guardado y
+`ON CONFLICT DO UPDATE` las reescribe aunque no hayan cambiado (§12.1),
+**cualquier** guardado —incluso uno que no cambiaba nada— despublicaba el flujo,
+y con un run vivo reventaba con una excepción. La exoneración de los nodos,
+cuidadosamente escrita, no servía de nada: la ventana estaba abierta al lado.
+Quinta aparición de la misma forma —`audit_log`, `execute-workflow`,
+`resolve-approval`, el escalamiento de §6.2—: **al cerrar una regla, repasa
+TODOS los caminos que escriben el campo.**
+
+⚠️ **Y `workflow_run_vivo_guard` es BEFORE: en un `BEFORE DELETE`, `NEW` es NULL
+y devolver NULL CANCELA el borrado.** Terminaba en `RETURN NEW`, así que durante
+unas horas del 14/08 **borrar un nodo o una conexión no borraba nada y no daba
+error** — el `DELETE` de reconciliación de `guardar_lienzo` quedaba anulado y el
+motor seguía recorriendo flechas que el usuario había quitado. El idioma correcto
+en un trigger de borrado es `RETURN OLD`. Otro instrumento que contesta «hecho»
+sin haber hecho nada (§12.2). Lo destapó una prueba de comportamiento que
+esperaba una despublicación, no una revisión del código.
 
 **La traza vive en `workflow_autorizaciones`** (`accion`, `actor_id`,
 `actor_email`, `motivo`, estado desde/hasta). `actor_id` va **sin FK y anulable**
@@ -1136,9 +1159,21 @@ historial.
 llamaban a `delete` y luego a `insert` en dos viajes distintos: si el segundo
 fallaba —RLS, red, un tipo mal— el flujo se quedaba **sin nodos**, que es
 exactamente el daño del incidente de arriba pero por otra puerta. Hoy las dos
-escriben con una sola llamada a `supabase.rpc('guardar_lienzo', …)`, que hace el
-`delete`+`insert` **dentro de una transacción**: o se guarda entero o no se toca
-nada.
+escriben con una sola llamada a `supabase.rpc('guardar_lienzo', …)`, **dentro de
+una transacción**: o se guarda entero o no se toca nada.
+
+⚠️ **Y no «borra e inserta»: RECONCILIA.** Borra solo las filas que ya no están
+en el lienzo y escribe el resto con `ON CONFLICT (id) DO UPDATE`. Los ids los
+pone el navegador y son estables, así que un guardado normal **no inserta ni
+borra: actualiza**. La frase «borra e inserta» se quedó de la versión anterior,
+se citó como causa raíz el 14/08 y era falsa — el fallo real estaba en otro
+sitio (§6.7).
+
+Lo que sí hay que saber de esa forma: **`ON CONFLICT DO UPDATE` ejecuta el
+UPDATE aunque los valores sean idénticos.** Postgres no compara antes. O sea que
+cada guardado dispara un `UPDATE` por nodo y por conexión aunque no haya
+cambiado nada, y **cualquier trigger de fila los ve**. Eso es lo que despublicaba
+los flujos.
 
 Dos cosas que no son accesorias:
 - **`SECURITY INVOKER`, no DEFINER.** Una función que reescribe el lienzo con los
