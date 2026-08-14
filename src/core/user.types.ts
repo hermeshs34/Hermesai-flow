@@ -20,6 +20,7 @@ export type Permission =
     | 'execute_workflows'  // ejecutar flujos
     | 'approve_tasks'      // aprobar/rechazar tareas humanas
     | 'manage_integrations'// conectar/configurar integraciones
+    | 'authorize_workflows'// autorizar/rechazar la DEFINICIÓN de un flujo (publicarlo)
     | 'view_logs'          // ver monitoreo/ejecuciones
     | 'view_audit'         // ver audit trail (gobierno)
     | 'view_all';          // lectura total de todos los módulos
@@ -77,12 +78,20 @@ export interface User {
 // gobierna eso es la matriz de aprobación (Gobierno → Matriz), que desde hoy
 // lee `execute-workflow`. Si algún día hace falta un permiso nuevo, se añade
 // junto al código que lo comprueba, no antes.
+//
+// ⚠️ `authorize_workflows` (14/08/2026) es el hueco que dejó abierto sacar a
+// `supervisor` de la edición: se le quitó editar «porque autoriza, no edita», y
+// hasta hoy no había nada que autorizar a nivel de definición. Nace con el
+// código que lo comprueba, no antes — la regla que manda de verdad es la función
+// `transicionar_flujo()` de la base (20260814_ciclo_vida_flujos.sql), que repite
+// estas dos listas porque es SQL y no puede importar este fichero. **Si cambias
+// una, cambia la otra**, igual que `execute_workflows` y `view_audit` (§6).
 export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
-    admin:         ['manage_users', 'manage_workflows', 'execute_workflows', 'approve_tasks', 'manage_integrations', 'view_logs', 'view_audit', 'view_all'],
+    admin:         ['manage_users', 'manage_workflows', 'execute_workflows', 'approve_tasks', 'manage_integrations', 'authorize_workflows', 'view_logs', 'view_audit', 'view_all'],
     dueno_proceso: ['manage_workflows', 'execute_workflows', 'view_logs', 'view_audit'],
-    supervisor:    ['approve_tasks', 'view_logs'],
+    supervisor:    ['approve_tasks', 'authorize_workflows', 'view_logs'],
     operador:      ['view_logs'],
-    autorizador:   ['execute_workflows', 'approve_tasks', 'view_logs'],
+    autorizador:   ['execute_workflows', 'approve_tasks', 'authorize_workflows', 'view_logs'],
     cumplimiento:  ['approve_tasks', 'view_logs', 'view_audit'],
     auditor:       ['view_all', 'view_logs', 'view_audit'],
     // legacy

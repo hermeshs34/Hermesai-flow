@@ -191,7 +191,7 @@ serve(async (req) => {
         // 1. Buscar todos los nodos tipo trigger:cron de flujos activos
         const { data: cronNodes, error } = await supabase
             .from('workflow_nodes')
-            .select('workflow_id, config_json, workflows(organization_id, name, is_active)')
+            .select('workflow_id, config_json, workflows(organization_id, name, is_active, estado_definicion)')
             .eq('type', 'trigger')
             .eq('category', 'cron');
 
@@ -215,6 +215,19 @@ serve(async (req) => {
             // nada. Corregido el 07/08/2026.
             if (!expr || !orgId || wf?.is_active !== true) {
                 skipped.push(`${wfName} — sin cron o pausado`);
+                continue;
+            }
+
+            // Y solo lo PUBLICADO (20260814_ciclo_vida_flujos.sql). Un flujo
+            // vuelve a borrador en cuanto se edita, así que sin esto el reloj
+            // seguiría disparando una definición que ya nadie autorizó.
+            //
+            // Se comprueba aquí además del guard de la base —que impide activar
+            // lo no publicado— porque son dos capas de una misma regla y este es
+            // el sitio donde queda dicho en el log por qué no salió. Un flujo
+            // que no dispara y no explica nada es la avería que no se nota.
+            if (wf?.estado_definicion !== 'publicado') {
+                skipped.push(`${wfName} — definición en ${wf?.estado_definicion ?? 'desconocido'}, sin autorizar`);
                 continue;
             }
 

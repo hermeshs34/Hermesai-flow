@@ -641,6 +641,102 @@ más.
 **No hay cadenas de delegación.** Si A delega en B y B delega en C, C no hereda
 el rol de A: una cadena es una autorización que no tomó nadie.
 
+### 6.7 Ciclo de vida de la definición — `borrador → en_revision → publicado`
+
+✅ **EN PRODUCCIÓN desde el 14/08/2026.** Ensayada primero con 18 de 18 pruebas
+de comportamiento dentro de una transacción con `ROLLBACK`, aplicada después, y
+comprobada contra la base **fuera** de la transacción: 1 flujo `publicado`, 12 en
+`borrador`, la RPC con EXECUTE solo para `authenticated` (`anon` fuera, §6.4),
+los cinco triggers y la fila de convalidación con `actor_id NULL`.
+
+⚠️ **El orden del despliegue no es indiferente, y quedó anotado porque la próxima
+vez no se ve venir: la migración va ANTES que las Edge Functions.**
+`execute-workflow` y `cron-runner` leen `estado_definicion`, y `cron-runner` la
+pide dentro del `select` de nodos cron — sin la columna PostgREST tumba la
+consulta **entera** y el reloj deja de disparar todo, no solo lo nuevo. Aquí se
+hizo en ese orden y se comprobó en `net._http_response` que las corridas
+siguientes seguían dando 200 con `checked: 3`.
+
+Hasta hoy un flujo pasaba de la cabeza de quien lo diseñaba a producción sin que
+nadie más lo mirara: el `dueno_proceso` lo dibujaba, lo activaba y lo ejecutaba
+él mismo. Los mismos ojos en las dos puntas. Esto es lo que ocupa el hueco que
+dejó sacar a `supervisor` de la edición (§12.2): *quien autoriza no edita*, pero
+hasta ahora tampoco tenía nada que autorizar a nivel de definición.
+
+**`workflows.estado_definicion`**, columna propia. **No se reutiliza
+`workflows.status`**, que es cómo acabó la última ejecución: sobrecargar esa
+columna es lo que hizo que `status='paused'` no significara nunca nada.
+
+**Quién mueve qué** — la lista vive en `ROLE_PERMISSIONS` → `authorize_workflows`
+(`src/core/user.types.ts`) **y repetida dentro de `transicionar_flujo()`**,
+porque es SQL y no puede importar TypeScript. Otro par que se mueve junto, como
+`execute_workflows` (§6) y `view_audit` (§6). Hoy: envía a revisión quien tiene
+`manage_workflows` (`admin`, `dueno_proceso`, `editor`); autoriza o rechaza quien
+tiene `authorize_workflows` (`admin`, `supervisor`, `autorizador`).
+
+**Todo lo decide `transicionar_flujo(workflow_id, accion, motivo)`**, una RPC
+`SECURITY DEFINER` — con `search_path` fijo, `REVOKE` a `anon` **por su nombre**
+(§6.4) y `GRANT` solo a `authenticated`. El frontend no repite ni una regla:
+`WorkflowService.transicionar` transporta la respuesta y ya. Lo que comprueba, en
+orden: sesión → perfil activo → **organización** (DEFINER se salta la RLS, así
+que la comprobación tiene que estar escrita) → rol → estado de origen → **cuatro
+ojos: quien envió a revisión no autoriza** → motivo obligatorio al rechazar →
+validaciones de publicación.
+
+**Las validaciones de publicación no son teóricas.** Un flujo no se publica si no
+tiene nodos, si no tiene ningún `type='trigger'`, o si le queda un
+`processor:decision` sin configurar —el `'' === ''` que va siempre por la rama
+`true` (§9.4)—, y el mensaje **nombra los nodos culpables**. Medido sobre los 13
+flujos de producción: **4 no pasarían** (3 con una decisión sin configurar, entre
+ellos "Prueba Flujo 02032026"; 1 sin disparador, "Score AML Automático").
+
+**Dos triggers, porque la pantalla no es una capa de seguridad:**
+
+1. `workflows_estado_guard` — un `UPDATE` normal **no puede promover** un flujo
+   (hace falta el marcador de sesión que solo pone la RPC), y **no se puede
+   activar lo que no está publicado**. Degradar sí se permite siempre: un control
+   que estorba para *apagar* algo se aprende a rodear.
+2. `workflow_definicion_cambiada` — tocar nodos o conexiones de un flujo
+   publicado lo **devuelve a borrador y lo desactiva**, y deja traza. Va sobre la
+   tabla y no dentro de `guardar_lienzo()` porque `nodes_editor_write` deja
+   escribir por API sin pasar por la RPC.
+3. `workflow_run_vivo_guard` — no se edita la definición de un flujo con un run
+   `running` o `esperando_aprobacion`. Complementa la huella de §9.5: aquella
+   **rechaza al reanudar**, esta impide llegar a ese punto.
+
+⚠️ **Qué cuenta como «cambio de la definición»: lo que cambia el comportamiento.**
+Mover una caja por el lienzo (`position_x/y`) y escribir `status` **no** degradan
+ni bloquean — es el mismo criterio de la huella de §9.5, y los tres triggers
+comparten una sola definición de «cambio» a propósito. Tampoco degradan `name`,
+`description` ni `is_active`: renombrar un flujo no es rediseñarlo.
+
+**La traza vive en `workflow_autorizaciones`** (`accion`, `actor_id`,
+`actor_email`, `motivo`, estado desde/hasta). `actor_id` va **sin FK y anulable**
+adrede, igual que `tareas_aprobacion.delegacion_id` (§6.6): borrar a un usuario no
+puede borrar el hecho de que autorizó. La tabla tiene RLS con **solo una política
+de SELECT**: nadie escribe en ella desde fuera —que no haya política *es* la
+política—, solo la RPC, que es DEFINER. El registro legible va además a
+`audit_log`.
+
+⚠️ **La migración deja en `publicado` los flujos que ya estaban activos, y en
+`borrador` todos los demás.** Los activos se convalidan con una fila de traza de
+`actor_id NULL` cuyo motivo dice que es una convalidación de migración, **no la
+autorización de una persona**. Consecuencia real y no menor: de los 13 flujos de
+producción solo uno está activo, así que **los otros 12 no se podrán activar sin
+pasar por revisión** — y quien los envía no puede autorizarlos él mismo.
+
+⚠️ **Reanudar (`action='resume'`) está exento del requisito de `publicado`**, a
+propósito. Lo que protege un run pausado es la huella de §9.5, que compara
+definiciones; exigir aquí el estado dejaría colgado para siempre cualquier run
+que estuviera esperando una aprobación cuando su flujo se despublicó — que es
+exactamente como se paralizó "Prueba Flujo 02032026" (§6).
+
+⚠️ **`estado_definicion` solo RESTRINGE la ejecución, nunca la concede.**
+`CICLO_VIDA_FLUJOS.md` §4 propone darle `execute_workflows` a `operador` sobre lo
+publicado; **no está hecho**, porque revierte la decisión de Hermes del
+08/08/2026 (§6) y eso es suyo, no mío. Es aditivo: una línea en
+`ROLE_PERMISSIONS` y otra en su gemelo de Deno.
+
 ### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
 
 **El secreto de las Edge Functions está en el formato NUEVO.**
@@ -1147,9 +1243,9 @@ Son **cuatro** políticas, no tres: `nodes_editor_write`,
 `connections_editor_write`, `workflows_editor_update` y —comprobado en la base,
 no supuesto— `workflows_editor_write` (INSERT), porque crear un flujo es
 editarlo. Las cuatro quedan en `admin, dueno_proceso, editor`, igual que los
-roles con `manage_workflows` en `src/core/user.types.ts`. Cuando exista
-`authorize_workflows` y los estados `borrador → en_revision → publicado`
-(`CICLO_VIDA_FLUJOS.md`), ese permiso es el que ocupa el hueco que deja este.
+roles con `manage_workflows` en `src/core/user.types.ts`. **`authorize_workflows`
+y los estados `borrador → en_revision → publicado` son el permiso que ocupa el
+hueco que deja este: están en §6.7**, en producción desde el 14/08/2026.
 
 ---
 

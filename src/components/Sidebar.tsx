@@ -47,16 +47,21 @@ const INIT: SystemHealth[] = [
     { name: 'Resend',      status: 'loading', latency_ms: null, message: 'Verificando...', last_check: '' },
 ];
 
-interface SidebarBadges { errors: number; pending: number; }
+interface SidebarBadges { errors: number; pending: number; revision: number; }
 
-function useSidebarBadges(organizationId: string | undefined, userId: string | undefined, role: string | undefined): SidebarBadges {
-    const [badges, setBadges] = useState<SidebarBadges>({ errors: 0, pending: 0 });
+function useSidebarBadges(
+    organizationId: string | undefined,
+    userId: string | undefined,
+    role: string | undefined,
+    puedeAutorizar: boolean,
+): SidebarBadges {
+    const [badges, setBadges] = useState<SidebarBadges>({ errors: 0, pending: 0, revision: 0 });
     // Los roles que ejerce por suplencia cuentan igual que el propio: si a
     // alguien le delegaron la firma, sus pendientes son suyos de verdad.
     const delegados = useRolesDelegados(userId, organizationId);
 
     const fetch = useCallback(async () => {
-        const [errRes, pendRes] = await Promise.all([
+        const [errRes, pendRes, revRes] = await Promise.all([
             supabase.from('execution_runs').select('id', { count: 'exact', head: true }).eq('status', 'error'),
             organizationId
                 // `solicitante_id` hace falta para la segregación de funciones:
@@ -65,6 +70,14 @@ function useSidebarBadges(organizationId: string | undefined, userId: string | u
                 ? supabase.from('tareas_aprobacion').select('rol_aprobador, solicitante_id')
                     .eq('organization_id', organizationId).eq('estado', 'pendiente')
                 : Promise.resolve({ data: [], error: null }),
+            // Flujos esperando que alguien autorice su definición. Sin esto, un
+            // flujo enviado a revisión se queda ahí sin que nadie se entere: el
+            // dueño no puede activarlo y el que sí puede autorizarlo no sabe que
+            // le toca. Solo se cuenta a quien puede resolverlo.
+            (organizationId && puedeAutorizar)
+                ? supabase.from('workflows').select('id', { count: 'exact', head: true })
+                    .eq('organization_id', organizationId).eq('estado_definicion', 'en_revision')
+                : Promise.resolve({ count: 0 }),
         ]);
 
         // Misma regla que WorkQueue, Governance y —la que manda— resolve-approval.
@@ -73,8 +86,12 @@ function useSidebarBadges(organizationId: string | undefined, userId: string | u
             ? tareas.filter(t => puedeResolverTarea({ id: userId, role }, t, delegados)).length
             : 0;
 
-        setBadges({ errors: errRes.count ?? 0, pending: pendingCount });
-    }, [organizationId, userId, role, delegados]);
+        setBadges({
+            errors:   errRes.count ?? 0,
+            pending:  pendingCount,
+            revision: (revRes as { count: number | null }).count ?? 0,
+        });
+    }, [organizationId, userId, role, delegados, puedeAutorizar]);
 
     useEffect(() => {
         fetch();
@@ -82,6 +99,7 @@ function useSidebarBadges(organizationId: string | undefined, userId: string | u
             .channel('sidebar-badges')
             .on('postgres_changes', { event: '*', schema: 'public', table: 'execution_runs' }, fetch)
             .on('postgres_changes', { event: '*', schema: 'public', table: 'tareas_aprobacion' }, fetch)
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'workflows' }, fetch)
             .subscribe();
         return () => { supabase.removeChannel(ch); };
     }, [fetch]);
@@ -113,17 +131,22 @@ function useSystemHealth(): SystemHealth[] {
     return health;
 }
 
+type BadgeKey = null | 'errors' | 'pending' | 'revision';
+
 const NAV_BASE = [
-    { id: 'dashboard'  as ViewType, label: 'Dashboard',            icon: LayoutDashboard, badgeKey: null             as null | 'errors' | 'pending' },
-    { id: 'workqueue'  as ViewType, label: 'Cola de Trabajo',      icon: ListTodo,         badgeKey: null             },
-    { id: 'canvas'     as ViewType, label: 'Constructor de Flujos', icon: Workflow,        badgeKey: null             },
-    { id: 'monitoring' as ViewType, label: 'Monitoreo',             icon: Activity,        badgeKey: 'errors'        as const },
-    { id: 'settings'   as ViewType, label: 'Configuración',         icon: SettingsIcon,    badgeKey: null             },
+    { id: 'dashboard'  as ViewType, label: 'Dashboard',            icon: LayoutDashboard, badgeKey: null      as BadgeKey },
+    { id: 'workqueue'  as ViewType, label: 'Cola de Trabajo',      icon: ListTodo,         badgeKey: null      as BadgeKey },
+    // El globo del Constructor cuenta flujos esperando autorización, y solo lo
+    // ve quien puede darla (ver `useSidebarBadges`).
+    { id: 'canvas'     as ViewType, label: 'Constructor de Flujos', icon: Workflow,        badgeKey: 'revision' as BadgeKey },
+    { id: 'monitoring' as ViewType, label: 'Monitoreo',             icon: Activity,        badgeKey: 'errors'   as BadgeKey },
+    { id: 'settings'   as ViewType, label: 'Configuración',         icon: SettingsIcon,    badgeKey: null      as BadgeKey },
 ];
 
 export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePassword, currentUser, onLogout }: SidebarProps) {
-    const systems  = useSystemHealth();
-    const badges   = useSidebarBadges(currentUser?.organizationId, currentUser?.id, currentUser?.role);
+    const systems       = useSystemHealth();
+    const puedeAutorizar = authService.hasPermission(currentUser ?? null, 'authorize_workflows');
+    const badges   = useSidebarBadges(currentUser?.organizationId, currentUser?.id, currentUser?.role, puedeAutorizar);
     const initials = currentUser?.name
         ?.split(' ').slice(0, 2).map(n => n[0]).join('').toUpperCase() ?? 'HS';
 
@@ -135,13 +158,16 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePas
         || authService.hasPermission(currentUser ?? null, 'view_audit');
 
     const navItems = canGovern
-        ? [...NAV_BASE, { id: 'governance' as ViewType, label: 'Gobierno', icon: ShieldCheck, badgeKey: 'pending' as const }]
+        ? [...NAV_BASE, { id: 'governance' as ViewType, label: 'Gobierno', icon: ShieldCheck, badgeKey: 'pending' as BadgeKey }]
         : NAV_BASE;
 
     const rolMeta = currentUser ? ROL_META[currentUser.role] : null;
 
-    const badgeCount = (key: 'errors' | 'pending' | null) =>
-        key === 'errors' ? badges.errors : key === 'pending' ? badges.pending : 0;
+    const badgeCount = (key: BadgeKey) =>
+        key === 'errors' ? badges.errors
+      : key === 'pending' ? badges.pending
+      : key === 'revision' ? badges.revision
+      : 0;
 
     return (
         <div className="w-64 flex flex-col bg-[#0f1729] text-white flex-shrink-0">

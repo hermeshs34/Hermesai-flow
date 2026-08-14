@@ -1,6 +1,6 @@
 import { supabase } from '../core/supabase.ts';
 import { mensajeDeRpc } from '../utils/errores.ts';
-import type { Workflow, WorkflowNodeData, WorkflowConnection } from '../types/workflow.ts';
+import type { Workflow, WorkflowNodeData, WorkflowConnection, EstadoDefinicion } from '../types/workflow.ts';
 
 // ─── Helpers de mapeo ────────────────────────────────────────────────────────
 
@@ -22,6 +22,11 @@ function mapWorkflow(row: Record<string, unknown>): Workflow {
         status:         row.status as Workflow['status'],
         responsible:    (row.profiles as { name?: string } | null)?.name
                         ?? (row.created_by ? 'Asignado' : 'Sin responsable'),
+        // Un flujo sin estado se trata como borrador: lo que no se puede
+        // comprobar no puede acabar diciendo que sí. La columna es NOT NULL, así
+        // que esto solo cubre una respuesta recortada, nunca amplía permisos —
+        // el motor y la base vuelven a comprobarlo.
+        estadoDefinicion: (row.estado_definicion as Workflow['estadoDefinicion']) ?? 'borrador',
     };
 }
 
@@ -161,6 +166,81 @@ export class WorkflowService {
 
         if (error) throw new Error(error.message);
         return mapWorkflow(data);
+    }
+
+    // ── Ciclo de vida de la definición ────────────────────────────────────
+
+    /**
+     * Relee SOLO el estado de la definición.
+     *
+     * Hace falta porque editar el lienzo de un flujo publicado lo devuelve a
+     * borrador **desde un trigger de la base**, sin que el navegador se entere.
+     * Sin esta relectura la insignia seguiría diciendo «Publicado» sobre un
+     * flujo que ya no lo está — un indicador que no mide, que es justo el fallo
+     * del `✓ Guardado` de §12.2 y del `succeeded` de pg_cron.
+     *
+     * Devuelve `null` si no se pudo leer. Quien llama debe dejar la insignia
+     * como estaba y no inventarse un estado: no saber no es saber que sí.
+     */
+    static async getEstadoDefinicion(id: string, organizationId: string): Promise<EstadoDefinicion | null> {
+        const { data, error } = await supabase
+            .from('workflows')
+            .select('estado_definicion')
+            .eq('id', id)
+            .eq('organization_id', organizationId)
+            .single();
+
+        if (error || !data) return null;
+        return (data.estado_definicion as EstadoDefinicion) ?? null;
+    }
+
+    /**
+     * Mueve un flujo por `borrador → en_revision → publicado`.
+     *
+     * Todo lo que decide vive en la función `transicionar_flujo` de la base
+     * (`database/migrations/20260814_ciclo_vida_flujos.sql`): quién puede hacer
+     * qué, desde qué estado, los cuatro ojos —quien envió a revisión no
+     * autoriza—, el motivo obligatorio al rechazar y las comprobaciones de
+     * publicación (que haya nodos, que haya un disparador, que no quede un
+     * `Decisión (Si/No)` sin configurar). Aquí NO se repite ninguna: este
+     * método solo transporta la respuesta.
+     *
+     * Es a propósito. `authorize_workflows` en `ROLE_PERMISSIONS` decide qué
+     * botón se pinta, nada más; si la regla viviera además aquí serían dos
+     * copias que pueden discrepar, y este proyecto ya sabe cómo acaba eso
+     * (CLAUDE.md §6.2). La única capa que manda es la base — un UPDATE directo
+     * por API tampoco puede promover un flujo: lo impide un trigger.
+     *
+     * Los `RAISE EXCEPTION` de esa función están escritos para una persona, así
+     * que `mensajeDeRpc` los deja pasar tal cual (§12.2).
+     */
+    static async transicionar(
+        workflowId: string,
+        accion: 'enviar' | 'autorizar' | 'rechazar' | 'despublicar',
+        motivo?: string
+    ): Promise<EstadoDefinicion> {
+        const { data, error } = await supabase.rpc('transicionar_flujo', {
+            p_workflow_id: workflowId,
+            p_accion:      accion,
+            p_motivo:      motivo?.trim() ? motivo.trim() : null,
+        });
+
+        if (error) throw new Error(mensajeDeRpc(error, 'el estado del flujo'));
+
+        // ⚠️ La clave es `estado_definicion`, la misma que la columna. Esto leyó
+        // `estado` hasta el 14/08/2026 y la transición SÍ ocurría —la RPC ya
+        // había hecho su trabajo— pero el navegador la daba por fallida y pedía
+        // recargar. Un caso más de los de §12.2: el «no» era mentira, no el «sí».
+        // Que se notara enseguida es mérito del `throw` de abajo; leer un campo
+        // ausente como `undefined` y pintarlo habría sido mucho peor.
+        const estado = (data as { estado_definicion?: string } | null)?.estado_definicion;
+        if (!estado) {
+            // La RPC devuelve siempre `{ estado_definicion, ... }`. Si no viene,
+            // algo cambió en la base y no vale suponer que salió bien: quien
+            // llama usaría un estado inventado para pintar la pantalla.
+            throw new Error('La base no devolvió el estado nuevo del flujo. Recarga la página para ver cómo quedó.');
+        }
+        return estado as EstadoDefinicion;
     }
 
     static async deleteWorkflow(id: string, organizationId: string): Promise<void> {

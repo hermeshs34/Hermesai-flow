@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../core/supabase';
 import type { Workflow, WorkflowNodeData, WorkflowConnection } from '../types/workflow';
+import { ESTADO_DEFINICION_META } from '../types/workflow';
 import type { User, Role } from '../core/user.types';
 import { ROL_META, puedeResolverTarea } from '../core/user.types';
 import { WorkflowService } from '../services/workflow.service';
@@ -895,7 +896,7 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
 
             const [runsRes, wfsRes, cronRes] = await Promise.all([
                 q,
-                supabase.from('workflows').select('id, name, status, is_active, execution_count, last_run_at, created_at, profiles:created_by(name)').order('execution_count', { ascending: false }).limit(50),
+                supabase.from('workflows').select('id, name, status, is_active, estado_definicion, execution_count, last_run_at, created_at, profiles:created_by(name)').order('execution_count', { ascending: false }).limit(50),
                 // Punto 2: flujos cron dinámicos desde la DB
                 supabase.from('workflow_nodes')
                     .select('workflow_id, config_json, workflows(name, is_active)')
@@ -916,6 +917,9 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                 isActive: w.is_active, createdAt: w.created_at, lastRun: w.last_run_at,
                 executionCount: w.execution_count ?? 0, status: w.status ?? 'paused',
                 responsible: w.profiles?.name ?? 'Sin responsable',
+                // Sin estado ⇒ borrador. Lo que no se puede comprobar no puede
+                // acabar diciendo que sí; aquí además solo apaga un interruptor.
+                estadoDefinicion: (w.estado_definicion ?? 'borrador') as Workflow['estadoDefinicion'],
             })));
 
             setCronFlows((cronRes.data ?? [])
@@ -1018,11 +1022,31 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
     // BUG FIX: usar orgId real, no wf.id como organizationId
     const toggleActive = async (wf: Workflow) => {
         if (!orgId) { toast.error('Sin organización activa'); return; }
+
+        // Solo se activa lo autorizado. La base lo impide igual (un trigger
+        // rechaza el UPDATE), pero decirlo antes evita pedirle a Postgres algo
+        // que ya sabemos que va a rechazar, y sobre todo explica qué hacer.
+        // Pausar siempre se puede: un control que estorba para apagar algo es
+        // un control que la gente aprende a rodear.
+        if (!wf.isActive && wf.estadoDefinicion !== 'publicado') {
+            toast.error(
+                `"${wf.name}" no se puede activar todavía: su definición está en ` +
+                `«${ESTADO_DEFINICION_META[wf.estadoDefinicion].label}». Ábrelo en el Constructor, ` +
+                `envíalo a revisión y espera a que lo autoricen.`,
+                { duration: 9000 }
+            );
+            return;
+        }
+
         try {
             await WorkflowService.updateWorkflow(wf.id, orgId, { isActive: !wf.isActive });
             setWorkflows(prev => prev.map(w => w.id === wf.id ? { ...w, isActive: !w.isActive } : w));
             toast.success(wf.isActive ? `"${wf.name}" pausado` : `"${wf.name}" activado`);
-        } catch { toast.error('No se pudo actualizar el flujo'); }
+        } catch (err: any) {
+            // El motivo real —de la RLS o del trigger— está escrito para una
+            // persona. Tragárselo y contestar «no se pudo» es el fallo de §12.2.
+            toast.error(err?.message ?? 'No se pudo actualizar el flujo', { duration: 9000 });
+        }
     };
 
     // Abrir wizard de plantilla

@@ -46,6 +46,18 @@ const ROLES_QUE_EJECUTAN = new Set([
     'admin', 'dueno_proceso', 'autorizador',
 ]);
 
+// Roles que pueden lanzar un flujo que TODAVÍA NO está publicado, o sea una
+// ejecución de prueba de su propio borrador. Son los de `manage_workflows`
+// (ROLE_PERMISSIONS): quien puede diseñarlo puede probarlo.
+//
+// Esto no ensancha nada — se cruza con ROLES_QUE_EJECUTAN, que ya se comprobó
+// antes—, solo ESTRECHA quién lanza un borrador. Un flujo sin publicar no lo
+// lanza el `autorizador`: él autoriza la definición, y ejecuta cuando ya está
+// publicada.
+const ROLES_QUE_DISENAN = new Set([
+    'admin', 'dueno_proceso', 'editor',
+]);
+
 // Roles que un nodo de aprobación puede EXIGIR. Son los roles reales de
 // `profiles.role` que además tienen el permiso `approve_tasks`.
 // ⚠️ Copiada de la lista ROLES de `NodeConfigPanel.tsx` (el desplegable del
@@ -1318,6 +1330,7 @@ serve(async (req) => {
             (token !== '' && token === SERVICE_ROLE_KEY);
 
         let callerUserId: string | null = null;
+        let callerRole: string | null = null;
         if (!esLlamadaInterna) {
             const { data: userData } = token
                 ? await supabase.auth.getUser(token)
@@ -1364,6 +1377,7 @@ serve(async (req) => {
                     { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
                 );
             }
+            callerRole = callerProfile.role;
         }
 
         // 1. Cargar flujo
@@ -1379,6 +1393,52 @@ serve(async (req) => {
                 JSON.stringify({ error: 'Flujo no encontrado' }),
                 { status: 404, headers: { ...CORS, 'Content-Type': 'application/json' } }
             );
+        }
+
+        // ── El estado de la definición ──────────────────────────────────────
+        //
+        // (20260814_ciclo_vida_flujos.sql). Aquí el estado solo RESTRINGE: nunca
+        // le da permiso de ejecutar a quien no lo tenía — ROLES_QUE_EJECUTAN ya
+        // se comprobó arriba y sigue mandando.
+        //
+        // ⚠️ Reanudar está exento a propósito, y no por comodidad: `resume` no
+        // lanza nada, continúa un run que arrancó cuando el flujo sí estaba
+        // publicado, y lo que garantiza que se reanuda LA MISMA definición es la
+        // huella de §9.5, no este estado. Bloquear aquí dejaría colgado para
+        // siempre cualquier run pausado cuyo flujo se despublicara mientras
+        // esperaba la aprobación — que es justo lo que hace el trigger de
+        // despublicación en cuanto alguien lo edita. Es el mismo error que
+        // paralizó "Prueba Flujo 02032026" (§6).
+        //
+        // Un NULL (flujo anterior a la migración) se trata como borrador: lo que
+        // no se puede comprobar no puede acabar diciendo que sí — misma familia
+        // que `token !== ''` (§6.1) y la huella NULL (§9.5).
+        const estadoDefinicion = workflow.estado_definicion ?? 'borrador';
+        if (action !== 'resume' && estadoDefinicion !== 'publicado') {
+            if (esLlamadaInterna) {
+                // El cron ya filtra por publicado; si llega algo aquí es que se
+                // despublicó entre el filtro y el disparo. No es un error del
+                // usuario: se para y se dice.
+                return new Response(
+                    JSON.stringify({
+                        error: `El flujo "${workflow.name}" no está publicado (${estadoDefinicion}). ` +
+                               'No se dispara hasta que se autorice de nuevo.',
+                    }),
+                    { status: 409, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
+            if (!ROLES_QUE_DISENAN.has(callerRole ?? '')) {
+                return new Response(
+                    JSON.stringify({
+                        error: `Este flujo todavía no está publicado (está en ${
+                            estadoDefinicion === 'en_revision' ? 'revisión' : 'borrador'
+                        }). Mientras tanto solo puede probarlo quien lo diseña: el Dueño de ` +
+                        'Proceso o el Administrador. Para ponerlo en marcha hay que enviarlo a ' +
+                        'revisión y que lo autoricen.',
+                    }),
+                    { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
         }
 
         // 2. Cargar nodos y conexiones

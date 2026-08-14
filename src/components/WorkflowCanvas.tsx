@@ -11,13 +11,14 @@ import { supabase }        from '../core/supabase';
 import { fechaVE }         from '../utils/fecha';
 import { mensajeDeEdgeFunction, rolesQuePueden } from '../utils/errores';
 import { authService }     from '../core/auth.service';
-import type { WorkflowNodeData, WorkflowConnection, Workflow } from '../types/workflow';
+import type { WorkflowNodeData, WorkflowConnection, Workflow, EstadoDefinicion } from '../types/workflow';
+import { ESTADO_DEFINICION_META } from '../types/workflow';
 import type { NodeType }   from './NodePalette';
 import type { User }       from '../core/user.types';
 import {
     Play, Trash2, Plus, ChevronDown,
     CheckCircle, Loader2, PanelLeftOpen, AlertTriangle, X, BrainCircuit,
-    ShieldCheck, XCircle, Zap, Undo2, Redo2,
+    ShieldCheck, XCircle, Zap, Undo2, Redo2, Send,
 } from 'lucide-react';
 
 // ── Checklist pre-ejecución ───────────────────────────────────────────────────
@@ -258,6 +259,57 @@ function getMissingFields(nodes: WorkflowNodeData[]): string[] {
     return missing;
 }
 
+/**
+ * Huella de EXACTAMENTE lo que `saveLienzo` escribiría. Sirve para una sola
+ * pregunta: ¿hay algo que guardar?
+ *
+ * Sin esto, abrir un flujo lo guardaba. El efecto de autoguardado depende de
+ * `nodes` y `connections`, y cargar un flujo cambia las dos, así que armaba el
+ * temporizador y a 1,5 s escribía el lienzo entero sin que nadie hubiera
+ * editado nada. Daba igual mientras reescribir lo mismo fuera inocuo; dejó de
+ * darlo el 14/08/2026, cuando `guardar_lienzo` —que borra y reinserta— empezó a
+ * despertar el trigger de §6.7: **ningún flujo publicado sobrevivía a que lo
+ * abriera alguien con permiso de editar**. Lo vio Hermes el mismo día.
+ *
+ * Es la tercera cara del autoguardado que escribe sin que nadie edite; las
+ * otras dos son los cuatro flujos borrados del 12/08 (§12.1).
+ *
+ * ⚠️ NO es la huella de §9.5 y no deben unificarse. Aquella responde «¿cambió
+ * el COMPORTAMIENTO?» para decidir si un run pausado puede reanudarse, y por eso
+ * excluye la posición. Esta responde «¿hay algo que persistir?», así que la
+ * incluye: arrastrar una caja sí hay que guardarlo.
+ */
+function huellaLienzo(nodes: WorkflowNodeData[], conns: WorkflowConnection[]): string {
+    // Las claves se ordenan antes de serializar, por lo mismo que en §9.5:
+    // `JSON.stringify` respeta el orden de inserción, y un `config` reescrito
+    // con los mismos valores en otro orden daría una huella distinta y
+    // provocaría un guardado —y una degradación— sin que nada haya cambiado.
+    const canonico = (v: unknown): unknown => {
+        if (Array.isArray(v)) return v.map(canonico);
+        if (v && typeof v === 'object') {
+            return Object.keys(v as Record<string, unknown>).sort().reduce(
+                (acc, k) => { acc[k] = canonico((v as Record<string, unknown>)[k]); return acc; },
+                {} as Record<string, unknown>,
+            );
+        }
+        return v;
+    };
+
+    // Y las filas se ordenan por id: el orden del array del lienzo cambia al
+    // arrastrar o al recargar, y no es algo que se guarde.
+    const n = nodes
+        .map(x => [x.id, x.type, x.category, x.title,
+                   Math.round(x.position.x), Math.round(x.position.y),
+                   canonico(x.config ?? {}), x.status ?? 'idle'] as const)
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+
+    const c = conns
+        .map(x => [x.id, x.sourceId, x.targetId, x.branch ?? null] as const)
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+
+    return JSON.stringify([n, c]);
+}
+
 interface WorkflowCanvasProps {
     currentUser: User;
 }
@@ -276,6 +328,18 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     const [wfDateFilter,       setWfDateFilter]      = useState<'all' | '7d' | '30d' | 'never'>('all');
     const [showChecklist,      setShowChecklist]     = useState(false);
     const [checkItems,         setCheckItems]        = useState<CheckItem[]>([]);
+
+    // ── Ciclo de vida de la definición ─────────────────────────────────────
+    // Estado del flujo abierto y la transición en curso. Se guarda aparte de
+    // `workflows` porque lo mueve también la base por su cuenta: editar el
+    // lienzo de un publicado lo devuelve a borrador desde un trigger.
+    const [estadoDef,   setEstadoDef]   = useState<EstadoDefinicion>('borrador');
+    const [transitando, setTransitando] = useState(false);
+    // El autoguardado lo lee sin declararlo como dependencia: si estuviera en
+    // las dependencias del efecto, cambiar de estado rearmaría el temporizador
+    // de guardado, que es exactamente el mecanismo que borró cuatro flujos.
+    const estadoDefRef = useRef<EstadoDefinicion>('borrador');
+    useEffect(() => { estadoDefRef.current = estadoDef; }, [estadoDef]);
 
     // ── Canvas ─────────────────────────────────────────────────────────────
     const [nodes,              setNodes]             = useState<WorkflowNodeData[]>([]);
@@ -336,6 +400,12 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     // descarta: si no, el lienzo mostraría los nodos de un flujo y el nombre de otro.
     const peticionActiva          = useRef<string | null>(null);
 
+    // Huella de lo último que hay ESCRITO en la base para el flujo abierto. El
+    // autoguardado no sale si el lienzo sigue igual. Se pone al cargar (no hay
+    // nada que guardar recién abierto) y tras cada guardado correcto; si un
+    // guardado falla NO se toca, para que el siguiente cambio lo reintente.
+    const lienzoEscrito           = useRef<string | null>(null);
+
     // ── Permisos ───────────────────────────────────────────────────────────
     // El Constructor deja mirar a todo el mundo, pero solo escribe quien tiene
     // `manage_workflows`. Sin esto, un Oficial de Cumplimiento tocaba el lienzo,
@@ -343,8 +413,9 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
     // security policy for table "workflow_nodes"»: un "no" correcto contado en
     // el idioma de Postgres. La política RLS sigue siendo la que manda; esto solo
     // evita pedirle a la base algo que ya sabemos que va a rechazar.
-    const puedeEditar   = authService.hasPermission(currentUser, 'manage_workflows');
-    const puedeEjecutar = authService.hasPermission(currentUser, 'execute_workflows');
+    const puedeEditar    = authService.hasPermission(currentUser, 'manage_workflows');
+    const puedeEjecutar  = authService.hasPermission(currentUser, 'execute_workflows');
+    const puedeAutorizar = authService.hasPermission(currentUser, 'authorize_workflows');
 
     // ── Cargar lista de workflows ──────────────────────────────────────────
     useEffect(() => {
@@ -374,10 +445,12 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         // temporizador armado del flujo anterior, saltará y no hará nada.
         cargadoPara.current  = null;
         peticionActiva.current = wf.id;
+        lienzoEscrito.current = null;   // nada comparable hasta que cargue
         if (saveTimer.current) clearTimeout(saveTimer.current);
 
         setActiveWorkflowId(wf.id);
         setWorkflowName(wf.name);
+        setEstadoDef(wf.estadoDefinicion);
         setShowWfDropdown(false);
         setBannerDismissed(false); // mostrar banner al abrir cada flujo nuevo
         try {
@@ -385,8 +458,13 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             if (peticionActiva.current !== wf.id) return;   // respuesta caducada
             if (!full) throw new Error('el flujo no existe o no pertenece a tu organización');
             cargadoPara.current = wf.id;   // ahora sí: lo de `nodes` es de este flujo
+            // Lo recién cargado ES lo que hay escrito: sin esta línea el
+            // autoguardado lo reescribiría, y reescribir un flujo publicado lo
+            // devuelve a Borrador (§6.7) aunque nadie haya tocado nada.
+            lienzoEscrito.current = huellaLienzo(full.nodes, full.connections);
             setNodes(full.nodes);
             setConnections(full.connections);
+            setEstadoDef(full.estadoDefinicion);   // el de la lista puede ser viejo
         } catch (err: any) {
             if (peticionActiva.current !== wf.id) return;   // ya no interesa este flujo
             // Una carga fallida NO puede quedarse como lienzo vacío editable: el
@@ -422,6 +500,14 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         if (!activeWorkflowId) return;
         if (!puedeEditar) return;                               // solo mira, no guarda
         if (cargadoPara.current !== activeWorkflowId) return;   // carga en vuelo
+
+        // Y no se guarda lo que no ha cambiado. Este efecto se dispara también
+        // al CARGAR —`nodes` y `connections` son dependencias suyas—, así que
+        // sin esto abrir un flujo lo reescribía entero y el trigger de §6.7 lo
+        // devolvía a Borrador. Ver `huellaLienzo`.
+        const huella = huellaLienzo(nodes, connections);
+        if (huella === lienzoEscrito.current) return;
+
         if (saveTimer.current) clearTimeout(saveTimer.current);
         const idAlArmar = activeWorkflowId;
         saveTimer.current = setTimeout(async () => {
@@ -431,6 +517,25 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             setSaving(true);
             try {
                 await WorkflowService.saveLienzo(idAlArmar, nodes, connections, cargadoPara.current);
+                // Solo tras un guardado correcto. Si falla, la huella se queda
+                // como estaba y el siguiente cambio vuelve a intentarlo.
+                lienzoEscrito.current = huella;
+                // Editar la definición de un flujo publicado lo devuelve a
+                // borrador y lo desactiva, y eso pasa en un trigger de la base:
+                // sin releerlo, la insignia seguiría diciendo «Publicado». Solo
+                // se pregunta cuando hay algo que pueda haber cambiado.
+                if (estadoDefRef.current !== 'borrador') {
+                    const ahora = await WorkflowService.getEstadoDefinicion(idAlArmar, currentUser.organizationId);
+                    if (ahora && cargadoPara.current === idAlArmar && ahora !== estadoDefRef.current) {
+                        setEstadoDef(ahora);
+                        setWorkflows(prev => prev.map(w => w.id === idAlArmar ? { ...w, estadoDefinicion: ahora, isActive: false } : w));
+                        toast.warning(
+                            'Has cambiado la definición, así que el flujo vuelve a Borrador y queda desactivado. ' +
+                            'Envíalo a revisión otra vez para que lo autoricen.',
+                            { duration: 9000 }
+                        );
+                    }
+                }
             } catch (err: any) {
                 toast.error(`Error guardando flujo: ${err.message ?? 'fallo desconocido'}`);
             } finally {
@@ -454,10 +559,15 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             // Un flujo recién creado está vacío de verdad, no por una carga a
             // medias: se marca como cargado para que se pueda editar y guardar.
             cargadoPara.current = wf.id;
+            // Vacío es lo que hay escrito. Sin esto, crear un flujo lanzaría un
+            // guardado de cero nodos nada más nacer: inofensivo, pero es una
+            // escritura que nadie pidió.
+            lienzoEscrito.current = huellaLienzo([], []);
             setNodes([]);
             setConnections([]);
             setActiveWorkflowId(wf.id);
             setWorkflowName(wf.name);
+            setEstadoDef(wf.estadoDefinicion);   // nace en borrador
             setNewWfName('');
             setShowWfDropdown(false);
             GovernanceService.log(currentUser, 'crear', 'workflow', { entidadId: wf.id, descripcion: `Flujo "${wf.name}" creado` });
@@ -466,6 +576,51 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
             toast.error(`No se pudo crear el flujo: ${err.message}`);
         } finally {
             setCreatingWorkflow(false);
+        }
+    };
+
+    // ── Ciclo de vida: enviar a revisión / autorizar / rechazar ───────────
+    //
+    // Aquí no se decide nada. Quién puede hacer qué, desde qué estado, los
+    // cuatro ojos y las comprobaciones de publicación viven en la función
+    // `transicionar_flujo` de la base, que es la única capa que manda. Esto
+    // pide la acción y enseña lo que conteste — sus mensajes están escritos
+    // para una persona (§12.2).
+    const handleTransicion = async (accion: 'enviar' | 'autorizar' | 'rechazar') => {
+        if (!activeWorkflowId) return;
+
+        // El motivo es obligatorio al rechazar y la base lo exige igual; se
+        // pide aquí para no gastar un viaje y, sobre todo, porque un rechazo
+        // sin motivo deja al dueño sin saber qué corregir.
+        let motivo: string | undefined;
+        if (accion === 'rechazar') {
+            const escrito = prompt('¿Por qué se devuelve el flujo a su dueño? El motivo le llegará a él:');
+            if (escrito === null) return;                 // canceló
+            if (!escrito.trim()) { toast.error('Hace falta un motivo para rechazar.'); return; }
+            motivo = escrito;
+        }
+
+        // Un guardado a medias y una transición a la vez es una carrera: se
+        // autorizaría una definición distinta de la que se está viendo.
+        if (saving) { toast.error('Espera a que termine de guardarse el flujo.'); return; }
+
+        setTransitando(true);
+        try {
+            const nuevo = await WorkflowService.transicionar(activeWorkflowId, accion, motivo);
+            setEstadoDef(nuevo);
+            setWorkflows(prev => prev.map(w => w.id === activeWorkflowId
+                ? { ...w, estadoDefinicion: nuevo, isActive: nuevo === 'publicado' ? w.isActive : false }
+                : w));
+            toast.success(
+                accion === 'enviar'    ? 'Enviado a revisión. Ahora lo autoriza el Supervisor o el Autorizador Máximo.'
+              : accion === 'autorizar' ? 'Flujo publicado. Ya se puede activar para que corra por su programación.'
+              :                          'Flujo devuelto a Borrador. Su dueño recibe el motivo.',
+                { duration: 7000 }
+            );
+        } catch (err: any) {
+            toast.error(err.message ?? 'No se pudo cambiar el estado del flujo', { duration: 10000 });
+        } finally {
+            setTransitando(false);
         }
     };
 
@@ -756,7 +911,14 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                                         onClick={() => selectWorkflow(wf)}
                                                         className={`flex-1 text-left px-3 py-2.5 text-sm min-w-0 ${wf.id === activeWorkflowId ? 'text-indigo-700' : 'text-gray-700'}`}
                                                     >
-                                                        <div className="font-medium truncate">{wf.name}</div>
+                                                        <div className="flex items-center gap-1.5 min-w-0">
+                                                            <span
+                                                                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                                                                style={{ backgroundColor: ESTADO_DEFINICION_META[wf.estadoDefinicion].color }}
+                                                                title={ESTADO_DEFINICION_META[wf.estadoDefinicion].label}
+                                                            />
+                                                            <span className="font-medium truncate">{wf.name}</span>
+                                                        </div>
                                                         <div className="flex items-center justify-between mt-0.5">
                                                             <span className="text-xs text-gray-400">{wf.executionCount ?? 0} ejecuciones</span>
                                                             <span className="text-xs text-gray-400">
@@ -796,6 +958,25 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                 </div>
                             )}
                         </div>
+
+                        {/* Estado de la DEFINICIÓN — no es el resultado de la
+                            última ejecución. Se pinta siempre que haya un flujo
+                            abierto, también en borrador: el usuario tiene que
+                            poder ver por qué su flujo no se dispara solo. */}
+                        {activeWorkflowId && (
+                            <span
+                                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border"
+                                style={{
+                                    color:           ESTADO_DEFINICION_META[estadoDef].color,
+                                    borderColor:     `${ESTADO_DEFINICION_META[estadoDef].color}55`,
+                                    backgroundColor: `${ESTADO_DEFINICION_META[estadoDef].color}14`,
+                                }}
+                                title={ESTADO_DEFINICION_META[estadoDef].ayuda}
+                            >
+                                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: ESTADO_DEFINICION_META[estadoDef].color }} />
+                                {ESTADO_DEFINICION_META[estadoDef].label}
+                            </span>
+                        )}
                     </div>
 
                     {/* Acciones */}
@@ -865,6 +1046,58 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                             <BrainCircuit className="w-4 h-4" />
                             Asistente
                         </button>
+
+                        {/* ── Ciclo de vida ──────────────────────────────
+                            Cada acción sale solo cuando toca, porque un botón
+                            que no aplica es ruido; pero el que sí sale se deja
+                            pulsable aunque vaya a fallar (los cuatro ojos, un
+                            nodo sin configurar), para que el motivo lo dé la
+                            base y no un botón gris que no explica nada. */}
+                        {activeWorkflowId && puedeEditar && estadoDef === 'borrador' && (
+                            <button
+                                onClick={() => handleTransicion('enviar')}
+                                disabled={transitando}
+                                title="Enviar la definición a revisión. Mientras no la autoricen, el flujo no puede activarse ni dispararse por su programación."
+                                className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:opacity-40 transition-colors font-semibold"
+                            >
+                                {transitando ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                                Enviar a revisión
+                            </button>
+                        )}
+
+                        {activeWorkflowId && puedeAutorizar && estadoDef === 'en_revision' && (
+                            <>
+                                <button
+                                    onClick={() => handleTransicion('autorizar')}
+                                    disabled={transitando}
+                                    title="Autorizar y publicar esta definición. Quien la envió a revisión no puede autorizarla."
+                                    className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 transition-colors font-semibold"
+                                >
+                                    {transitando ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                                    Autorizar
+                                </button>
+                                <button
+                                    onClick={() => handleTransicion('rechazar')}
+                                    disabled={transitando}
+                                    title="Devolver el flujo a su dueño con un motivo. No lo edites tú: quien autoriza no edita."
+                                    className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-40 transition-colors font-semibold"
+                                >
+                                    <XCircle className="w-4 h-4" />
+                                    Rechazar
+                                </button>
+                            </>
+                        )}
+
+                        {/* En revisión y sin poder autorizar: decirlo, en vez de
+                            dejar al dueño mirando un flujo que no se mueve. */}
+                        {activeWorkflowId && !puedeAutorizar && estadoDef === 'en_revision' && (
+                            <span
+                                className="text-xs text-amber-700"
+                                title={`Autorizar la definición de un flujo es de ${rolesQuePueden('authorize_workflows')}.`}
+                            >
+                                Esperando autorización
+                            </span>
+                        )}
 
                         <button
                             onClick={handleExecute}
