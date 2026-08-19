@@ -27,8 +27,17 @@ async function ping(label: string, fn: () => Promise<void>): Promise<SystemResul
         await fn();
         return { name: label, status: 'ok', latency_ms: Date.now() - t0, last_check: now, message: 'Conectado' };
     } catch (e: any) {
-        return { name: label, status: 'error', latency_ms: Date.now() - t0, last_check: now, message: String(e?.message ?? 'Error desconocido').slice(0, 120) };
+        return { name: label, status: 'error', latency_ms: Date.now() - t0, last_check: now, message: String(e?.message ?? 'Error desconocido').slice(0, 220) };
     }
+}
+
+// Un `{ error }` de PostgREST trae `message`, y el motivo de verdad suele ir en
+// `hint` y `code`. Quedarse solo con `message` deja "Invalid API key" a secas,
+// que no distingue una clave mal copiada de una clave del formato viejo — el
+// gateway SÍ lo distingue, y lo dice en el hint. Misma doctrina que §12.2:
+// lo que acaba delante de una persona tiene que llevar el motivo, no el sobre.
+function detalleError(e: { message: string; hint?: string | null; code?: string | null }): string {
+    return [e.message, e.hint, e.code ? `[${e.code}]` : null].filter(Boolean).join(' — ');
 }
 
 serve(async (req) => {
@@ -60,7 +69,7 @@ serve(async (req) => {
         results.push(await ping('Indicadores', async () => {
             const ind = createClient(IND_URL, IND_KEY);
             const { error } = await ind.from('indicadores_definicion').select('id').limit(1);
-            if (error) throw new Error(error.message);
+            if (error) throw new Error(detalleError(error));
         }));
     } else {
         results.push({ name: 'Indicadores', status: 'unconfigured', latency_ms: null, last_check: new Date().toISOString(), message: 'Secret INDICADORES_SUPABASE_URL no configurado' });
@@ -73,7 +82,7 @@ serve(async (req) => {
         results.push(await ping('EE.FF.', async () => {
             const eeff = createClient(EEFF_URL, EEFF_KEY);
             const { error } = await eeff.from('companies').select('id').limit(1);
-            if (error) throw new Error(error.message);
+            if (error) throw new Error(detalleError(error));
         }));
     } else {
         results.push({ name: 'EE.FF.', status: 'unconfigured', latency_ms: null, last_check: new Date().toISOString(), message: 'Secret EEFF_SUPABASE_URL no configurado' });
@@ -86,7 +95,7 @@ serve(async (req) => {
         results.push(await ping('RiskGuard', async () => {
             const rg = createClient(RG_URL, RG_KEY);
             const { error } = await rg.from('siniestros').select('id').limit(1);
-            if (error) throw new Error(error.message);
+            if (error) throw new Error(detalleError(error));
         }));
     } else {
         results.push({ name: 'RiskGuard', status: 'unconfigured', latency_ms: null, last_check: new Date().toISOString(), message: 'Secret RISKGUARD_SUPABASE_URL no configurado' });

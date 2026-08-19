@@ -768,8 +768,10 @@ JWT**.
 
 El proyecto convive con los dos formatos: existen las cuatro claves
 (`anon` y `service_role` legacy en JWT, más `sb_publishable_…` y `sb_secret_…`),
-y **el frontend todavía arranca con la anon legacy** (`VITE_SUPABASE_ANON_KEY`
-empieza por `eyJ`). O sea: las legacy siguen vivas y aceptadas. Lo que cambió es
+y ~~el frontend todavía arranca con la anon legacy~~. **Corregido el
+19/08/2026: `VITE_SUPABASE_ANON_KEY` de `.env.local` empieza por
+`sb_publishable_`, no por `eyJ`** — el frontend ya está en el formato nuevo.
+Las legacy siguen vivas y aceptadas. Lo que cambió es
 qué formato hay puesto en el secreto de las funciones.
 
 De ahí la regla que costó ocho días de cron muerto:
@@ -856,6 +858,45 @@ HermesAI Flow Edge Function
     → Lee: siniestros, riesgos, KRIs, alertas AML
     → NUNCA escribe en el sistema origen
 ```
+
+### 8.1 EE.FF. apunta al proyecto de DESARROLLO, y es a propósito
+
+`EEFF_SUPABASE_URL` vale `https://ieuxpyodbqqhnxcfdflf.supabase.co` —el proyecto
+que en el panel se llama *Financial Analysis Platform_dev*—, **no** el EE.FF. de
+producción (`olxkqysvmxzzbbjxwlyl`). Decisión de Hermes del 19/08/2026: *«no es
+conveniente conectarlo con el de producción hasta que [Flujos] esté listo»*.
+
+**No es un proyecto vacío de pruebas:** ahí viven las tres empresas sobre las que
+se trabajó el 15/08 —HierroFuerte C.A. (`industry='industrial'`), Inversiones
+Katheriel 1222 y Empresa de Desarrollo S.A.—, y de ahí sale la columna
+`companies.industry` que `processor:eeff` usa para elegir el plan de cuentas.
+
+⚠️ **Por eso la clave de EE.FF. se crea en el proyecto de desarrollo.** El
+19/08/2026 se creó en el de producción, y Flujos pasó el día en rojo con
+`Invalid API key` aunque la clave era válida y devolvía filas al probarla a mano:
+la clave era buena, el proyecto contra el que se usaba no. **El gateway lo dice
+en el `hint`, no en el `message`** —medido ese día contra el REST:
+
+| `hint` de la respuesta 401 | Qué significa de verdad |
+|---|---|
+| `No API key found in request` | falta la cabecera `apikey` |
+| `Double check your Supabase 'anon' or 'service_role' API key.` | la clave va en formato JWT y no es válida |
+| `Double check your API key.` | formato nuevo (`sb_…`) y no es válida |
+| `…This API key might also be owned by another Supabase project.` | **la clave es buena pero es de OTRO proyecto** |
+
+Un `{ error }` de PostgREST trae `message`, `hint`, `details` y `code`, y quedarse
+solo con `message` deja `Invalid API key` a secas, que no distingue ninguno de
+esos cuatro casos. `health-check` los tiraba; desde el 19/08/2026 los compone con
+`detalleError()`. Misma doctrina que §12.2: **lo que acaba delante de una persona
+tiene que llevar el motivo, no el sobre.**
+
+⚠️ **Una clave nueva NO exige redesplegar nada.** Las Edge Functions leen
+`Deno.env.get()` en cada invocación, así que cambiar el secreto basta. Redesplegar
+`execute-workflow` «por si acaso» es justo la operación que reintroduce el fallo
+de los ocho días de cron muerto si se olvida `--no-verify-jwt` (§6.1).
+
+✅ **Cerrado el 19/08/2026 a las 19:04 UTC:** clave recreada en desarrollo, EE.FF. en
+verde (288 ms) sin tocar `execute-workflow`, que sigue en v101 = HEAD.
 
 ### Contrato de integración por sistema
 
@@ -1312,7 +1353,9 @@ informe SUDEASEG con datos que ya están en el contexto del flujo.
 
 **Y de los tres conectores que sí existen, Indicadores está caído:** apunta a
 `fciaudxeuycqtuzyurnb`, que el documento de plataforma marca como proyecto INACTIVO.
-RiskGuard y EE.FF. responden bien.
+RiskGuard y EE.FF. responden bien — este último **desde el 19/08/2026 a las 19:04 UTC**,
+cuando la clave `sb_secret_` se recreó en el proyecto de DESARROLLO al que apunta
+`EEFF_SUPABASE_URL` (§8.1). Medido con `health-check` en vivo, no supuesto.
 
 ---
 
