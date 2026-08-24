@@ -36,6 +36,19 @@ async function ping(label: string, fn: () => Promise<void>): Promise<SystemResul
 // que no distingue una clave mal copiada de una clave del formato viejo — el
 // gateway SÍ lo distingue, y lo dice en el hint. Misma doctrina que §12.2:
 // lo que acaba delante de una persona tiene que llevar el motivo, no el sobre.
+// Familia de la credencial de cada integración. Devuelve la ETIQUETA del formato,
+// nunca un solo carácter del valor: sirve para auditar el apagado de las claves
+// legacy de Supabase sin pedirle a nadie que pegue un secreto en un chat.
+// `eyJ` = JWT legacy (anon/service_role, mueren al apagar las legacy);
+// `sb_secret_` / `sb_publishable_` = formato nuevo, sobreviven.
+function familiaClave(k: string | undefined): string {
+    if (!k) return 'ausente';
+    if (k.startsWith('sb_secret_')) return 'sb_secret_';
+    if (k.startsWith('sb_publishable_')) return 'sb_publishable_';
+    if (k.startsWith('eyJ')) return 'JWT legacy';
+    return 'desconocida';
+}
+
 function detalleError(e: { message: string; hint?: string | null; code?: string | null }): string {
     return [e.message, e.hint, e.code ? `[${e.code}]` : null].filter(Boolean).join(' — ');
 }
@@ -131,7 +144,15 @@ serve(async (req) => {
     }
 
     return new Response(
-        JSON.stringify({ systems: results, checked_at: new Date().toISOString() }),
+        JSON.stringify({
+            systems: results,
+            credenciales: {
+                'EE.FF.':      familiaClave(Deno.env.get('EEFF_SERVICE_ROLE_KEY')),
+                'RiskGuard':   familiaClave(Deno.env.get('RISKGUARD_SERVICE_ROLE_KEY')),
+                'Indicadores': familiaClave(Deno.env.get('INDICADORES_SERVICE_ROLE_KEY')),
+            },
+            checked_at: new Date().toISOString(),
+        }),
         { headers: { ...CORS, 'Content-Type': 'application/json' } }
     );
 });
