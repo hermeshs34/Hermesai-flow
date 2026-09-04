@@ -68,7 +68,7 @@ export const ResetPasswordView: React.FC<ResetPasswordViewProps> = ({ tokens, on
         }}>
             <div style={{ width: '100%', maxWidth: '400px' }}>
                 <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-                    <img src="/hermesai-logo.svg" alt="HermesAI" style={{ height: '44px', width: 'auto' }} />
+                    <img src="/hermesai-logo-dark.svg" alt="HermesAI" style={{ height: '44px', width: 'auto' }} />
                 </div>
 
                 {done ? (

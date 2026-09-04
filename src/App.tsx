@@ -116,7 +116,7 @@ function App() {
         minHeight: '100vh', backgroundColor: '#0a0f1e',
       }}>
         <div style={{ textAlign: 'center' }}>
-          <img src="/hermesai-logo.svg" alt="HermesAI" style={{ height: '48px', marginBottom: '1.5rem', opacity: 0.8 }} />
+          <img src="/hermesai-logo-dark.svg" alt="HermesAI" style={{ height: '48px', marginBottom: '1.5rem', opacity: 0.8 }} />
           <div style={{ width: '32px', height: '32px', border: '3px solid rgba(99,102,241,0.3)', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto' }} />
           <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </div>
@@ -162,7 +162,7 @@ function App() {
         minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: 'linear-gradient(180deg, #0f172a 0%, #0a0f1e 100%)',
       }}>
-        <img src="/hermesai-logo.svg" alt="HermesAI" style={{ height: '44px', opacity: 0.25 }} />
+        <img src="/hermesai-logo-dark.svg" alt="HermesAI" style={{ height: '44px', opacity: 0.25 }} />
         <ChangePasswordModal
           user={currentUser}
           forced

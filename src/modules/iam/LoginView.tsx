@@ -115,7 +115,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
                 }} />
 
                 <div style={{ position: 'relative', zIndex: 1, textAlign: 'center', maxWidth: '420px' }}>
-                    <img src="/hermesai-logo.svg" alt="HermesAI" style={{ height: '56px', width: 'auto', marginBottom: '2.5rem', filter: 'drop-shadow(0 0 20px rgba(99,102,241,0.4))' }} />
+                    <img src="/hermesai-logo-dark.svg" alt="HermesAI" style={{ height: '56px', width: 'auto', marginBottom: '2.5rem', filter: 'drop-shadow(0 0 20px rgba(99,102,241,0.4))' }} />
 
                     <h1 style={{ fontSize: '2rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.75rem', letterSpacing: '-0.025em' }}>
                         HermesAI Flow
@@ -156,7 +156,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
             }}>
                 {/* Logo mobile */}
                 <div style={{ marginBottom: '2rem', textAlign: 'center' }} className="lg-logo-hide">
-                    <img src="/hermesai-logo.svg" alt="HermesAI" style={{ height: '44px', width: 'auto' }} />
+                    <img src="/hermesai-logo-dark.svg" alt="HermesAI" style={{ height: '44px', width: 'auto' }} />
                 </div>
 
                 <div style={{ width: '100%', maxWidth: '400px' }}>

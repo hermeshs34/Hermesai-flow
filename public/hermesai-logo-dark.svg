@@ -1,4 +1,9 @@
 <svg viewBox="0 0 500 150" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Variante para FONDO OSCURO. La usan el sidebar (#0f172a) y el login (#0a0f1e).
+    Mismo lockup que la cabecera de los PDF: Hermes blanco, AI naranja, Tech blanco,
+    bajada #b4d2eb. Sobre blanco no se lee: para eso esta hermesai-logo.svg.
+  -->
   <defs>
     <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#0077b5;stop-opacity:1" />
@@ -46,8 +51,8 @@
     <line x1="41" y1="43" x2="41" y2="57" stroke="url(#accentGradient)" stroke-width="2" opacity="0.4"/>
   </g>
   
-  <!-- Text: HermesAI -->
-  <text x="160" y="65" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="bold" fill="url(#primaryGradient)">
+  <!-- Text: HermesAI. Sobre fondo oscuro el azul del gradiente baja a 3.7:1, va en blanco -->
+  <text x="160" y="65" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="bold" fill="#ffffff">
     Hermes
   </text>
   <text x="315" y="65" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="bold" fill="url(#accentGradient)">
@@ -55,12 +60,12 @@
   </text>
   
   <!-- Subtitle: Tech -->
-  <text x="160" y="95" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="500" fill="#5a7184">
+  <text x="160" y="95" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="500" fill="#ffffff">
     Tech
   </text>
-
+  
   <!-- Tagline -->
-  <text x="160" y="120" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="400" fill="#718096">
+  <text x="160" y="120" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="400" fill="#b4d2eb">
     40+ Years Financial Technology Leadership
   </text>
   
@@ -69,6 +74,6 @@
   
   <!-- Small decorative tech elements -->
   <circle cx="430" cy="50" r="3" fill="url(#accentGradient)" opacity="0.4"/>
-  <circle cx="445" cy="58" r="2" fill="url(#primaryGradient)" opacity="0.3"/>
+  <circle cx="445" cy="58" r="2" fill="#b4d2eb" opacity="0.3"/>
   <circle cx="460" cy="53" r="2.5" fill="url(#accentGradient)" opacity="0.5"/>
 </svg>
