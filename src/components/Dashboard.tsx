@@ -13,9 +13,27 @@ import { ESTADO_DEFINICION_META } from '../types/workflow';
 import type { User, Role } from '../core/user.types';
 import { ROL_META, puedeResolverTarea } from '../core/user.types';
 import { WorkflowService } from '../services/workflow.service';
+import { SaludService } from '../services/salud.service';
+import type { SaludCron } from '../services/salud.service';
 import { fechaHoraVE, fechaVE } from '../utils/fecha';
 import { useRolesDelegados } from '../utils/delegaciones';
 import { toast } from 'sonner';
+
+// ── Salud del planificador ───────────────────────────────────
+// El texto va aquí, no en la RPC, salvo `motivo`: el detalle técnico lo
+// compone la base porque sólo ella lo sabe; el título lo escribe la pantalla.
+const CRON_TITULO: Record<string, string> = {
+    sin_reloj:     'No hay reloj — la ejecución automática está parada',
+    reloj_apagado: 'El reloj está desactivado',
+    reloj_parado:  'El reloj no se está disparando',
+    sin_respuesta: 'El reloj late, pero cron-runner no responde',
+};
+const CRON_ETIQUETA: Record<string, string> = {
+    sin_reloj:     'SIN RELOJ — nada se ejecuta solo',
+    reloj_apagado: 'reloj desactivado',
+    reloj_parado:  'reloj parado',
+    sin_respuesta: 'cron-runner no responde',
+};
 
 // ── Clasificación de vista por rol ─────────────────────────────────────────────
 type DashView = 'admin' | 'operador' | 'aprobador' | 'auditor';
@@ -879,6 +897,7 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
     const [pendingAppr,   setPendingAppr]   = useState(0);
     const [wizardTemplate, setWizardTemplate] = useState<typeof TEMPLATES[0] | null>(null);
     const [kpiParams, setKpiParams] = useState({ sla_ms: 30000, min_por_tarea: 15, costo_hora_usd: 25 });
+    const [saludCron, setSaludCron] = useState<SaludCron | null>(null);
 
     const orgId = currentUser?.organizationId ?? '';
     const rolesDelegados = useRolesDelegados(currentUser?.id, orgId || undefined);
@@ -894,7 +913,7 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                 .limit(200);
             if (cutoff) q = q.gte('started_at', cutoff);
 
-            const [runsRes, wfsRes, cronRes] = await Promise.all([
+            const [runsRes, wfsRes, cronRes, saludRes] = await Promise.all([
                 q,
                 supabase.from('workflows').select('id, name, status, is_active, estado_definicion, execution_count, last_run_at, created_at, profiles:created_by(name)').order('execution_count', { ascending: false }).limit(50),
                 // Punto 2: flujos cron dinámicos desde la DB
@@ -903,7 +922,11 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                     .eq('type', 'trigger')
                     .eq('category', 'cron')
                     .limit(20),
+                // Lo único que distingue «no le tocaba a nadie» de «no hay reloj».
+                SaludService.cron(),
             ]);
+
+            setSaludCron(saludRes);
 
             setRuns((runsRes.data ?? []).map((r: any) => ({
                 id: r.id, workflow_name: r.workflows?.name ?? '—', workflow_id: r.workflow_id,
@@ -1124,12 +1147,56 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
     // Con flujos programados activos, un día entero sin una sola ejecución
     // automática es anómalo: lo más espaciado que ofrece el Constructor es
     // mensual, pero cualquier cartera con varios flujos toca a diario.
-    const cronSano = cronFlows.length === 0 || horasSinCron < 24;
+    const cronHeuristico = cronFlows.length === 0 || horasSinCron < 24;
+    // Desde el 22/09/2026 esa heurística ya no es lo único que hay. `salud_cron()`
+    // mira `cron.job` y `net._http_response`, que es donde está la respuesta de
+    // verdad, y sólo se cae a la heurística si no se pudo medir.
+    const cronRoto  = !!saludCron && saludCron.veredicto !== 'ok' && saludCron.veredicto !== 'desconocido';
+    const cronSano  = saludCron && saludCron.veredicto === 'ok' ? true
+                    : cronRoto ? false
+                    : cronHeuristico;
 
     return (
         <>
         <div className="h-full overflow-y-auto bg-[#f0f2f5]">
             <div className="max-w-[1400px] mx-auto px-6 py-6 space-y-5">
+
+                {/* ── El planificador está parado ─────────────────────
+                    El 10/09/2026 pg_cron se quedó sin job y pasaron DOCE DÍAS. El
+                    indicador que había no mintía, pero era ambiguo por construcción
+                    —«sin ejecuciones automáticas» es igual de cierto si a nadie le
+                    tocaba— y en ámbar se lee como un detalle. Esto nombra el fallo. */}
+                {cronRoto && (
+                    <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4 flex items-start gap-3">
+                        <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                            <p className="text-sm font-bold text-red-800">
+                                {CRON_TITULO[saludCron!.veredicto] ?? 'El planificador tiene un problema'}
+                            </p>
+                            <p className="text-xs text-red-700 mt-1">{saludCron!.motivo}</p>
+                            <p className="text-[11px] text-red-600/80 mt-2">
+                                Ningún flujo programado se está ejecutando solo. La ejecución manual no está afectada.
+                                {saludCron!.ultimo_tick && ` · Último latido: ${fechaHoraVE(saludCron!.ultimo_tick)}`}
+                            </p>
+                        </div>
+                        <button onClick={load}
+                            className="shrink-0 text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-red-300 text-red-700 hover:bg-red-100 transition-colors">
+                            Recomprobar
+                        </button>
+                    </div>
+                )}
+
+                {/* No se pudo medir ≠ está bien. Misma familia que la huella NULL
+                    de §9.5: la comprobación que no se pudo hacer no dice que sí. */}
+                {saludCron?.veredicto === 'desconocido' && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <p className="text-[11px] text-amber-800 min-w-0">
+                            No se pudo comprobar el estado del planificador, así que el punto de
+                            «Flujos Programados» vuelve a ser una suposición. {saludCron.motivo}
+                        </p>
+                    </div>
+                )}
 
                 {/* ── Barra superior ──────────────────────────────────────── */}
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1502,14 +1569,16 @@ export function Dashboard({ onNavigate, currentUser }: DashboardProps) {
                             <Calendar className="w-4 h-4 text-indigo-300" />
                             <h2 className="font-semibold text-sm">Flujos Programados (Cron Activo)</h2>
                         </div>
-                        <div className={`flex items-center gap-1.5 ${cronSano ? 'text-emerald-400' : 'text-amber-300'}`}>
-                            <div className={`w-2 h-2 rounded-full ${cronSano ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                        <div className={`flex items-center gap-1.5 ${cronRoto ? 'text-red-300' : cronSano ? 'text-emerald-400' : 'text-amber-300'}`}>
+                            <div className={`w-2 h-2 rounded-full ${cronRoto ? 'bg-red-400 animate-pulse' : cronSano ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
                             <span className="text-[10px] font-semibold">
-                                {cronFlows.length === 0
-                                    ? 'sin flujos programados'
-                                    : ultimoCron
-                                        ? `última automática ${fmtRelative(ultimoCron.started_at)}`
-                                        : `sin ejecuciones automáticas · ${periodLabel(period).toLowerCase()}`}
+                                {cronRoto
+                                    ? CRON_ETIQUETA[saludCron!.veredicto] ?? 'planificador con problemas'
+                                    : cronFlows.length === 0
+                                        ? 'sin flujos programados'
+                                        : ultimoCron
+                                            ? `última automática ${fmtRelative(ultimoCron.started_at)}`
+                                            : `sin ejecuciones automáticas · ${periodLabel(period).toLowerCase()}`}
                             </span>
                         </div>
                     </div>

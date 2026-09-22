@@ -1,3 +1,24 @@
+-- ⛔⛔⛔ NO EJECUTAR ESTE FICHERO. SUPERSEDIDO EL 22/09/2026. ⛔⛔⛔
+--
+-- Su PASO 3 retira todo job que case '%cron-runner%'; su PASO 4 —el que lo
+-- vuelve a crear— esta COMENTADO. O sea que ejecutarlo entero DEJA EL
+-- PLANIFICADOR A CERO y no avisa: cron.job queda vacia, cron.job_run_details
+-- se conserva intacta, y no hay ni un error en pantalla. Nadie se entera
+-- hasta que alguien mira por que no salen los informes.
+--
+-- Esa es exactamente la firma del incidente del 22/09/2026: reloj parado el
+-- 10/09 a las 15:23 UTC, definicion borrada, historial intacto. Doce dias sin
+-- ejecuciones automaticas.
+--
+-- Se conserva por su valor documental —la trampa del prefijo "Bearer", la
+-- forma del 401 segun quien rechaza, el paso 4b de cron.alter_job— pero
+-- COMO LECTURA, no como guion.
+--
+-- Para restaurar el job hoy: database/migrations/20260922_restaurar_job_cron.sql
+-- (idempotente y con guarda: comprueba la IDENTIDAD del secreto antes de
+-- crear nada, y si no casa no crea nada).
+-- ═══════════════════════════════════════════════════════════════════════════
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 20260807 — Restaurar el disparador automático (pg_cron -> cron-runner)
 --

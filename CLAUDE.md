@@ -77,7 +77,8 @@ project/
 │   ├── functions/                   ← funciones PostgreSQL / Edge Functions
 │   ├── policies/                    ← políticas RLS (una por tabla)
 │   ├── seeds/                       ← datos demo
-│   └── migrations/                  ← migraciones incrementales YYYYMMDD_desc.sql
+│   ├── migrations/                  ← migraciones incrementales YYYYMMDD_desc.sql
+│   └── runbooks/                    ← SQL de diagnóstico (lee, no cambia) — ver su README
 ├── src/
 │   ├── core/
 │   │   ├── supabase.ts              ← cliente singleton — NO instanciar en otro lugar
