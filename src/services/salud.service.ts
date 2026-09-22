@@ -36,6 +36,17 @@ export interface SaludCron {
     ultimo_tick:           string | null;
     respuestas_10min:      number;
     respuestas_ok_10min:   number;
+    /**
+     * Las respuestas del PROPIO vigilante, que NO entran en las dos de arriba.
+     *
+     * `net._http_response` no guarda la url, así que `salud_cron()` distingue
+     * quién contestó por el cuerpo: cron-runner dice `checked`, el vigilante
+     * dice `veredicto`. Hasta el 22/09/2026 el 200 del vigilante caía en
+     * `respuestas_10min` sin poder caer nunca en `respuestas_ok_10min`, y el
+     * ratio enseñaba «10 de 11» para siempre (§6.1.1). Se expone aparte para
+     * que el número se pueda contrastar, no porque haya que pintarlo.
+     */
+    respuestas_vigilante_10min: number;
     ultimo_fallo_http:     FalloHttpCron | null;
     ultima_ejecucion_cron: string | null;
     medido_at:             string | null;
@@ -54,6 +65,7 @@ function desconocido(motivo: string): SaludCron {
         veredicto: 'desconocido', grave: false, motivo,
         job_existe: false, job_nombre: null, job_schedule: null, job_activo: null,
         ultimo_tick: null, respuestas_10min: 0, respuestas_ok_10min: 0,
+        respuestas_vigilante_10min: 0,
         ultimo_fallo_http: null, ultima_ejecucion_cron: null, medido_at: null,
     };
 }

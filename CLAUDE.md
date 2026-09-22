@@ -107,6 +107,7 @@ project/
 │       ├── _shared/email.ts         ← ÚNICO punto de salida de correo (ver §9.1)
 │       ├── execute-workflow/        ← el motor: ejecuta TODOS los tipos de nodo
 │       ├── cron-runner/             ← pg_cron cada minuto: dispara y escala (F4)
+│       ├── vigilante-reloj/         ← pg_cron cada 10 min: avisa si el reloj no está (§6.1.1)
 │       ├── resolve-approval/        ← aprobar / rechazar una tarea
 │       ├── health-check/            ← estado de integraciones (lo llama el Sidebar)
 │       ├── admin-create-user/       ← alta de usuarios
@@ -198,9 +199,10 @@ el archivo) y dos meses de auditoría de aprobaciones perdida (`resolve-approval
 insertaba `actor_id`, columna inexistente).
 
 ⚠️ **Este párrafo decía que el archivo «usa `CREATE TABLE` a secas: si vuelve a
-desviarse, que reviente». Es falso, y comprobado el 14/08/2026:** las doce tablas
-siguen declaradas con `CREATE TABLE IF NOT EXISTS`, porque eso es lo que emite
-`supabase db dump` y la regeneración del 12/08 lo devolvió tal cual. La red de
+desviarse, que reviente». Es falso, y recomprobado el 22/09/2026:** las **catorce**
+tablas siguen declaradas con `CREATE TABLE IF NOT EXISTS` —14 de 14, ninguna a
+secas—, porque eso es lo que emite `supabase db dump` y cada regeneración lo
+devuelve tal cual: la del 12/08, la del 14/08 y la del 22/09. La red de
 seguridad que este documento daba por puesta no existe. **Da igual mientras el
 archivo no se ejecute** —es un espejo, no un guion—, y por eso el mecanismo real
 sigue siendo la regla 1 de abajo: comprobar contra la base, no contra el archivo.
@@ -828,6 +830,96 @@ sin medirla es lo que escondió el fallo ocho días. Y el timeout por defecto de
 pg_net son 5 s: el job lleva `timeout_milliseconds := 30000` porque disparar un
 flujo y mandar correos pasa de cinco segundos.
 
+### 6.1.1 El reloj puede DESAPARECER, y hasta el 22/09/2026 nadie se enteraba
+
+**Del 10/09 al 22/09/2026 la ejecución automática estuvo parada doce días.**
+`cron.job` estaba **vacío**. No falló ninguna alarma: es que no había ninguna. El
+Dashboard decía *«sin ejecuciones automáticas»*, que es igual de cierto si el
+reloj está muerto que si a ningún flujo le tocaba — otro instrumento que no
+distingue, como el `succeeded` de arriba.
+
+**Hoy hay dos jobs:** `cron-runner-cada-minuto` (jobid 10, `* * * * *`) y
+`vigilante-reloj` (jobid 11, `*/10 * * * *`).
+
+**La firma del fallo, que es lo que hay que saber reconocer:**
+`cron.job_run_details` conservaba las 47.701 corridas y `cron.job` estaba a cero.
+Eso **no lo explica un reinicio** — `cron.job` es una tabla normal. La que es
+*unlogged* y **sí se vacía en un restart es `net._http_response`**, así que
+justo la única que sabe qué contestó el HTTP no sirve para arqueología.
+**Historial que sobrevive + definición que no = `cron.unschedule`.**
+
+⛔ **`database/migrations/20260807_restaurar_pg_cron.sql` NO SE EJECUTA.** Su
+PASO 3 desprograma todo lo que case `%cron-runner%` y el PASO 4 —el que vuelve a
+crear el job— está **comentado**. Deja el planificador a cero **sin dar un solo
+error**. Es el sospechoso número uno del hueco del 10/09.
+
+⚠️ **`supabase secrets list` imprime en la columna `value` el SHA-256, no el
+valor.** Son 64 caracteres hex: **exactamente la misma forma que `CRON_SECRET`**,
+o sea un impostor perfecto. Pegar eso en el job crea un job impecable, puntual y
+completamente muerto —401 en cada disparo—, y el panel además **no deja revelar**
+un secreto ya guardado. De ahí dos reglas:
+
+1. **Validar la IDENTIDAD, no la forma.** Una migración que recibe un secreto
+   pegado a mano no puede comprobar que son 64 hex, porque la huella también lo
+   es. Compara el `sha256` y **no crees nada si no casa** (`CASE … THEN
+   cron.schedule(…) ELSE 'NO SE CREO NINGUN JOB…' END`; el `CASE` protege la
+   llamada porque `cron.schedule` es VOLATILE). La primera restauración devolvió
+   un jobid —que se lee como «hecho»— habiendo creado un job muerto.
+2. **Rotarlo sin que el valor lo vea nadie** (`runbooks/ROTAR_CRON_SECRET.sql`):
+   generar el secreto **dentro de la base** y crear el job con él **en la misma
+   sentencia**, para que no cruce portapapeles ni capas de comillas; devolver
+   valor + `sha256`, y que el usuario pegue de vuelta **solo el hash**.
+   ⚠️ Y **el secreto nuevo no entra en la petición siguiente**: las tres
+   funciones hacen `Deno.env.get('CRON_SECRET')` en el **cuerpo del módulo**, así
+   que se lee al arrancar el isolate. Un 401 en el minuto siguiente a guardarlo
+   es esperable; uno diez minutos después, no.
+
+**El vigilante** (`vigilante-reloj` + la función SQL `public.salud_cron()` + la
+tarjeta del Dashboard) mide el planificador cada diez minutos y manda correo a
+los administradores activos cuando no está. **Ni su nombre ni su comando
+contienen la cadena `cron-runner`, a propósito:** el barrido del `20260807` se lo
+llevaría por delante junto al job al que vigila, y un vigilante que muere con la
+víctima no vigila nada.
+
+⚠️ **Su límite, dicho claro: lo dispara el mismo pg_cron al que vigila.** Cubre
+que borren o desactiven el job de `cron-runner`, que `cron-runner` conteste 401 o
+500, y que la petición se encole y no salga. **No cubre que se caiga pg_cron
+entero ni que alguien borre los dos jobs.** Para eso haría falta un pinger
+externo a la base; abrir esa puerta es decisión de Hermes.
+
+⚠️ **Y al encenderlo se contaminó a sí mismo.** Como `net._http_response` **no
+guarda la url**, `salud_cron()` distingue quién contestó **por el cuerpo**:
+`cron-runner` dice `{"checked":N}`, el vigilante `{"veredicto":…}`. Su propio 200
+caía en el denominador sin poder caer nunca en el numerador, así que el correo de
+alarma iba a decir **«10 de 11» para siempre** — un fallo permanente que no
+existe, que es el `succeeded` de pg_cron por el otro lado. Corregido el
+22/09/2026 (`20260922_salud_cron_conteo.sql`). **Antes de meter un segundo
+cliente en un canal que se discrimina por el contenido, comprueba contra el
+código del primero que su firma no colisiona.**
+
+Tres cosas de SQL que costaron una vuelta cada una:
+
+- **`coalesce(cond, false)` en todo `FILTER (WHERE NOT …)`.** Una fila con
+  `content` o `status_code` NULL —que es como pg_net guarda un **timeout**— hace
+  la comparación NULL, `NOT NULL` es NULL y el FILTER **descarta justo la fila
+  que más hay que contar**. Misma familia que `token !== ''`.
+- **Un defecto en una migración ya aplicada se corrige con OTRA migración**
+  (`CREATE OR REPLACE`), nunca editándola: si no, el repositorio describe algo
+  distinto de lo que se ejecutó (§5.1).
+- **MVCC:** un subselect en la **misma** sentencia que `cron.schedule()` lee la
+  instantánea *anterior* al INSERT — dirá «creado con jobid 11» y listará solo el
+  10. La comprobación va en **su propia sentencia, y la última**, porque el SQL
+  Editor de Supabase solo MUESTRA el resultado de la última.
+
+**El SQL de diagnóstico vive en `database/runbooks/`** (ver su README), una
+sentencia por fichero y con los secretos enmascarados **dentro** de la consulta,
+para que la salida se pueda pegar entera sin pensarlo.
+
+⚠️ **Cabo suelto, y se queda abierto:** el jueves 10/09 a las 13:00 UTC le tocaba
+al BCV y no salió **con el job todavía vivo**. `net._http_response` ya estaba
+vaciada por el reinicio, así que **la evidencia de ese día no existe**.
+Registrado como *no explicado*, no como resuelto.
+
 ---
 
 ## 7. Políticas RLS — Reglas Absolutas
@@ -1334,13 +1426,19 @@ hueco que deja este: están en §6.7**, en producción desde el 14/08/2026.
 | F1 | Motor de ejecución: Edge Functions, nodo Email, nodo BCV | ✅ Completa |
 | F2 | Conectores 4 sistemas: RiskGuard, EE.FF., Indicadores, LegalTech | ⚠️ Parcial — ver abajo |
 | F3 | Agente IA: informes automáticos por dominio | ✅ Completa (03/06/2026) |
-| F4 | Alertas inteligentes: umbrales, escalamiento, multi-canal | ✅ En producción (11/06, probada de extremo a extremo el 02/08/2026) |
+| F4 | Alertas inteligentes: umbrales, escalamiento, multi-canal | ✅ En producción (11/06, probada de extremo a extremo el 02/08/2026) — ⚠️ pero ver abajo |
 | F5 | QA, hardening, go-live | 🔄 En curso |
 
 **Esta tabla decía «⏳ Pendiente» en F1–F5 hasta el 07/08/2026**, con F4 corriendo en
 producción desde hacía dos meses. Es el mismo patrón que `schema.sql` (§5.1) y que el
 «redeploy pendiente» que se arrastró 52 días: un documento que nadie contrasta acaba
 describiendo un sistema que no existe. **Si tocas una fase, actualiza la fila.**
+
+⚠️ **«En producción» no quiere decir «funcionando»: F4 estuvo doce días parada y
+la tabla seguía en verde.** El escalamiento, los umbrales y los avisos los
+dispara `cron-runner`, y del 10/09 al 22/09/2026 el job de pg_cron **no existía**
+(§6.1.1). Una fase marcada ✅ describe lo que se construyó, no lo que está vivo
+hoy; para eso está ahora el vigilante, y para eso se mira `net._http_response`.
 
 ### F2 no está completa: falta LegalTech
 

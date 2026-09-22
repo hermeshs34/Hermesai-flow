@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict 5nmdO6bpbvo6q6YcC1MjN84s4xw75lR0ks5SjmhMvu2teaEQNf2u39kGx8kiGzf
+-- \restrict xEE3BSG4nBCcAyNwECEnFli8beUEFDprbApk4PXF45CzLS7AuSKmv2FrmIfU9ao
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -293,6 +293,187 @@ $$;
 
 
 ALTER FUNCTION "public"."my_role"() OWNER TO "postgres";
+
+--
+-- Name: salud_cron(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."salud_cron"() RETURNS "jsonb"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public', 'pg_temp'
+    AS $$
+DECLARE
+    v_job         record;
+    v_tick        timestamptz;
+    v_ok_10min    integer := 0;
+    v_resp_10min  integer := 0;
+    v_vigi_10min  integer := 0;
+    v_malo        record;
+    v_ultimo_cron timestamptz;
+    v_veredicto   text;
+    v_motivo      text;
+    v_grave       boolean := true;
+BEGIN
+    -- Quién puede preguntar.
+    -- auth.uid() es NULL cuando llama service_role (la Edge Function del
+    -- vigilante). `anon` no llega aquí: se le retira EXECUTE por su nombre
+    -- más abajo, porque REVOKE ... FROM PUBLIC no basta (§6.4).
+    IF auth.uid() IS NOT NULL THEN
+        IF NOT EXISTS (SELECT 1 FROM public.profiles p
+                       WHERE p.id = auth.uid() AND p.is_active) THEN
+            RAISE EXCEPTION 'Sin perfil activo';
+        END IF;
+    END IF;
+
+    -- ¿Existe el job?
+    SELECT j.jobid, j.jobname, j.schedule, j.active
+      INTO v_job
+      FROM cron.job j
+     WHERE j.command LIKE '%/cron-runner%'
+        OR j.jobname = 'cron-runner-cada-minuto'
+     ORDER BY j.jobid DESC
+     LIMIT 1;
+
+    IF v_job.jobid IS NOT NULL THEN
+        SELECT max(d.start_time) INTO v_tick
+          FROM cron.job_run_details d
+         WHERE d.jobid = v_job.jobid;
+    END IF;
+
+    -- La verdad del HTTP. `net._http_response` NO guarda la url, así que no
+    -- se puede filtrar por destino: se distingue por el CUERPO.
+    --
+    --   · cron-runner     200 -> {"checked":N,...}
+    --   · vigilante-reloj 200 -> {"veredicto":"...","motivo":"...",...}
+    --   · las dos, 401/500   -> {"error":"..."}  (indistinguibles, y da igual:
+    --                           un error es un error y debe verse)
+    --
+    -- ⚠️ EL VIGILANTE NO SE CUENTA A SÍ MISMO. Su 200 no puede casar nunca con
+    --    "checked", así que sumarlo al denominador pinta un fallo permanente.
+    --    Comprobado el 22/09/2026 contra cron-runner/index.ts: sus tres
+    --    respuestas son {"checked":...} y {"error":...} — no emite la cadena
+    --    "veredicto" en ningún caso, así que este filtro no puede descartar
+    --    por error una respuesta suya.
+    --
+    -- ⚠️ Esta tabla es UNLOGGED: un reinicio del proyecto la vacía. Por eso
+    --    la ventana es corta y esto no sirve para arqueología — el 10/09 la
+    --    prueba de qué pasó en la capa HTTP se perdió exactamente así.
+    --
+    -- El `coalesce(..., false)` NO es adorno. Una fila con `content` NULL
+    -- —o con `status_code` NULL, que es como pg_net guarda un timeout— hace
+    -- que la comparación valga NULL, y un `NOT NULL` es NULL: FILTER la
+    -- descartaría. Se caería del denominador justo la fila que mas hay que
+    -- contar, la del timeout, y el ratio volvería a mentir por el otro lado.
+    -- Misma familia que el `token !== ''` de §6.1 y la huella NULL de §9.5: lo
+    -- que no se puede comprobar no puede acabar diciendo que sí.
+    SELECT count(*) FILTER (WHERE r.status_code = 200 AND r.content LIKE '%checked%'),
+           count(*) FILTER (WHERE NOT coalesce(r.status_code = 200
+                                               AND r.content LIKE '%veredicto%', false)),
+           count(*) FILTER (WHERE coalesce(r.status_code = 200
+                                           AND r.content LIKE '%veredicto%', false))
+      INTO v_ok_10min, v_resp_10min, v_vigi_10min
+      FROM net._http_response r
+     WHERE r.created > now() - interval '10 minutes';
+
+    SELECT r.status_code, left(coalesce(r.content, ''), 200) AS content,
+           r.timed_out, r.error_msg, r.created
+      INTO v_malo
+      FROM net._http_response r
+     WHERE r.created > now() - interval '60 minutes'
+       AND (r.status_code IS DISTINCT FROM 200 OR r.error_msg IS NOT NULL)
+     ORDER BY r.created DESC
+     LIMIT 1;
+
+    SELECT max(er.started_at) INTO v_ultimo_cron
+      FROM public.execution_runs er
+     WHERE er.triggered_by = 'cron';
+
+    -- ── Veredicto, de lo más grave a lo más leve ───────────────────────────
+    IF v_job.jobid IS NULL THEN
+        v_veredicto := 'sin_reloj';
+        v_motivo    := 'No hay ningún job de pg_cron apuntando a cron-runner. '
+                    || 'Nada se va a ejecutar solo hasta que se vuelva a crear.';
+
+    ELSIF NOT v_job.active THEN
+        v_veredicto := 'reloj_apagado';
+        v_motivo    := format('El job "%s" existe pero está desactivado.', v_job.jobname);
+
+    ELSIF v_tick IS NULL OR v_tick < now() - interval '5 minutes' THEN
+        v_veredicto := 'reloj_parado';
+        v_motivo    := format('El job "%s" no se dispara desde %s. El planificador no corre.',
+                              v_job.jobname,
+                              coalesce(to_char(v_tick, 'YYYY-MM-DD HH24:MI') || ' UTC', 'nunca'));
+
+    ELSIF v_ok_10min = 0 THEN
+        -- El reloj late pero la llamada no llega, o la rechazan. Es el punto
+        -- ciego de §6.1: pg_cron marca 'succeeded' porque net.http_post solo
+        -- ENCOLA. Aquí es donde se habría visto el 401 de los ocho días.
+        v_veredicto := 'sin_respuesta';
+        v_motivo    := CASE
+            -- No se dice "cron-runner respondió": la ventana de v_malo es de
+            -- 60 minutos y la tabla no guarda la url, así que el fallo podría
+            -- ser del propio vigilante. Se enseña el cuerpo y que lo juzgue
+            -- quien lee — afirmar el origen sería afirmar lo que no se midió.
+            WHEN v_malo.status_code IS NOT NULL THEN
+                format('El reloj late, pero la última llamada HTTP devolvió %s: %s',
+                       v_malo.status_code, v_malo.content)
+            -- Ahora esta rama dice MÁS que antes: si el vigilante está
+            -- corriendo —y si estás leyendo esto por correo, está corriendo—,
+            -- pg_net entrega. Que no haya ni una respuesta de las demás
+            -- peticiones señala la capa de encolado, no la red entera.
+            WHEN v_resp_10min = 0 THEN
+                'El reloj late, pero ninguna de sus peticiones ha devuelto respuesta '
+                || 'en 10 minutos: se encolan y no llegan a salir.'
+            ELSE
+                'El reloj late y hay respuestas HTTP, pero ninguna de cron-runner.'
+        END;
+
+    ELSE
+        v_veredicto := 'ok';
+        v_motivo    := format('%s respuestas correctas en los últimos 10 minutos.', v_ok_10min);
+        v_grave     := false;
+    END IF;
+
+    RETURN jsonb_build_object(
+        'veredicto',           v_veredicto,
+        'grave',               v_grave,
+        'motivo',              v_motivo,
+        'job_existe',          v_job.jobid IS NOT NULL,
+        'job_nombre',          v_job.jobname,
+        'job_schedule',        v_job.schedule,
+        'job_activo',          v_job.active,
+        'ultimo_tick',         v_tick,
+        'respuestas_10min',    v_resp_10min,
+        'respuestas_ok_10min', v_ok_10min,
+        -- Se publica en vez de descartarse en silencio: quien compare este
+        -- resultado con un `select count(*) from net._http_response` tiene
+        -- que poder cuadrar la diferencia sin leer esta función.
+        'respuestas_vigilante_10min', v_vigi_10min,
+        'ultimo_fallo_http',   CASE WHEN v_malo.status_code IS NULL THEN NULL
+                                    ELSE jsonb_build_object(
+                                        'status',  v_malo.status_code,
+                                        'cuando',  v_malo.created,
+                                        'timeout', v_malo.timed_out,
+                                        'error',   v_malo.error_msg,
+                                        'cuerpo',  v_malo.content) END,
+        -- Informativo, NO entra en el veredicto: que no haya ejecuciones
+        -- automáticas no demuestra que el reloj esté roto (puede que a nadie
+        -- le tocara). Es justo la ambigüedad que motivó esta función.
+        'ultima_ejecucion_cron', v_ultimo_cron,
+        'medido_at',             now()
+    );
+END;
+$$;
+
+
+ALTER FUNCTION "public"."salud_cron"() OWNER TO "postgres";
+
+--
+-- Name: FUNCTION "salud_cron"(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION "public"."salud_cron"() IS 'Estado real del planificador: si el job existe, si late y si la llamada HTTP llega. El vigilante no se cuenta a si mismo. Nunca devuelve el command del job (contiene CRON_SECRET).';
+
 
 --
 -- Name: set_updated_at(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -949,6 +1130,24 @@ COMMENT ON COLUMN "public"."tareas_aprobacion"."delegacion_id" IS 'Si la tarea s
 
 
 --
+-- Name: vigilante_reloj; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."vigilante_reloj" (
+    "id" integer DEFAULT 1 NOT NULL,
+    "ultimo_estado" "text",
+    "ultimo_ok_at" timestamp with time zone,
+    "ultimo_aviso_at" timestamp with time zone,
+    "avisos_enviados" integer DEFAULT 0 NOT NULL,
+    "detalle_json" "jsonb",
+    "actualizado_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "vigilante_reloj_id_check" CHECK (("id" = 1))
+);
+
+
+ALTER TABLE "public"."vigilante_reloj" OWNER TO "postgres";
+
+--
 -- Name: workflow_autorizaciones; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -1136,6 +1335,14 @@ ALTER TABLE ONLY "public"."profiles"
 
 ALTER TABLE ONLY "public"."tareas_aprobacion"
     ADD CONSTRAINT "tareas_aprobacion_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: vigilante_reloj vigilante_reloj_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."vigilante_reloj"
+    ADD CONSTRAINT "vigilante_reloj_pkey" PRIMARY KEY ("id");
 
 
 --
@@ -1785,6 +1992,19 @@ CREATE POLICY "runs_tenant_read" ON "public"."execution_runs" FOR SELECT TO "aut
 ALTER TABLE "public"."tareas_aprobacion" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: vigilante_reloj; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."vigilante_reloj" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: vigilante_reloj vigilante_reloj_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "vigilante_reloj_read" ON "public"."vigilante_reloj" FOR SELECT TO "authenticated" USING (true);
+
+
+--
 -- Name: workflow_autorizaciones wf_autorizaciones_tenant_read; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -1905,6 +2125,15 @@ GRANT ALL ON FUNCTION "public"."my_organization_id"() TO "service_role";
 GRANT ALL ON FUNCTION "public"."my_role"() TO "anon";
 GRANT ALL ON FUNCTION "public"."my_role"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."my_role"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "salud_cron"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."salud_cron"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."salud_cron"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."salud_cron"() TO "service_role";
 
 
 --
@@ -2034,6 +2263,15 @@ GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "service_role";
 
 
 --
+-- Name: TABLE "vigilante_reloj"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."vigilante_reloj" TO "anon";
+GRANT ALL ON TABLE "public"."vigilante_reloj" TO "authenticated";
+GRANT ALL ON TABLE "public"."vigilante_reloj" TO "service_role";
+
+
+--
 -- Name: TABLE "workflow_autorizaciones"; Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -2133,5 +2371,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict 5nmdO6bpbvo6q6YcC1MjN84s4xw75lR0ks5SjmhMvu2teaEQNf2u39kGx8kiGzf
+-- \unrestrict xEE3BSG4nBCcAyNwECEnFli8beUEFDprbApk4PXF45CzLS7AuSKmv2FrmIfU9ao
 
