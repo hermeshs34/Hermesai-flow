@@ -751,6 +751,14 @@ autorización de una persona**. Consecuencia real y no menor: de los 13 flujos d
 producción solo uno está activo, así que **los otros 12 no se podrán activar sin
 pasar por revisión** — y quien los envía no puede autorizarlos él mismo.
 
+✅ **Primer caso real, 23/09/2026:** Hermes adelantó la hora de "Reporte BCV
+Diario" (cambio en `config_json.cron` del disparador) y el flujo **cayó a
+`borrador` y se desactivó solo**, como debe. Se autorizó desde otra cuenta, se
+republicó y se reactivó, y a la mañana siguiente corrió solo. ⚠️ Lo que el
+guarda **no puede ver**: los cuatro ojos comparan **cuentas**, no personas. Una
+misma persona con dos cuentas de roles distintos los satisface. Eso no se arregla
+en SQL; es una regla de quién tiene qué cuenta.
+
 ⚠️ **Reanudar (`action='resume'`) está exento del requisito de `publicado`**, a
 propósito. Lo que protege un run pausado es la huella de §9.5, que compara
 definiciones; exigir aquí el estado dejaría colgado para siempre cualquier run
