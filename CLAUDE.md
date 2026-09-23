@@ -824,7 +824,7 @@ Reglas que se desprenden:
    | Respuesta a un POST sin cabeceras | Significa |
    |---|---|
    | `{"code":"UNAUTHORIZED_NO_AUTH_HEADER"}` | la **puerta** — `verify_jwt=true`, el cron está roto |
-   | un error propio de la función (`{"error":"workflowId y organizationId son requeridos"}`) | el **código** — correcto |
+   | un error propio de la función: `{"error":"workflowId y organizationId son requeridos"}` con cuerpo `-d "{}"`, o `{"error":"Unexpected end of JSON input"}` sin cuerpo | el **código** — correcto, las dos |
 3. **Comparar contra un secreto exige `token !== ''`.** Si la variable llegara
    vacía por un despliegue mal configurado, `'' === ''` haría interna toda
    petición **sin** cabecera. En `resolve-approval` eso es grave: una llamada
