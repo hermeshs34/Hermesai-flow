@@ -9,14 +9,14 @@ import { WorkflowService } from '../services/workflow.service';
 import { GovernanceService } from '../services/governance.service';
 import { supabase }        from '../core/supabase';
 import { fechaVE }         from '../utils/fecha';
-import { mensajeDeEdgeFunction, rolesQuePueden } from '../utils/errores';
+import { mensajeDeEdgeFunction, mensajeDeEscritura, rolesQuePueden } from '../utils/errores';
 import { authService }     from '../core/auth.service';
 import type { WorkflowNodeData, WorkflowConnection, Workflow, EstadoDefinicion } from '../types/workflow';
 import { ESTADO_DEFINICION_META } from '../types/workflow';
 import type { NodeType }   from './NodePalette';
 import type { User }       from '../core/user.types';
 import {
-    Play, Trash2, Plus, ChevronDown,
+    Play, Trash2, Plus, ChevronDown, Copy, Pencil,
     CheckCircle, Loader2, PanelLeftOpen, AlertTriangle, X, BrainCircuit,
     ShieldCheck, XCircle, Zap, Undo2, Redo2, Send,
 } from 'lucide-react';
@@ -579,6 +579,56 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
         }
     };
 
+    // ── Renombrar ─────────────────────────────────────────────────────────
+    // Cambiar el nombre no toca nodos ni conexiones, así que NO devuelve a
+    // borrador un flujo publicado (§6.7: renombrar no es rediseñar).
+    const handleRenameWorkflow = async (wf: Workflow) => {
+        const escrito = prompt('Nuevo nombre del flujo:', wf.name);
+        if (escrito === null) return;                     // canceló
+        const name = escrito.trim();
+        if (!name) { toast.error('El nombre no puede quedar vacío.'); return; }
+        if (name === wf.name) return;
+        try {
+            const actualizado = await WorkflowService.updateWorkflow(wf.id, currentUser.organizationId, { name });
+            setWorkflows(prev => prev.map(w => w.id === wf.id ? { ...w, name: actualizado.name } : w));
+            if (activeWorkflowId === wf.id) setWorkflowName(actualizado.name);
+            GovernanceService.log(currentUser, 'modificar', 'workflow', {
+                entidadId: wf.id, descripcion: `Flujo renombrado: "${wf.name}" → "${actualizado.name}"`,
+                antes: { name: wf.name }, despues: { name: actualizado.name },
+            });
+            toast.success(`Flujo renombrado a "${actualizado.name}"`);
+        } catch (err: any) {
+            toast.error(`No se pudo renombrar el flujo: ${mensajeDeEscritura(err, 'el flujo')}`);
+        }
+    };
+
+    // ── Duplicar ──────────────────────────────────────────────────────────
+    // La copia nace en borrador e inactiva (ver `duplicateWorkflow`) y se abre
+    // por `selectWorkflow`, el camino de carga normal: así el lienzo solo
+    // escribe lo que ha leído de la base, nunca lo que tenía en memoria.
+    const handleDuplicateWorkflow = async (wf: Workflow) => {
+        const escrito = prompt('Nombre de la copia:', `${wf.name} (copia)`);
+        if (escrito === null) return;
+        const name = escrito.trim();
+        if (!name) { toast.error('El nombre no puede quedar vacío.'); return; }
+        const cargando = toast.loading(`Copiando "${wf.name}"…`);
+        try {
+            const copia = await WorkflowService.duplicateWorkflow(wf.id, currentUser.organizationId, currentUser.id, name);
+            setWorkflows(prev => [copia, ...prev]);
+            GovernanceService.log(currentUser, 'crear', 'workflow', {
+                entidadId: copia.id, descripcion: `Flujo "${copia.name}" creado como copia de "${wf.name}"`,
+            });
+            await selectWorkflow(copia);
+            toast.success(
+                `Copia creada en Borrador. Cambia lo que sea distinto —por ejemplo la empresa del nodo ` +
+                `de Estados Financieros— y envíala a revisión para poder activarla.`,
+                { id: cargando, duration: 9000 }
+            );
+        } catch (err: any) {
+            toast.error(`No se pudo copiar el flujo: ${mensajeDeEscritura(err, 'el flujo')}`, { id: cargando });
+        }
+    };
+
     // ── Ciclo de vida: enviar a revisión / autorizar / rechazar ───────────
     //
     // Aquí no se decide nada. Quién puede hacer qué, desde qué estado, los
@@ -926,7 +976,21 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                                             </span>
                                                         </div>
                                                     </button>
-                                                    {(authService.hasPermission(currentUser, 'manage_workflows')) && (
+                                                    {(authService.hasPermission(currentUser, 'manage_workflows')) && (<>
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); setShowWfDropdown(false); handleRenameWorkflow(wf); }}
+                                                            title="Cambiar nombre"
+                                                            className="opacity-0 group-hover:opacity-100 p-2 rounded-lg text-gray-300 hover:text-blue-600 hover:bg-blue-50 transition-all flex-shrink-0"
+                                                        >
+                                                            <Pencil className="w-3.5 h-3.5" />
+                                                        </button>
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); setShowWfDropdown(false); handleDuplicateWorkflow(wf); }}
+                                                            title="Duplicar flujo (p. ej. para otra empresa)"
+                                                            className="opacity-0 group-hover:opacity-100 p-2 rounded-lg text-gray-300 hover:text-emerald-600 hover:bg-emerald-50 transition-all flex-shrink-0"
+                                                        >
+                                                            <Copy className="w-3.5 h-3.5" />
+                                                        </button>
                                                         <button
                                                             onClick={async (e) => {
                                                                 e.stopPropagation();
@@ -950,7 +1014,7 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                                         >
                                                             <Trash2 className="w-3.5 h-3.5" />
                                                         </button>
-                                                    )}
+                                                    </>)}
                                                 </div>
                                             ));
                                         })()}

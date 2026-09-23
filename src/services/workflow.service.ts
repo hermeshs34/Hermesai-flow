@@ -243,6 +243,73 @@ export class WorkflowService {
         return estado as EstadoDefinicion;
     }
 
+    /**
+     * Copia un flujo —nodos, configuración y conexiones— en uno nuevo.
+     *
+     * Para reutilizar un flujo con otra empresa (el caso de Estados Financieros)
+     * sin montarlo desde cero: se copia y luego se cambia la empresa del nodo.
+     *
+     * La copia nace en BORRADOR e INACTIVA, la tenga como la tenga el original.
+     * No hereda la autorización: es otra definición y tiene que pasar por
+     * revisión (§6.7). Tampoco puede dispararse sola por su cron hasta entonces,
+     * que es lo que se quiere — si no, al copiar el BCV saldrían dos correos.
+     *
+     * Ids nuevos para todo. Los ids los pone el navegador y `guardar_lienzo`
+     * rechaza un nodo que ya pertenece a otro flujo, así que reutilizarlos no es
+     * una opción. Si algún `config_json` nombra el id de otro nodo del flujo,
+     * también se traduce, para que la copia no apunte al original.
+     *
+     * No es atómico —son dos viajes, crear y guardar el lienzo—, así que si el
+     * segundo falla se borra el flujo recién creado: una copia vacía con el
+     * nombre bueno se tomaría por buena.
+     */
+    static async duplicateWorkflow(
+        sourceId: string,
+        organizationId: string,
+        createdBy: string,
+        name: string
+    ): Promise<Workflow> {
+        const origen = await WorkflowService.getWorkflow(sourceId, organizationId);
+        if (!origen) throw new Error('el flujo original no existe o no pertenece a tu organización');
+
+        const nuevoId = new Map<string, string>();
+        for (const n of origen.nodes) nuevoId.set(n.id, crypto.randomUUID());
+        const traducir = (texto: string) =>
+            texto.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, m => nuevoId.get(m) ?? m);
+
+        const nodes: WorkflowNodeData[] = origen.nodes.map(n => ({
+            ...n,
+            id:     nuevoId.get(n.id)!,
+            config: JSON.parse(traducir(JSON.stringify(n.config ?? {}))),
+            status: 'idle',
+        }));
+        const connections: WorkflowConnection[] = origen.connections
+            .filter(c => nuevoId.has(c.sourceId) && nuevoId.has(c.targetId))
+            .map(c => ({
+                ...c,
+                id:       crypto.randomUUID(),
+                sourceId: nuevoId.get(c.sourceId)!,
+                targetId: nuevoId.get(c.targetId)!,
+            }));
+
+        const copia = await WorkflowService.createWorkflow(organizationId, createdBy, {
+            name,
+            description: origen.description,
+        });
+
+        try {
+            await WorkflowService.saveLienzo(copia.id, nodes, connections, copia.id);
+        } catch (err: any) {
+            // Sin el lienzo, la copia es un flujo vacío con nombre de bueno.
+            await WorkflowService.deleteWorkflow(copia.id, organizationId).catch(() => {});
+            throw new Error(`no se pudieron copiar los nodos (${err.message ?? 'error desconocido'})`);
+        }
+
+        copia.nodes = nodes;
+        copia.connections = connections;
+        return copia;
+    }
+
     static async deleteWorkflow(id: string, organizationId: string): Promise<void> {
         const { error } = await supabase
             .from('workflows')
