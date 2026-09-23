@@ -9,6 +9,7 @@ import { enviarEmail as enviar, enviarEmailPersonalizado as enviarPersonalizado,
 import { fechaHoraVE, fechaVE } from '../_shared/fecha.ts';
 import { resolverRegla, type ReglaMatriz } from '../_shared/matriz.ts';
 import { destinatariosDelRol } from '../_shared/delegaciones.ts';
+import { resolverModelo, saldosBalanceVacios, saldosResultadoVacios } from '../_shared/modelosFinancieros.ts';
 
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -740,8 +741,23 @@ async function executeNode(
         }
 
         // ── Estados Financieros ───────────────────────────────────────────
-        // Schema real: companies, financial_periods (company_id, period_name, is_closed)
-        //              income_statement_entries (company_id, amount, entry_type)
+        // Schema real: companies (id, name, currency, industry),
+        //              financial_periods (company_id, period_name, is_closed),
+        //              financial_entries (company_id, period_id, account_code,
+        //                                 account_name, balance_amount)
+        //
+        // ⚠️ Este comentario decía `income_statement_entries`, tabla que el código
+        // no lee ni ha leído nunca: los dos pipelines de abajo salen de
+        // `financial_entries`, que es la forma de un balance de comprobación.
+        // Corregido el 15/08/2026. Es la misma clase de dato inventado que las
+        // siete carpetas de Edge Functions vacías del árbol de CLAUDE.md §4.
+        //
+        // ⚠️ El PLAN DE CUENTAS lo decide `_shared/modelosFinancieros.ts`, no
+        // este fichero. Hasta el 15/08/2026 la aritmética de SUDEASEG estaba
+        // cableada aquí —grupo 2 = Activos, grupo 5 = Ingresos— y el nodo ni
+        // siquiera leía `companies.industry`. Apuntado a una empresa industrial
+        // devolvía el pasivo como activo y los costos como ingresos, con formato
+        // de miles y porcentaje de margen incluidos. Ver SECTOR_ALIMENTOS.md §3.
         case 'processor:eeff': {
             const EEFF_URL = Deno.env.get('EEFF_SUPABASE_URL');
             const EEFF_KEY = Deno.env.get('EEFF_SERVICE_ROLE_KEY');
@@ -756,7 +772,7 @@ async function executeNode(
             if (queryType === 'all') {
                 const { data: companies } = await eeff
                     .from('companies')
-                    .select('id, name, currency')
+                    .select('id, name, currency, industry')
                     .eq('is_active', true);
 
                 const lineas: string[] = [];
@@ -770,7 +786,12 @@ async function executeNode(
                     const pList = (periodos ?? [])
                         .map((p: any) => `${p.period_name} (${p.is_closed ? 'cerrado' : 'abierto'})`)
                         .join(' | ');
-                    lineas.push(`${co.name} [${co.currency}]: ${pList || 'sin períodos'}`);
+                    // El modo "all" es el de diagnóstico: si una empresa no tiene
+                    // plan de cuentas reconocible, aquí es donde se ve, y no
+                    // cuando el cierre mensual reviente a las 8 de la mañana.
+                    const m = resolverModelo(cfg.tipo_empresa, (co as any).industry, co.name);
+                    const plan = m.ok ? m.modelo.nombre : '⚠ plan de cuentas sin determinar';
+                    lineas.push(`${co.name} [${co.currency} · ${plan}]: ${pList || 'sin períodos'}`);
                 }
                 return {
                     total_empresas: (companies ?? []).length,
@@ -783,7 +804,7 @@ async function executeNode(
             }
 
             // ── Buscar empresa por nombre (parcial) ───────────────────────
-            let companyQuery = eeff.from('companies').select('id, name, currency').eq('is_active', true);
+            let companyQuery = eeff.from('companies').select('id, name, currency, industry').eq('is_active', true);
             if (cfg.company?.trim()) {
                 companyQuery = companyQuery.ilike('name', `%${cfg.company.trim()}%`);
             }
@@ -792,6 +813,17 @@ async function executeNode(
             if (!company) {
                 return { skipped: true, reason: `Empresa "${cfg.company}" no encontrada en EE.FF.` };
             }
+
+            // ── Con qué plan de cuentas se lee esta empresa ───────────────
+            // Manda el nodo; si va en blanco, decide `companies.industry`; y si
+            // no hay nada que case, ESTO REVIENTA. No hay modelo por defecto y
+            // no puede haberlo: los dos planes son incompatibles, así que
+            // elegir uno a ciegas no da un número aproximado, da el pasivo
+            // puesto donde va el activo. Misma doctrina que la matriz de
+            // aprobación (§6.5) y que la huella `NULL` (§9.5).
+            const resModelo = resolverModelo(cfg.tipo_empresa, (company as any).industry, company.name);
+            if (!resModelo.ok) throw new Error(resModelo.motivo);
+            const modelo = resModelo.modelo;
 
             // ── Obtener período ───────────────────────────────────────────
             let periodQuery = eeff
@@ -855,9 +887,17 @@ async function executeNode(
             if (entErr) throw new Error(`EE.FF. entries: ${entErr.message}`);
 
             // ══════════════════════════════════════════════════════════════
-            // LÓGICA InsuranceModel (replica DataContext.tsx del sistema EE.FF.)
+            // PIPELINE DEL BALANCE — es el MISMO para los dos modelos
             //
-            // El sistema EE.FF. importa dos fuentes para el mismo período:
+            // Lo que cambia entre seguros e industrial es solo la última línea:
+            // a qué cubo va cada cuenta hoja. Todo lo de antes —dedup,
+            // consolidación con signo, exclusión de totales, filtro de hojas— es
+            // aritmética sobre un balance de comprobación y no depende del plan
+            // de cuentas. Por eso el modelo se inyecta al final y este pipeline
+            // NO se tocó al conectarlo: sigue siendo el que cuadró al céntimo
+            // contra SQL el 10/06/2026.
+            //
+            // En seguros, el sistema EE.FF. importa dos fuentes para el mismo período:
             //   - SUDEASEG/dot  (2.xxx)  → Activos del Balance General
             //   - Profit Plus/dash (3xx-, 4xx-, 5xx-) → Gastos, Pasivos/Patrimonio, Ingresos
             //
@@ -868,8 +908,9 @@ async function executeNode(
             //   1. Consolidar por account_code: SUM CON SIGNO (no abs)
             //   2. Excluir cuentas cuyo nombre contiene 'total'/'resumen'/'sub-total'
             //   3. Filtrar cuentas HOJA: si un código tiene hijos con |saldo| > 0.01, se omite
-            //   4. InsuranceModel: Math.abs se aplica AL CLASIFICAR cada hoja.
-            //      '2' = Activos, '3' = Gastos, '4' = Pasivos/Patrimonio (409/410/411), '5' = Ingresos
+            //   4. El modelo clasifica cada hoja. El signo llega intacto hasta ahí
+            //      a propósito: el modelo industrial lo NECESITA (una depreciación
+            //      acumulada resta del activo), y el de seguros lo descarta él.
             // ══════════════════════════════════════════════════════════════
 
             // Paso 0+1 — Dedup de filas idénticas y consolidación CON SIGNO por account_code
@@ -919,43 +960,23 @@ async function executeNode(
                 }
             }
 
-            // Paso 3 — InsuranceModel (BALANCE): clasificar 2/4 por prefijo de account_code
-            let activos = 0, pasivos = 0, patrimonio = 0;
-            let leafCount = 0;
-
+            // Paso 3 — el MODELO clasifica cada hoja. Aquí ya no hay ni un
+            // prefijo de cuentas escrito: los que había eran los de SUDEASEG.
+            const saldosB = saldosBalanceVacios();
             for (const [code, balance] of leafItems) {
-                leafCount++;
-                const v       = Math.abs(balance);
-                const clean   = allCleans.get(code)!;
-                const name    = consolidated.get(code)?.name.toLowerCase() ?? '';
-
-                if (code.match(/^2[\.\-]/i) || code.match(/^2\d/)) {
-                    // 2.xxx → ACTIVOS (SUDEASEG). InsuranceModel.mapAccount suma |saldo|
-                    // de cada hoja (el neteo de contra-activos ya ocurrió al consolidar con signo).
-                    activos += v;
-                } else if (code.match(/^4[\.\-]/i) || code.match(/^4\d/)) {
-                    // 4xx- → PASIVOS o PATRIMONIO (Profit Plus)
-                    const isEquity = clean.startsWith('409') || clean.startsWith('410') || clean.startsWith('411') ||
-                        clean.startsWith('4409') || clean.startsWith('4410') || clean.startsWith('4411') ||
-                        name.includes('capital social') || name.includes('patrimonio') ||
-                        name.includes('reserva legal') || name.includes('superavit') ||
-                        name.includes('utilidad del ejercicio') || name.includes('utilidades no distribuidas') ||
-                        name.includes('resultado del ejercicio') || name.includes('perdida del ejercicio');
-                    if (isEquity) patrimonio += v; else pasivos += v;
-                }
-                // Grupos 3 y 5 se procesan en el motor P&L (pipeline separado, abajo)
+                modelo.clasificarBalance(code, consolidated.get(code)?.name ?? '', balance, saldosB);
             }
 
             // ══════════════════════════════════════════════════════════════
-            // MOTOR P&L (réplica exacta de extractIncomeStatementData — Seguros)
-            // Pipeline DISTINTO al del balance (validado vs SQL 10/06/2026,
-            // reproduce ingresos/costo/utilidad del sistema EE.FF. al céntimo):
+            // MOTOR P&L — pipeline DISTINTO al del balance, y también común a
+            // los dos modelos (validado vs SQL 10/06/2026, reproduce
+            // ingresos/costo/utilidad del sistema EE.FF. al céntimo):
             //   - SIN dedup; consolidación CON SIGNO por código
             //   - Excluye códigos terminados en '-' (totalizadores Profit Plus)
-            //   - Totalizador 80%: padre se excluye solo si sus hijos suman > 80% de su |saldo|
-            //   - Grupo 5: saldo < 0 → Ingresos; saldo > 0 → Costos Técnicos (reversiones)
-            //   - Grupo 3: técnico solo por prefijo 30/311/312/32/33/34/317+«técnico» → COGS;
-            //     resto → Gastos Admin (sin palabras clave adicionales)
+            //   - Filtro de hoja ESTRICTO: si un código tiene descendientes con
+            //     saldo, es un padre y no se cuenta. El MISMO criterio que el
+            //     balance de arriba, a propósito (ver la nota de abajo).
+            //   - La clasificación por grupo la pone el modelo, no este bloque.
             // ══════════════════════════════════════════════════════════════
             const consolidatedPL = new Map<string, { val: number; name: string }>();
             for (const e of (entries ?? []) as any[]) {
@@ -971,42 +992,64 @@ async function executeNode(
             const plCleans = new Map<string, string>();
             for (const [code] of consolidatedPL) plCleans.set(code, cleanFn(code));
 
-            let ingresos = 0, costoVentas = 0, gastosOperativos = 0;
+            const saldosR = saldosResultadoVacios();
             for (const [code, { val, name }] of consolidatedPL) {
                 if (code.endsWith('-')) continue;
                 if (Math.abs(val) <= 0.01) continue;
                 const cc = plCleans.get(code)!;
-                let hasChildren = false;
                 let childrenSum = 0;
                 for (const [otherCode, otherClean] of plCleans) {
                     if (otherCode === code) continue;
                     if (otherClean.startsWith(cc) && otherClean.length > cc.length) {
-                        hasChildren = true;
                         childrenSum += Math.abs(consolidatedPL.get(otherCode)!.val);
                     }
                 }
-                if (hasChildren && childrenSum > Math.abs(val) * 0.8) continue; // totalizador
+                // ⚠️ Aquí había la regla del 80% —«es padre solo si sus hijos
+                // suman más del 80% de su saldo»— copiada del sistema EE.FF.
+                // (`DataContext.tsx`, motor de resultados). Es una heurística, y
+                // en un plan real falla: HierroFuerte tiene `5.3.03 Gastos
+                // Generales` = 406.618,94 con hijos que suman 255.878,59, o sea
+                // el 62,9%. La regla concluía «no es un totalizador» y contaba
+                // el padre Y los hijos.
+                //
+                // Que el padre SÍ es un rollup no es una opinión: con filtro
+                // estricto el balance de comprobación de HierroFuerte suma
+                // exactamente 0,00 (grupos 1+2+3+4+5) y la utilidad sale
+                // +109.273,86, que es justo Activo − Pasivo − Patrimonio. Con la
+                // regla del 80% salía una PÉRDIDA de 297.345,08. Un rollup mal
+                // sumado en el origen no deja de ser un rollup.
+                //
+                // Medido el 15/08/2026 sobre las tres empresas de EE.FF.: en los
+                // grupos 3, 4 y 5 las dos reglas dan un resultado IDÉNTICO para
+                // las dos aseguradoras (ningún padre se colaba), así que esto no
+                // mueve ni un céntimo de las cifras de seguros que cuadraron el
+                // 10/06/2026. Solo corrige el plan industrial.
+                //
+                // Y ahora hay UNA sola definición de «hoja» en el fichero, no
+                // dos que podían contestar cosas distintas a la misma pregunta.
+                if (childrenSum > 0.01) continue; // es un padre
 
-                const mainGroup = code.charAt(0);
-                const digits    = code.replace(/[^0-9]/g, '');
-                const lname     = name.toLowerCase();
-
-                if (mainGroup === '5') {
-                    if (val < 0) ingresos += Math.abs(val);
-                    else costoVentas += val; // reversiones positivas en G5 → costos técnicos
-                } else if (mainGroup === '3') {
-                    const isTechnical = digits.startsWith('30') || digits.startsWith('311') ||
-                        digits.startsWith('312') || digits.startsWith('32') ||
-                        digits.startsWith('33') || digits.startsWith('34') ||
-                        (digits.startsWith('317') && (lname.includes('tecnico') || lname.includes('técnico')));
-                    if (isTechnical) costoVentas += Math.abs(val);
-                    else gastosOperativos += Math.abs(val);
-                }
+                modelo.clasificarResultado(code, name, val, saldosR);
             }
 
-            const gastos  = costoVentas + gastosOperativos;
+            const ingresos         = saldosR.ingresos;
+            const costoVentas      = saldosR.costo_ventas;
+            const gastosOperativos = saldosR.gastos_operativos;
+            // Los financieros solo los separa el modelo industrial (grupos 7-8);
+            // en seguros vienen en 0 y la suma queda igual que antes.
+            const gastos   = costoVentas + gastosOperativos + saldosR.gastos_financieros;
             const utilidad = ingresos - gastos;
-            if (activos === 0 && (pasivos + patrimonio) > 0) activos = pasivos + patrimonio;
+
+            let activos = saldosB.activos;
+            const pasivos = saldosB.pasivos, patrimonio = saldosB.patrimonio;
+            // Cuadrar el activo desde pasivo+patrimonio es un parche de la doble
+            // importación de seguros, y solo vale ahí: en un balance de
+            // comprobación industrial las tres cifras salen del mismo fichero,
+            // así que un activo en cero es un dato que falta, y taparlo con la
+            // suma del pasivo fabrica un número que nadie midió.
+            if (modelo.rellenarActivosDesdePasivos && activos === 0 && (pasivos + patrimonio) > 0) {
+                activos = pasivos + patrimonio;
+            }
 
             // ── Conversión de moneda ───────────────────────────────────────
             const monedaReporte  = (cfg.moneda_reporte ?? '').toUpperCase() || company.currency;
@@ -1024,6 +1067,7 @@ async function executeNode(
                 return {
                     empresa:          company.name,
                     moneda:           monedaReporte,
+                    plan_cuentas:     modelo.nombre,
                     periodo_actual:   prevPeriods?.[0]?.period_name ?? '—',
                     periodo_anterior: prevPeriods?.[1]?.period_name ?? '—',
                     ingresos_total:   convertir(ingresos).toFixed(2),
@@ -1046,20 +1090,52 @@ async function executeNode(
                 .map((p: any) => `${p.period_name} (${p.is_closed ? 'cerrado' : 'abierto'})`)
                 .join(' | ');
 
+            // El detalle del activo y los KPIs solo los produce el modelo
+            // industrial. En seguros salen todos en 0, y añadirlos llenaría de
+            // ceros el correo del nodo Reporte Gerencial, que vuelca TODAS las
+            // claves del contexto (`buildContextSummary`). Un cero que no se ha
+            // medido se lee igual que un cero medido.
+            const detalle = modelo.id === 'industrial' ? {
+                efectivo:              fmt(saldosB.efectivo),
+                cuentas_por_cobrar:    fmt(saldosB.cuentas_por_cobrar),
+                inventario:            fmt(saldosB.inventario),
+                inventario_concepto:   modelo.etiquetaInventario,
+                activo_fijo:           fmt(saldosB.activo_fijo),
+                cuentas_por_pagar:     fmt(saldosB.cuentas_por_pagar),
+                gastos_financieros:    fmt(saldosR.gastos_financieros),
+                utilidad_bruta:        fmt(ingresos - costoVentas),
+            } : {};
+
+            // Cada KPI entra además con su `id` como clave y su valor SIN
+            // formatear, para que un `processor:decision` pueda comparar
+            // `{{previous.margen_bruto}}` contra un número. Formateado con
+            // separador de millares no compararía nada.
+            const kpis = modelo.kpis(saldosB, saldosR);
+            const kpisPlanos = Object.fromEntries(kpis.map(k => [k.id, k.valor.toFixed(2)]));
+
             return {
                 empresa:               company.name,
                 moneda:                monedaReporte,
                 periodo:               (period as any)?.period_name ?? '—',
                 periodo_estado:        (period as any)?.is_closed ? 'Cerrado' : 'Abierto',
+                plan_cuentas:          modelo.nombre,
+                plan_cuentas_origen:   resModelo.origen === 'nodo'
+                    ? 'configurado en el nodo'
+                    : `industria de la empresa en EE.FF. (${(company as any).industry ?? '—'})`,
                 activos:               fmt(activos),
                 pasivos:               fmt(pasivos),
                 patrimonio:            fmt(patrimonio),
+                ...detalle,
                 ingresos:              fmt(ingresos),
                 costo_ventas:          fmt(costoVentas),
                 gastos_admin:          fmt(gastosOperativos),
                 gastos:                fmt(gastos),
                 utilidad_neta:         fmt(utilidad),
                 margen_pct:            ingresos > 0 ? ((utilidad / ingresos) * 100).toFixed(1) + '%' : '0%',
+                ...kpisPlanos,
+                indicadores:           kpis.length
+                    ? kpis.map(k => `${k.etiqueta}: ${k.valor.toFixed(1)}${k.unidad === 'porcentaje' ? '%' : ''} — ${k.comentario}`).join(' · ')
+                    : 'sin indicadores para este plan de cuentas',
                 periodos_disponibles:  periodosDisponibles,
                 timestamp:             ts,
             };

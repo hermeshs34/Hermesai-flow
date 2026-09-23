@@ -6,6 +6,7 @@ import {
     Info, BrainCircuit, MessageCircle,
 } from 'lucide-react';
 import type { WorkflowNodeData } from '../types/workflow';
+import { OPCIONES_MODELO } from '../utils/modelosFinancieros';
 
 interface Props {
     node:     WorkflowNodeData | null;
@@ -652,6 +653,13 @@ function EeffForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) 
                 <Input value={cfg.company ?? ''} onChange={v => set('company', v)}
                     placeholder="Ej: Seguros, Inversiones... (o vacío para la primera)" />
             </Field>
+            <Field
+                label="Plan de cuentas"
+                hint="Los dos planes son incompatibles: en seguros el grupo 2 es el activo y en el industrial es el pasivo. Si ni esto ni la industria de la empresa lo dicen, el nodo se detiene en vez de adivinar."
+            >
+                <Select value={cfg.tipo_empresa ?? ''} onChange={v => set('tipo_empresa', v)}
+                    options={OPCIONES_MODELO.map(o => ({ value: o.value, label: o.label }))} />
+            </Field>
             <Field label="Tipo de consulta">
                 <Select value={cfg.query_type ?? 'summary'} onChange={v => set('query_type', v)} options={[
                     { value: 'summary',   label: 'Resumen del último período'        },
@@ -676,8 +684,16 @@ function EeffForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) 
                         placeholder="Ej: 105.50" type="number" />
                 </Field>
             </div>
-            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500">
-                <strong>Retorna:</strong> <code>empresa</code>, <code>periodo</code>, <code>ingresos</code>, <code>gastos</code>, <code>utilidad_neta</code>, <code>margen_pct</code>, <code>periodos_disponibles</code>, <code>categorias_db</code>
+            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500 space-y-1">
+                <div>
+                    <strong>Retorna siempre:</strong> <code>empresa</code>, <code>periodo</code>, <code>periodo_estado</code>, <code>plan_cuentas</code>, <code>activos</code>, <code>pasivos</code>, <code>patrimonio</code>, <code>ingresos</code>, <code>costo_ventas</code>, <code>gastos_admin</code>, <code>gastos</code>, <code>utilidad_neta</code>, <code>margen_pct</code>, <code>indicadores</code>, <code>periodos_disponibles</code>
+                </div>
+                <div>
+                    <strong>Solo con plan industrial:</strong> <code>efectivo</code>, <code>cuentas_por_cobrar</code>, <code>inventario</code>, <code>activo_fijo</code>, <code>cuentas_por_pagar</code>, <code>gastos_financieros</code>, <code>utilidad_bruta</code>, <code>densidad_inventario</code>, <code>margen_bruto</code>
+                </div>
+                <div>
+                    <strong>Solo con plan de seguros:</strong> <code>siniestralidad</code>
+                </div>
             </div>
         </div>
     );
