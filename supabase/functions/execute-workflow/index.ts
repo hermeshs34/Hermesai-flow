@@ -772,21 +772,31 @@ async function executeNode(
             const queryType = cfg.query_type ?? 'summary';
             const ts        = new Date().toISOString();
 
+            // Un `{ error }` sin leer deja `data` en null, y un null se lee como
+            // «no hay»: una clave caducada o un proyecto caído acababan en
+            // «Empresa no encontrada», que manda a buscar el fallo al sitio
+            // equivocado. El `hint` va incluido porque es el que distingue una
+            // clave mala de una clave de OTRO proyecto (§8.1).
+            const fallaEeff = (que: string, e: { message: string; hint?: string | null }) =>
+                new Error(`No se pudo leer ${que} de EE.FF.: ${e.message}${e.hint ? ` — ${e.hint}` : ''}`);
+
             // ── Modo "all": resumen de todas las empresas y períodos ──────
             if (queryType === 'all') {
-                const { data: companies } = await eeff
+                const { data: companies, error: coErr } = await eeff
                     .from('companies')
                     .select('id, name, currency, industry')
                     .eq('is_active', true);
+                if (coErr) throw fallaEeff('las empresas', coErr);
 
                 const lineas: string[] = [];
                 for (const co of companies ?? []) {
-                    const { data: periodos } = await eeff
+                    const { data: periodos, error: peErr } = await eeff
                         .from('financial_periods')
                         .select('period_name, is_closed')
                         .eq('company_id', co.id)
                         .order('start_date', { ascending: false })
                         .limit(5);
+                    if (peErr) throw fallaEeff(`los períodos de ${co.name}`, peErr);
                     const pList = (periodos ?? [])
                         .map((p: any) => `${p.period_name} (${p.is_closed ? 'cerrado' : 'abierto'})`)
                         .join(' | ');
@@ -808,14 +818,32 @@ async function executeNode(
             }
 
             // ── Buscar empresa por nombre (parcial) ───────────────────────
+            // Los espacios no cuentan: "Hierro Fuerte" busca `%Hierro%Fuerte%`,
+            // que casa con "HierroFuerte, C.A.". Se escapan `%`, `_` y `\`
+            // para que lo que se teclea se busque literal.
+            const palabras = (cfg.company ?? '').trim().split(/\s+/).filter(Boolean)
+                .map((p: string) => p.replace(/[\\%_]/g, c => `\\${c}`));
             let companyQuery = eeff.from('companies').select('id, name, currency, industry').eq('is_active', true);
-            if (cfg.company?.trim()) {
-                companyQuery = companyQuery.ilike('name', `%${cfg.company.trim()}%`);
+            if (palabras.length) {
+                companyQuery = companyQuery.ilike('name', `%${palabras.join('%')}%`);
             }
-            const { data: companies } = await companyQuery.limit(1);
-            const company = companies?.[0];
+            const { data: candidatas, error: coErr } = await companyQuery.order('name').limit(10);
+            if (coErr) throw fallaEeff('las empresas', coErr);
+
+            // Varias coincidencias ya no se resuelven quedándose con la primera:
+            // eso sería leer los estados financieros de otra empresa sin avisar.
+            // Solo se desempata si una casa entera sin espacios ni puntuación.
+            const plano = (s: string) => s.toLowerCase().replace(/[^a-z0-9áéíóúñü]/g, '');
+            let company = candidatas?.length === 1 ? candidatas[0] : undefined;
+            if (!company && (candidatas?.length ?? 0) > 1) {
+                const exactas = candidatas!.filter((c: { name: string }) => plano(c.name) === plano(cfg.company ?? ''));
+                if (exactas.length === 1) company = exactas[0];
+                else throw new Error(
+                    `"${cfg.company}" coincide con varias empresas de EE.FF. (${candidatas!.map((c: { name: string }) => c.name).join(', ')}). ` +
+                    `Escribe el nombre más completo en el nodo.`);
+            }
             if (!company) {
-                return { skipped: true, reason: `Empresa "${cfg.company}" no encontrada en EE.FF.` };
+                return { skipped: true, reason: `Empresa "${cfg.company}" no encontrada en EE.FF. (se busca entre las empresas activas)` };
             }
 
             // ── Con qué plan de cuentas se lee esta empresa ───────────────
@@ -859,18 +887,20 @@ async function executeNode(
             } else {
                 periodQuery = periodQuery.eq('is_closed', false);
             }
-            const { data: periods } = await periodQuery.limit(1);
+            const { data: periods, error: peErr } = await periodQuery.limit(1);
+            if (peErr) throw fallaEeff('los períodos', peErr);
             let period = periods?.[0];
 
             if (!period) {
                 // Intentar con el período más reciente sin importar estado
-                const { data: anyPeriod } = await eeff
+                const { data: anyPeriod, error: anyErr } = await eeff
                     .from('financial_periods')
                     .select('id, period_name, start_date, end_date, is_closed')
                     .eq('company_id', company.id)
                     .order('start_date', { ascending: false })
                     .limit(1)
                     .maybeSingle();
+                if (anyErr) throw fallaEeff('los períodos', anyErr);
                 if (!anyPeriod) return { empresa: company.name, periodo: 'Sin períodos cargados', timestamp: ts };
                 period = anyPeriod;
             }
