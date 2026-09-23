@@ -206,6 +206,10 @@ function formatValue(val: any): string {
 const SKIP_FIELDS = new Set([
     'skipped','triggered','branch','evaluated','left','right','operator',
     'indicadores','alertas_activas','siniestros',
+    // Metadatos de otros nodos: le dicen algo a quien depura, nada a quien lee
+    // el correo. Llegaron a un informe de EE.FF. el 23/09/2026 como filas
+    // «Modelo», «Tokens Output», «Email Id»…
+    'modelo','tokens_input','tokens_output','email_id','sent','logged',
 ]);
 
 // ── Resumen HTML del contexto para emails ────────────────────────────────────
@@ -1208,7 +1212,7 @@ async function executeNode(
                 },
                 body: JSON.stringify({
                     model:      modelo,
-                    max_tokens: cfg.max_tokens ?? 4096,
+                    max_tokens: cfg.max_tokens ?? 8192,
                     system:     systemPrompt,
                     messages:   [{ role: 'user', content: contextBlock + userPrompt }],
                 }),
@@ -1220,6 +1224,20 @@ async function executeNode(
             }
 
             const data       = await res.json();
+
+            // Una respuesta cortada por el límite de tokens NO es un informe:
+            // es medio informe con el HTML sin cerrar. El 23/09/2026 el de
+            // EE.FF. llegó al correo terminado en una viñeta vacía (4096 de
+            // 4096 tokens) y parecía completo. Se detiene aquí, antes de que
+            // un nodo posterior lo envíe como si estuviera entero.
+            if (data?.stop_reason === 'max_tokens') {
+                throw new Error(
+                    `El Agente IA se quedó sin espacio y su respuesta salió cortada ` +
+                    `(${data?.usage?.output_tokens ?? '?'} tokens). No se envía un informe a medias: ` +
+                    `pide en el prompt un texto más breve o sube el límite de tokens del nodo.`
+                );
+            }
+
             const respuesta  = data?.content?.[0]?.text ?? '';
             const inputTokens  = data?.usage?.input_tokens  ?? 0;
             const outputTokens = data?.usage?.output_tokens ?? 0;
