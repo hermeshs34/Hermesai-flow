@@ -920,6 +920,16 @@ al BCV y no salió **con el job todavía vivo**. `net._http_response` ya estaba
 vaciada por el reinicio, así que **la evidencia de ese día no existe**.
 Registrado como *no explicado*, no como resuelto.
 
+✅ **Incidente cerrado el 23/09/2026 a las 11:00 UTC (07:00 VE):** "Reporte BCV
+Diario" arrancó solo (`triggered_by='cron'`, run `18ffb10e…`, `success`) y el
+correo llegó — la primera ejecución automática desde el 09/09. Ese mismo minuto
+`salud_cron()` dio `10/10` con el vigilante contado aparte
+(`respuestas_vigilante_10min: 1`). Se comprobó con
+`runbooks/CIERRE_INCIDENTE.sql`, que en su primera versión traía la hora del BCV
+**escrita a mano** (09:00): Hermes lo había adelantado a las 07:00 y el runbook
+decía «aún no le toca» al lado de un veredicto `CERRADO`. La hora se lee hoy del
+nodo (`config_json->>'cron'`), que es lo que lee `cron-runner`.
+
 ---
 
 ## 7. Políticas RLS — Reglas Absolutas

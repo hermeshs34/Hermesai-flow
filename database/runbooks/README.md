@@ -29,6 +29,8 @@ manual y puntual, no un cambio de esquema que haya que replicar en otro entorno.
 | [`DIAGNOSTICO_CRON.sql`](DIAGNOSTICO_CRON.sql) | Foto completa del planificador: jobs, historial, respuestas HTTP, ejecuciones, extensiones y quién es el usuario. Es por donde se empieza cuando «no se ejecuta nada solo». |
 | [`VERIFICAR_CRON.sql`](VERIFICAR_CRON.sql) | Comprobación corta después de tocar el job: ¿late, y la llamada HTTP devuelve 200? |
 | [`VERIFICAR_VIGILANTE.sql`](VERIFICAR_VIGILANTE.sql) | Lo mismo para el job `vigilante-reloj` (§ el vigilante de abajo), más el estado de `public.vigilante_reloj`. |
+| [`CIERRE_INCIDENTE.sql`](CIERRE_INCIDENTE.sql) | La única pregunta que le importa al usuario: **¿arrancó un flujo SOLO, sin nadie delante?** Que el job exista y conteste 200 no es lo mismo. Sirve igual si la respuesta es «no»: dice si el flujo está activo y publicado antes de que a nadie le dé por tocar el planificador. |
+| [`HISTORIAL_DEFINICION_BCV.sql`](HISTORIAL_DEFINICION_BCV.sql) | Traza del ciclo de vida (§6.7) del flujo BCV: `workflow_autorizaciones` y `audit_log`. Para saber si un cambio de hora lo despublicó y quién lo volvió a autorizar. |
 | [`COMPARAR_SECRETO.sql`](COMPARAR_SECRETO.sql) | ¿El token que lleva el job es el `CRON_SECRET` de verdad? Compara **huellas**, nunca valores. |
 | [`ROTAR_CRON_SECRET.sql`](ROTAR_CRON_SECRET.sql) | Genera un secreto nuevo **dentro de la base** y crea el job con él en la misma sentencia, para que el valor no cruce ningún portapapeles. |
 | [`HUECO_10SEP.sql`](HUECO_10SEP.sql) | Arqueología del hueco del 10/09/2026: audita `audit_log`, `execution_runs` y el historial del job alrededor de la fecha en que desapareció el planificador. |
