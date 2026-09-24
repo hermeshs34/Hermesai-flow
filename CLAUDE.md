@@ -693,6 +693,24 @@ tiene nodos, si no tiene ningún `type='trigger'`, o si le queda un
 flujos de producción: **4 no pasarían** (3 con una decisión sin configurar, entre
 ellos "Prueba Flujo 02032026"; 1 sin disparador, "Score AML Automático").
 
+⏳ **Cuarta validación, escrita y ensayada el 24/09/2026 pero SIN APLICAR**
+(`20260924_publicar_solo_nodos_implementados.sql`): no se publica un flujo con
+nodos que el motor no sabe ejecutar. El `default:` del `switch` devuelve
+`skipped` y el run acaba en `success`: el nodo parece instalado y no hace nada
+(la familia de §9.4). La lista de claves va **copiada** del `switch` de
+`execute-workflow`; si añades un `case`, añádelo allí. Hoy bloquearía "Score AML
+Automático" (`output:operacion`), "Orden de Compra Automática"
+(`trigger:umbral`, `processor:compras`) y "Flujo Manufactura"
+(`processor:calidad`).
+
+La misma migración pone `workflow_borrado_guard`: **no se borra un flujo con
+ejecuciones o autorizaciones**. `workflows` borra en cascada `execution_runs`,
+`execution_logs`, `tareas_aprobacion` y `workflow_autorizaciones`, así que un
+clic de admin se llevaba toda la evidencia. Un flujo que ya no sirve se deja en
+borrador e inactivo. ⚠️ **Hueco abierto:** `tareas_aprobacion` tiene la política
+`org_isolation` para ALL, así que cualquier usuario de la organización puede
+BORRAR tareas de aprobación por API.
+
 **Tres triggers, porque la pantalla no es una capa de seguridad:**
 
 1. `workflows_estado_guard` — un `UPDATE` normal **no puede promover** un flujo
