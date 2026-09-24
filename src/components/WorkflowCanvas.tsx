@@ -1005,8 +1005,8 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                                                                         setConnections([]);
                                                                     }
                                                                     toast.success(`Flujo "${wf.name}" eliminado`);
-                                                                } catch {
-                                                                    toast.error('No se pudo eliminar el flujo');
+                                                                } catch (err) {
+                                                                    toast.error(err instanceof Error ? err.message : 'No se pudo eliminar el flujo');
                                                                 }
                                                             }}
                                                             title="Eliminar flujo"

@@ -45,8 +45,8 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
         label: 'Seguros & Reaseguros',
         color: '#0ea5e9',
         nodes: [
-            { id: 'riskguard-siniestro',    type: 'trigger',   category: 'riskguard',   title: 'Alerta Siniestro',        description: 'Disparar cuando ingresa siniestro en RiskGuard',    icon: AlertTriangle, color: '#ef4444' },
-            { id: 'verificar-poliza',        type: 'processor', category: 'riskguard',   title: 'Verificar Póliza',        description: 'Consultar cobertura vigente en SIRWeb',              icon: Search,        color: '#3b82f6' },
+            { id: 'riskguard-siniestro',    type: 'trigger',   category: 'riskguard',   title: 'Alerta Siniestro',        description: 'Lee siniestros de RiskGuard al lanzar el flujo a mano (para automático: Programado + Leer Siniestros)', icon: AlertTriangle, color: '#ef4444' },
+            { id: 'leer-siniestros',         type: 'processor', category: 'riskguard',   title: 'Leer Siniestros',         description: 'Siniestros de RiskGuard con su asegurado (para revisar en listas)', icon: Search, color: '#3b82f6' },
             { id: 'calcular-reserva',        type: 'processor', category: 'actuarial',   title: 'Calcular Reserva IBNR',   description: 'Calcular reserva técnica con método Chain Ladder',   icon: TrendingUp,    color: '#10b981' },
             { id: 'escalar-reaseguro',       type: 'processor', category: 'reaseguro',   title: 'Escalar Reaseguro',       description: 'Si monto > XL → notificar reasegurador',            icon: ArrowUpRight,  color: '#f59e0b' },
             { id: 'notificar-ajustador',     type: 'output',    category: 'notificacion', title: 'Notificar Ajustador',    description: 'Email + WhatsApp al ajustador asignado',             icon: Bell,          color: '#6366f1' },

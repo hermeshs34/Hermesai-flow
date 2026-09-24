@@ -552,13 +552,26 @@ async function executeNode(
                 return { skipped: true, reason: 'RISKGUARD_SUPABASE_URL o RISKGUARD_SERVICE_ROLE_KEY no configurados' };
             }
             const rg = createClient(RG_URL, RG_KEY);
-            const { data: siniestros, error } = await rg
+            // El asegurado viaja en el resultado para que un "Verificar OFAC/ONU"
+            // posterior sin nombre fijo revise a CADA asegurado del lote. Antes el
+            // nodo AML solo sabía buscar un nombre escrito a mano, y el flujo
+            // "Alerta de Siniestro" revisaba siempre a la misma persona.
+            let query = rg
                 .from('siniestros')
-                .select('id,estado,monto_reclamado,ramo,fecha_ocurrencia')
-                .eq('estado', cfg.estado ?? 'pendiente')
-                .limit(cfg.limit ?? 10);
-            if (error) throw new Error(`RiskGuard: ${error.message}`);
-            return { siniestros: siniestros ?? [], count: siniestros?.length ?? 0 };
+                .select('id,numero_siniestro,estado,ramo,fecha_ocurrencia,monto_reclamado,monto_usd,moneda,asegurado_nombre,asegurado_documento,created_at')
+                .order('created_at', { ascending: false })
+                .limit(Number(cfg.limit) || 10);
+            // `estado` vacío o 'todos' ⇒ cualquier estado. Ausente ⇒ 'pendiente',
+            // que es lo que hacían los nodos guardados antes de existir el campo.
+            const estado = String(cfg.estado ?? 'pendiente').trim();
+            if (estado && estado !== 'todos') query = query.eq('estado', estado);
+            // Ventana de días: con un disparador diario y `dias=1` cada siniestro
+            // se revisa una vez, no todos los días mientras siga pendiente.
+            const dias = Number(cfg.dias);
+            if (dias > 0) query = query.gte('created_at', new Date(Date.now() - dias * 86_400_000).toISOString());
+            const { data: siniestros, error } = await query;
+            if (error) throw new Error(`RiskGuard: ${error.message}${error.hint ? ` — ${error.hint}` : ''}`);
+            return { siniestros: siniestros ?? [], count: siniestros?.length ?? 0, estado: estado || 'todos', dias: dias > 0 ? dias : null };
         }
 
         // ── Verificación Listas Restrictivas (OFAC/PEP/ONU/UE) ───────────────
@@ -584,10 +597,6 @@ async function executeNode(
                 };
             }
 
-            if (!nombre && !documento) {
-                throw new Error('El nodo Verificar OFAC requiere configurar "nombre" o "documento" a verificar');
-            }
-
             // Limpiar y validar URL
             const rgUrl = RG_URL.trim().replace(/\/$/, '');
             if (!rgUrl.startsWith('https://') && !rgUrl.startsWith('http://')) {
@@ -598,26 +607,23 @@ async function executeNode(
             }
             const rg = createClient(rgUrl, RG_KEY);
 
-            let hits: any[] = [];
-            let rgErr: any = null;
-
-            if (documento) {
-                // Búsqueda exacta por documento
-                const res = await rg
-                    .from('listas_restrictivas')
-                    .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
-                    .in('tipo_lista', tiposLista)
-                    .eq('activo', true)
-                    .eq('documento', documento)
-                    .limit(10);
-                hits  = res.data ?? [];
-                rgErr = res.error;
-            } else if (nombre) {
-                // Búsqueda parcial con ilike — más robusta que textSearch en todos los entornos
-                // El tipo explícito no es adorno: `nombre` es any, así que sin él
-                // `palabras` también lo es y los tres callbacks de abajo daban
-                // TS7006. Anotar el origen los arregla los tres.
-                const palabras: string[] = nombre.trim().split(/\s+/);
+            // Una persona contra las listas: por documento si lo hay (exacto),
+            // si no por nombre (parcial, con post-filtro de dos palabras).
+            const buscarEnListas = async (nom: string | null, doc: string | null): Promise<any[]> => {
+                if (doc) {
+                    const res = await rg
+                        .from('listas_restrictivas')
+                        .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
+                        .in('tipo_lista', tiposLista)
+                        .eq('activo', true)
+                        .eq('documento', doc)
+                        .limit(10);
+                    if (res.error) throw new Error(`RiskGuard listas: ${res.error.message}`);
+                    return res.data ?? [];
+                }
+                if (!nom) return [];
+                // El tipo explícito no es adorno: sin él los callbacks de abajo dan TS7006.
+                const palabras: string[] = nom.trim().split(/\s+/);
                 const palabraMasFuerte = palabras.reduce((a, b) => b.length > a.length ? b : a, palabras[0]);
                 const res = await rg
                     .from('listas_restrictivas')
@@ -626,30 +632,81 @@ async function executeNode(
                     .eq('activo', true)
                     .ilike('nombre', `%${palabraMasFuerte}%`)
                     .limit(20);
+                if (res.error) throw new Error(`RiskGuard listas: ${res.error.message}`);
                 // Post-filtrar: al menos 2 palabras del nombre deben coincidir
                 const resData = res.data ?? [];
-                const nombreLower = nombre.toLowerCase();
-                hits = resData.filter((r: any) => {
+                const nombreLower = nom.toLowerCase();
+                const hits = resData.filter((r: any) => {
                     const rl = (r.nombre ?? '').toLowerCase();
                     return palabras.filter(p => p.length > 2 && rl.includes(p.toLowerCase())).length >= Math.min(2, palabras.length);
                 });
                 // Si no hay coincidencias con 2 palabras, usar resultado ilike directo
                 if (hits.length === 0 && resData.length > 0) {
-                    hits = resData.filter((r: any) => (r.nombre ?? '').toLowerCase().includes(nombreLower));
+                    return resData.filter((r: any) => (r.nombre ?? '').toLowerCase().includes(nombreLower));
                 }
-                rgErr = res.error;
+                return hits;
+            };
+
+            // ── Modo lote: sin nombre fijo, revisa a cada asegurado del lote ──
+            // Lo alimenta un nodo RiskGuard anterior ("Leer Siniestros" o "Alerta
+            // Siniestro"). Un nombre escrito en el nodo manda sobre el lote.
+            if (!nombre && !documento) {
+                let siniestros: any[] | null = null;
+                const ids = Object.keys(context).filter(k => k !== '__lastNodeId');
+                for (let i = ids.length - 1; i >= 0 && !siniestros; i--) {
+                    const v = context[ids[i]];
+                    if (v && typeof v === 'object' && Array.isArray(v.siniestros)) siniestros = v.siniestros;
+                }
+                if (!siniestros) {
+                    throw new Error('El nodo Verificar OFAC necesita un nombre o documento, o ir después de un nodo que lea siniestros de RiskGuard para revisar a sus asegurados.');
+                }
+
+                const coincidencias: any[] = [];
+                const sinDatos: string[] = [];
+                for (const s of siniestros) {
+                    const doc = String(s.asegurado_documento ?? '').trim() || null;
+                    const nom = String(s.asegurado_nombre ?? '').trim() || null;
+                    // Sin nombre ni documento NO es "limpio": es "no se pudo revisar",
+                    // y se devuelve aparte para que no se confunda con un negativo.
+                    if (!doc && !nom) { sinDatos.push(s.numero_siniestro ?? s.id); continue; }
+                    const hits = await buscarEnListas(nom, doc);
+                    if (hits.length) coincidencias.push({
+                        numero_siniestro:    s.numero_siniestro ?? s.id,
+                        asegurado_nombre:    nom,
+                        asegurado_documento: doc,
+                        hits,
+                    });
+                }
+
+                const enLista = coincidencias.length > 0;
+                return {
+                    en_lista:   enLista,
+                    // Aplanado y con el siniestro al lado, para que las plantillas
+                    // de aprobación y correo ({{previous.hits.0.tipo_lista}}) sigan valiendo.
+                    hits:       coincidencias.flatMap(c => c.hits.map((h: any) => ({ ...h, numero_siniestro: c.numero_siniestro }))),
+                    hit_count:  coincidencias.reduce((n, c) => n + c.hits.length, 0),
+                    aml_score:  enLista ? 100 : 0,
+                    nivel:      enLista ? 'alto' : 'bajo',
+                    fuente:     'riskguard',
+                    modo:       'lote',
+                    siniestros_revisados: siniestros.length - sinDatos.length,
+                    coincidencias,
+                    sin_verificar:        sinDatos,
+                    nombre_buscado:    enLista ? coincidencias.map(c => c.asegurado_nombre ?? c.asegurado_documento).join(', ') : null,
+                    documento_buscado: enLista ? coincidencias.map(c => c.asegurado_documento).filter(Boolean).join(', ') || null : null,
+                    timestamp:  new Date().toISOString(),
+                };
             }
 
-            if (rgErr) throw new Error(`RiskGuard listas: ${rgErr.message}`);
-
-            const enLista = (hits ?? []).length > 0;
+            const hits = await buscarEnListas(nombre, documento);
+            const enLista = hits.length > 0;
             // Score: 100 si está en lista, 0 si no
             const amlScore = enLista ? 100 : 0;
 
             return {
                 en_lista:   enLista,
-                hits:       hits ?? [],
-                hit_count:  (hits ?? []).length,
+                hits,
+                hit_count:  hits.length,
                 aml_score:  amlScore,
                 nivel:      enLista ? 'alto' : 'bajo',
                 fuente:     'riskguard',

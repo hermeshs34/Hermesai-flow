@@ -912,6 +912,26 @@ const OFAC_EMAIL_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:
   </div>
 </div>`;
 
+function RiskguardForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-sky-50 border border-sky-100 rounded-lg text-sm text-sky-800">
+                Lee siniestros de RiskGuard (solo lectura) con el nombre y documento del asegurado.
+                Ponlo después de un disparador <strong>Programado</strong> para revisarlos automáticamente.
+            </div>
+            <Field label="Estado del siniestro" hint="Escribe «todos» para no filtrar por estado">
+                <Input value={cfg.estado ?? 'pendiente'} onChange={v => set('estado', v)} placeholder="pendiente" />
+            </Field>
+            <Field label="Solo los registrados en los últimos N días" hint="Con un disparador diario usa 1: cada siniestro se revisa una sola vez. Vacío = sin límite de fecha">
+                <Input value={cfg.dias ?? ''} onChange={v => set('dias', v)} placeholder="1" type="number" />
+            </Field>
+            <Field label="Máximo de siniestros por ejecución">
+                <Input value={cfg.limit ?? '10'} onChange={v => set('limit', v)} placeholder="10" type="number" />
+            </Field>
+        </div>
+    );
+}
+
 function AmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
     const LISTAS_DISPONIBLES = ['OFAC', 'PEP', 'ONU', 'UE', 'LOCAL', 'INTERPOL'];
     const listasSeleccionadas: string[] = cfg.listas ?? ['OFAC', 'PEP', 'ONU', 'UE'];
@@ -928,6 +948,12 @@ function AmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
             <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-sm text-red-800">
                 <Shield className="w-4 h-4 inline mr-1.5" />
                 Consulta las listas OFAC, PEP, ONU y UE en RiskGuard. Devuelve si la persona está o no en lista.
+            </div>
+
+            <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-800">
+                <strong>Déjalo vacío para revisar un lote de siniestros:</strong> si este nodo va después de
+                «Leer Siniestros» o «Alerta Siniestro», revisa a <em>cada</em> asegurado del lote. Un nombre o
+                documento escrito aquí manda sobre el lote y revisa solo a esa persona.
             </div>
 
             <Field label="Nombre de la persona a verificar" hint="Nombre completo tal como aparece en los documentos">
@@ -963,7 +989,10 @@ function AmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
                     {[
                         ['en_lista', 'true / false'],
                         ['hit_count', 'número de coincidencias'],
-                        ['nombre_buscado', 'nombre consultado'],
+                        ['nombre_buscado', 'nombre consultado (en lote: los que coinciden)'],
+                        ['hits.0.numero_siniestro', 'siniestro (solo en lote)'],
+                        ['siniestros_revisados', 'cuántos se revisaron (lote)'],
+                        ['sin_verificar', 'siniestros sin nombre ni documento'],
                         ['hits.0.tipo_lista', 'OFAC / PEP / ONU...'],
                         ['hits.0.nombre', 'nombre en la lista'],
                         ['hits.0.motivo', 'razón de inclusión'],
@@ -1125,6 +1154,7 @@ const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, titl
     delay:        (c, s) => <DelayForm cfg={c} set={s} />,
     aprobacion:   (c, s) => <AprobacionForm cfg={c} set={s} />,
     aml:          (c, s) => <AmlForm cfg={c} set={s} />,
+    riskguard:    (c, s) => <RiskguardForm cfg={c} set={s} />,
     agente:       (c, s) => <AgenteIAForm cfg={c} set={s} />,
     // category 'indicadores' cubre tanto Leer Indicadores como Alerta KPI Crítico
     indicadores:  (c, s, title) => title.includes('lerta') || title.includes('Alerta')

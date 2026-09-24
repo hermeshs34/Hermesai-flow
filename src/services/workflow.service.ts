@@ -311,13 +311,20 @@ export class WorkflowService {
     }
 
     static async deleteWorkflow(id: string, organizationId: string): Promise<void> {
-        const { error } = await supabase
+        // `.select('id')` porque la RLS filtra filas, no da error (§6 de
+        // CLAUDE.md): sin él, un DELETE que la política no deja pasar vuelve
+        // sin error y la pantalla decía «eliminado» sobre un flujo intacto.
+        const { data, error } = await supabase
             .from('workflows')
             .delete()
             .eq('id', id)
-            .eq('organization_id', organizationId);
+            .eq('organization_id', organizationId)
+            .select('id');
 
         if (error) throw new Error(error.message);
+        if (!data || data.length === 0) {
+            throw new Error('No se eliminó nada: solo un Administrador puede eliminar flujos.');
+        }
     }
 
     // ── Lienzo (nodos + conexiones, en una sola transacción) ──────────────
