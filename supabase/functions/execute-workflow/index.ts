@@ -558,7 +558,7 @@ async function executeNode(
             // "Alerta de Siniestro" revisaba siempre a la misma persona.
             let query = rg
                 .from('siniestros')
-                .select('id,numero_siniestro,estado,ramo,fecha_ocurrencia,monto_reclamado,monto_usd,moneda,asegurado_nombre,asegurado_documento,created_at')
+                .select('id,empresa_id,numero_siniestro,estado,ramo,fecha_ocurrencia,monto_reclamado,monto_usd,moneda,asegurado_nombre,asegurado_documento,asegurado_oracle_id,created_at')
                 .order('created_at', { ascending: false })
                 .limit(Number(cfg.limit) || 10);  // mismo tope que `limite`, abajo
             // `estado` vacío, ausente o 'todos' ⇒ cualquier estado. Se compara en
@@ -581,6 +581,32 @@ async function executeNode(
             const limite = Number(cfg.limit) || 10;
             const { data: siniestros, error } = await query;
             if (error) throw new Error(`RiskGuard: ${error.message}${error.hint ? ` — ${error.hint}` : ''}`);
+            // `asegurado_nombre`/`asegurado_documento` solo existen en la captura
+            // manual de RiskGuard. Los siniestros que vienen de SIRWeb los dejan
+            // vacíos e identifican al asegurado por `asegurado_oracle_id` contra el
+            // padrón `oracle_asegurados` (clave empresa + id). Sin este cruce, dos
+            // de cada tres siniestros salían «sin verificar» de las listas.
+            const pendientes = (siniestros ?? []).filter((s: any) =>
+                !String(s.asegurado_nombre ?? '').trim() && !String(s.asegurado_documento ?? '').trim() && s.asegurado_oracle_id);
+            if (pendientes.length) {
+                const ids = [...new Set(pendientes.map((s: any) => String(s.asegurado_oracle_id)))];
+                const padron = new Map<string, any>();
+                for (let i = 0; i < ids.length; i += 200) {
+                    const { data: filas, error: errPadron } = await rg
+                        .from('oracle_asegurados')
+                        .select('empresa_id,id_oracle,nombre,rif_ci')
+                        .in('id_oracle', ids.slice(i, i + 200));
+                    if (errPadron) throw new Error(`RiskGuard padrón de asegurados: ${errPadron.message}${errPadron.hint ? ` — ${errPadron.hint}` : ''}`);
+                    for (const f of filas ?? []) padron.set(`${f.empresa_id}|${f.id_oracle}`, f);
+                }
+                for (const s of pendientes as any[]) {
+                    const a = padron.get(`${s.empresa_id}|${s.asegurado_oracle_id}`);
+                    if (!a) continue;
+                    s.asegurado_nombre = a.nombre ?? null;
+                    s.asegurado_documento = a.rif_ci ?? null;
+                    s.asegurado_fuente = 'padron_sirweb';
+                }
+            }
             const count = siniestros?.length ?? 0;
             // Llegar al tope significa que puede haber más siniestros que no se
             // leyeron — y que nadie revisará en listas. Se dice, no se calla.
@@ -623,21 +649,29 @@ async function executeNode(
             }
             const rg = createClient(rgUrl, RG_KEY);
 
-            // Una persona contra las listas: por documento si lo hay (exacto),
-            // si no por nombre (parcial, con post-filtro de dos palabras).
+            // Una persona contra las listas: por documento (exacto) Y por nombre
+            // (parcial, con post-filtro de dos palabras). Antes el documento
+            // EXCLUÍA al nombre, y las listas OFAC/ONU/UE casi nunca traen una
+            // cédula venezolana: quien tenía documento no se cruzaba por nombre
+            // jamás, y salía limpio sin haber sido comparado.
             const buscarEnListas = async (nom: string | null, doc: string | null): Promise<any[]> => {
-                if (doc) {
-                    const res = await rg
-                        .from('listas_restrictivas')
-                        .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
-                        .in('tipo_lista', tiposLista)
-                        .eq('activo', true)
-                        .eq('documento', doc)
-                        .limit(10);
-                    if (res.error) throw new Error(`RiskGuard listas: ${res.error.message}`);
-                    return res.data ?? [];
-                }
-                if (!nom) return [];
+                const porDoc = doc ? await buscarPorDocumento(doc) : [];
+                const porNombre = nom ? await buscarPorNombre(nom) : [];
+                const vistos = new Set(porDoc.map((h: any) => h.id));
+                return [...porDoc, ...porNombre.filter((h: any) => !vistos.has(h.id))];
+            };
+            const buscarPorDocumento = async (doc: string): Promise<any[]> => {
+                const res = await rg
+                    .from('listas_restrictivas')
+                    .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
+                    .in('tipo_lista', tiposLista)
+                    .eq('activo', true)
+                    .eq('documento', doc)
+                    .limit(10);
+                if (res.error) throw new Error(`RiskGuard listas: ${res.error.message}`);
+                return res.data ?? [];
+            };
+            const buscarPorNombre = async (nom: string): Promise<any[]> => {
                 // El tipo explícito no es adorno: sin él los callbacks de abajo dan TS7006.
                 const palabras: string[] = nom.trim().split(/\s+/);
                 const palabraMasFuerte = palabras.reduce((a, b) => b.length > a.length ? b : a, palabras[0]);
@@ -683,13 +717,36 @@ async function executeNode(
 
                 const coincidencias: any[] = [];
                 const sinDatos: string[] = [];
-                for (const s of siniestros) {
+                // Una consulta por PERSONA, no por siniestro, y de diez en diez: con
+                // cientos de siniestros en serie el nodo rozaba el límite de 150 s
+                // de la Edge Function.
+                const porPersona = new Map<string, Promise<any[]>>();
+                const clave = (nom: string | null, doc: string | null) => `${doc ?? ''}|${(nom ?? '').toLowerCase()}`;
+                const aRevisar = siniestros.filter((s: any) => {
                     const doc = String(s.asegurado_documento ?? '').trim() || null;
                     const nom = String(s.asegurado_nombre ?? '').trim() || null;
                     // Sin nombre ni documento NO es "limpio": es "no se pudo revisar",
                     // y se devuelve aparte para que no se confunda con un negativo.
-                    if (!doc && !nom) { sinDatos.push(s.numero_siniestro ?? s.id); continue; }
-                    const hits = await buscarEnListas(nom, doc);
+                    if (!doc && !nom) { sinDatos.push(s.numero_siniestro ?? s.id); return false; }
+                    return true;
+                });
+                const personas = [...new Map(aRevisar.map((s: any) => {
+                    const doc = String(s.asegurado_documento ?? '').trim() || null;
+                    const nom = String(s.asegurado_nombre ?? '').trim() || null;
+                    return [clave(nom, doc), { nom, doc }] as const;
+                })).entries()];
+                for (let i = 0; i < personas.length; i += 10) {
+                    const tanda = personas.slice(i, i + 10).map(([k, p]) => {
+                        const pr = buscarEnListas(p.nom, p.doc);
+                        porPersona.set(k, pr);
+                        return pr;
+                    });
+                    await Promise.all(tanda);
+                }
+                for (const s of aRevisar) {
+                    const doc = String(s.asegurado_documento ?? '').trim() || null;
+                    const nom = String(s.asegurado_nombre ?? '').trim() || null;
+                    const hits = await porPersona.get(clave(nom, doc))!;
                     if (hits.length) coincidencias.push({
                         numero_siniestro:    s.numero_siniestro ?? s.id,
                         asegurado_nombre:    nom,
@@ -710,6 +767,7 @@ async function executeNode(
                     fuente:     'riskguard',
                     modo:       'lote',
                     siniestros_revisados: siniestros.length - sinDatos.length,
+                    personas_revisadas:   personas.length,
                     coincidencias,
                     sin_verificar:        sinDatos,
                     // «Leer Siniestros» llegó a su tope: pudo quedar alguno sin leer.
