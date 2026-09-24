@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict xEE3BSG4nBCcAyNwECEnFli8beUEFDprbApk4PXF45CzLS7AuSKmv2FrmIfU9ao
+-- \restrict lQIklSsoCbWJBhklIAbjovJED5fVPb8ExWyhp0ASC6SgWxMGxkTL9EabZj5TXz2
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -613,6 +613,32 @@ BEGIN
                 'Hay nodos de decisión sin condición configurada (%): irían siempre por la rama «Sí» y la rama «No» nunca se ejecutaría. Configúralos antes de publicar.',
                 v_pendientes;
         END IF;
+
+        -- Un nodo que el motor no sabe ejecutar lo salta execute-workflow con
+        -- «implementación pendiente» y el flujo sigue como si lo hubiera hecho.
+        -- Publicado, un "Congelar Operación" prometería congelar y no congelaría
+        -- nada. La lista es COPIA de los `case` del switch de execute-workflow
+        -- (20260924_publicar_solo_nodos_implementados.sql): si el motor aprende
+        -- un tipo nuevo, se añade aquí también.
+        SELECT string_agg(format('%s (%s)', n.title, n.type || ':' || n.category), ', ' ORDER BY n.title)
+          INTO v_pendientes
+          FROM workflow_nodes n
+         WHERE n.workflow_id = p_workflow_id
+           AND (n.type || ':' || n.category) <> ALL (ARRAY[
+                'trigger:manual', 'trigger:cron', 'trigger:webhook',
+                'trigger:riskguard', 'trigger:indicadores',
+                'processor:aml', 'processor:agente', 'processor:aprobacion',
+                'processor:bcv', 'processor:decision', 'processor:eeff',
+                'processor:indicadores', 'processor:regulatorio', 'processor:reporte',
+                'processor:riskguard', 'processor:semaforo',
+                'output:email', 'output:log', 'output:reporte', 'output:whatsapp'
+           ]);
+
+        IF v_pendientes IS NOT NULL THEN
+            RAISE EXCEPTION
+                'Este flujo tiene nodos que el motor todavía no sabe ejecutar: %. Se saltarían sin hacer nada y el flujo parecería funcionar. Quítalos o sustitúyelos antes de publicar.',
+                v_pendientes;
+        END IF;
     END IF;
 
     -- ── Escribir ────────────────────────────────────────────────────────────
@@ -667,6 +693,29 @@ ALTER FUNCTION "public"."transicionar_flujo"("p_workflow_id" "uuid", "p_accion" 
 
 COMMENT ON FUNCTION "public"."transicionar_flujo"("p_workflow_id" "uuid", "p_accion" "text", "p_motivo" "text") IS 'Única puerta para promover estado_definicion. Comprueba rol, organización, estado de origen, cuatro ojos y nodos a medio configurar; deja traza en workflow_autorizaciones y en audit_log.';
 
+
+--
+-- Name: workflow_borrado_guard(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."workflow_borrado_guard"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM execution_runs r WHERE r.workflow_id = OLD.id)
+       OR EXISTS (SELECT 1 FROM workflow_autorizaciones a WHERE a.workflow_id = OLD.id) THEN
+        RAISE EXCEPTION
+            'El flujo «%» no se puede eliminar: tiene ejecuciones o autorizaciones registradas, y borrarlo borraría esa evidencia. Déjalo en borrador e inactivo: así no se ejecuta.',
+            OLD.name;
+    END IF;
+    -- BEFORE DELETE: devolver OLD deja seguir el borrado (NEW es NULL, §6.7).
+    RETURN OLD;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."workflow_borrado_guard"() OWNER TO "postgres";
 
 --
 -- Name: workflow_definicion_cambiada(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -1540,6 +1589,13 @@ CREATE OR REPLACE TRIGGER "trg_nodes_run_vivo" BEFORE INSERT OR DELETE OR UPDATE
 
 
 --
+-- Name: workflows trg_workflow_borrado_guard; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "trg_workflow_borrado_guard" BEFORE DELETE ON "public"."workflows" FOR EACH ROW EXECUTE FUNCTION "public"."workflow_borrado_guard"();
+
+
+--
 -- Name: workflows trg_workflows_estado_guard; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -2155,6 +2211,15 @@ GRANT ALL ON FUNCTION "public"."transicionar_flujo"("p_workflow_id" "uuid", "p_a
 
 
 --
+-- Name: FUNCTION "workflow_borrado_guard"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."workflow_borrado_guard"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."workflow_borrado_guard"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."workflow_borrado_guard"() TO "service_role";
+
+
+--
 -- Name: FUNCTION "workflow_definicion_cambiada"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -2371,5 +2436,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict xEE3BSG4nBCcAyNwECEnFli8beUEFDprbApk4PXF45CzLS7AuSKmv2FrmIfU9ao
+-- \unrestrict lQIklSsoCbWJBhklIAbjovJED5fVPb8ExWyhp0ASC6SgWxMGxkTL9EabZj5TXz2
 
