@@ -561,10 +561,19 @@ async function executeNode(
                 .select('id,numero_siniestro,estado,ramo,fecha_ocurrencia,monto_reclamado,monto_usd,moneda,asegurado_nombre,asegurado_documento,created_at')
                 .order('created_at', { ascending: false })
                 .limit(Number(cfg.limit) || 10);  // mismo tope que `limite`, abajo
-            // `estado` vacío o 'todos' ⇒ cualquier estado. Ausente ⇒ 'pendiente',
-            // que es lo que hacían los nodos guardados antes de existir el campo.
-            const estado = String(cfg.estado ?? 'pendiente').trim();
-            if (estado && estado !== 'todos') query = query.eq('estado', estado);
+            // `estado` vacío, ausente o 'todos' ⇒ cualquier estado. Se compara en
+            // minúsculas: «Todos» filtraba por estado='Todos' y devolvía 0 filas.
+            // Un estado que RiskGuard no conoce revienta: filtrar por él da 0
+            // siniestros sin error, que se lee igual que «hoy no hubo ninguno».
+            // (El antiguo defecto 'pendiente' era exactamente eso: no existe.)
+            // Lista copiada del CHECK de `siniestros.estado` en RiskGuard.
+            const ESTADOS_SINIESTRO = ['abierto', 'en_ajuste', 'en_evaluacion', 'aprobado', 'pagado', 'rechazado',
+                'cerrado', 'reabierto', 'aviso', 'asignado', 'inspeccion', 'dictamen', 'pago_parcial', 'pago_final', 'apelacion'];
+            const estadoCfg = String(cfg.estado ?? '').trim().toLowerCase();
+            const estado = estadoCfg === 'todos' ? '' : estadoCfg;
+            if (estado && !ESTADOS_SINIESTRO.includes(estado))
+                throw new Error(`«${cfg.estado}» no es un estado de siniestro de RiskGuard. Deja el campo vacío para leerlos todos, o usa uno de: ${ESTADOS_SINIESTRO.join(', ')}.`);
+            if (estado) query = query.eq('estado', estado);
             // Ventana de días: con un disparador diario y `dias=1` cada siniestro
             // se revisa una vez, no todos los días mientras siga pendiente.
             const dias = Number(cfg.dias);

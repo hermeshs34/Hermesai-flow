@@ -919,8 +919,8 @@ function RiskguardForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => voi
                 Lee siniestros de RiskGuard (solo lectura) con el nombre y documento del asegurado.
                 Ponlo después de un disparador <strong>Programado</strong> para revisarlos automáticamente.
             </div>
-            <Field label="Estado del siniestro" hint="Escribe «todos» para no filtrar por estado">
-                <Input value={cfg.estado ?? 'pendiente'} onChange={v => set('estado', v)} placeholder="pendiente" />
+            <Field label="Estado del siniestro" hint="Vacío = todos los estados. Valores de RiskGuard: abierto, en_ajuste, en_evaluacion, aviso, asignado, inspeccion, dictamen, aprobado, pagado, pago_parcial, pago_final, rechazado, cerrado, reabierto, apelacion">
+                <Input value={cfg.estado ?? ''} onChange={v => set('estado', v)} placeholder="todos" />
             </Field>
             <Field label="Solo los registrados en los últimos N días" hint="Con un disparador diario usa 1: cada siniestro se revisa una sola vez. Vacío = sin límite de fecha">
                 <Input value={cfg.dias ?? ''} onChange={v => set('dias', v)} placeholder="1" type="number" />
