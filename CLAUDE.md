@@ -693,7 +693,7 @@ tiene nodos, si no tiene ningún `type='trigger'`, o si le queda un
 flujos de producción: **4 no pasarían** (3 con una decisión sin configurar, entre
 ellos "Prueba Flujo 02032026"; 1 sin disparador, "Score AML Automático").
 
-⏳ **Cuarta validación, escrita y ensayada el 24/09/2026 pero SIN APLICAR**
+✅ **Cuarta validación, en producción desde el 24/09/2026**
 (`20260924_publicar_solo_nodos_implementados.sql`): no se publica un flujo con
 nodos que el motor no sabe ejecutar. El `default:` del `switch` devuelve
 `skipped` y el run acaba en `success`: el nodo parece instalado y no hace nada
