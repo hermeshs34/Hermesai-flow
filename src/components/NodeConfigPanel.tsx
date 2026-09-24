@@ -797,7 +797,7 @@ function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => vo
     const porMatriz = !cfg.approver;
 
     const MOTIVOS_RAPIDOS = [
-        { label: '🔍 OFAC/PEP', value: 'Persona {{previous.nombre_buscado}} encontrada en lista {{previous.hits.0.tipo_lista}}. Motivo: {{previous.hits.0.motivo}}. Revisar antes de continuar.' },
+        { label: '🔍 OFAC/ONU', value: 'Persona {{previous.nombre_buscado}} encontrada en lista {{previous.hits.0.tipo_lista}}. Motivo: {{previous.hits.0.motivo}}. Revisar antes de continuar.' },
         { label: '💰 Monto alto', value: 'Transacción de alto monto requiere autorización. Monto: {{previous.monto}}. Revisar políticas internas.' },
         { label: '🚨 Siniestro', value: 'Siniestro {{previous.id}} requiere revisión manual. Monto reclamado: {{previous.monto_reclamado}}.' },
         { label: '📋 General',   value: 'Este paso requiere revisión y aprobación antes de continuar el proceso.' },
@@ -874,7 +874,7 @@ function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => vo
 const NO_COINCIDENCIA_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff">
   <div style="background:linear-gradient(135deg,#14532d,#16a34a);padding:28px 24px;border-radius:12px 12px 0 0;text-align:center">
     <h1 style="color:#fff;margin:0;font-size:20px;font-weight:700">✅ Verificación Sin Observaciones</h1>
-    <p style="color:#bbf7d0;margin:8px 0 0;font-size:13px">Verificación OFAC/PEP/ONU — HermesAI Flow</p>
+    <p style="color:#bbf7d0;margin:8px 0 0;font-size:13px">Verificación OFAC/ONU/UE — HermesAI Flow</p>
   </div>
   <div style="padding:24px;background:#f8fafc">
     <p style="color:#374151;font-size:14px">La persona verificada <strong>no aparece</strong> en las listas restrictivas consultadas.</p>
@@ -894,7 +894,7 @@ const NO_COINCIDENCIA_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-w
 const OFAC_EMAIL_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff">
   <div style="background:linear-gradient(135deg,#7f1d1d,#dc2626);padding:28px 24px;border-radius:12px 12px 0 0;text-align:center">
     <h1 style="color:#fff;margin:0;font-size:20px;font-weight:700">⚠️ Alerta Listas Restrictivas</h1>
-    <p style="color:#fca5a5;margin:8px 0 0;font-size:13px">Verificación OFAC/PEP/ONU — HermesAI Flow</p>
+    <p style="color:#fca5a5;margin:8px 0 0;font-size:13px">Verificación OFAC/ONU/UE — HermesAI Flow</p>
   </div>
   <div style="padding:24px;background:#f8fafc">
     <p style="color:#374151;font-size:14px">Se detectó una coincidencia en las listas restrictivas:</p>
@@ -925,7 +925,7 @@ function RiskguardForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => voi
             <Field label="Solo los registrados en los últimos N días" hint="Con un disparador diario usa 1: cada siniestro se revisa una sola vez. Vacío = sin límite de fecha">
                 <Input value={cfg.dias ?? ''} onChange={v => set('dias', v)} placeholder="1" type="number" />
             </Field>
-            <Field label="Máximo de siniestros por ejecución">
+            <Field label="Máximo de siniestros por ejecución" hint="Para revisar listas, ponlo por encima de los siniestros de un día (p. ej. 500): los que pasen del máximo no se leen ni se revisan">
                 <Input value={cfg.limit ?? '10'} onChange={v => set('limit', v)} placeholder="10" type="number" />
             </Field>
         </div>
@@ -933,8 +933,11 @@ function RiskguardForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => voi
 }
 
 function AmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
-    const LISTAS_DISPONIBLES = ['OFAC', 'PEP', 'ONU', 'UE', 'LOCAL', 'INTERPOL'];
-    const listasSeleccionadas: string[] = cfg.listas ?? ['OFAC', 'PEP', 'ONU', 'UE'];
+    // Sin PEP: RiskGuard no carga listas PEP desde el 13/09/2026 (son comerciales
+    // y no redistribuibles); marcarla prometía una búsqueda que nunca encuentra
+    // nada. El defecto es el mismo que usa el motor cuando `listas` no está guardado.
+    const LISTAS_DISPONIBLES = ['OFAC', 'ONU', 'UE', 'LOCAL', 'INTERPOL'];
+    const listasSeleccionadas: string[] = (cfg.listas ?? LISTAS_DISPONIBLES).filter((l: string) => l !== 'PEP');
 
     const toggleLista = (lista: string) => {
         const nuevas = listasSeleccionadas.includes(lista)
@@ -947,7 +950,7 @@ function AmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
         <div className="space-y-4">
             <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-sm text-red-800">
                 <Shield className="w-4 h-4 inline mr-1.5" />
-                Consulta las listas OFAC, PEP, ONU y UE en RiskGuard. Devuelve si la persona está o no en lista.
+                Consulta las listas OFAC, ONU y UE (y las locales) en RiskGuard. La condición de PEP no se verifica aquí: se marca a mano en el caso de RiskGuard. Devuelve si la persona está o no en lista.
             </div>
 
             <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-800">
@@ -993,7 +996,8 @@ function AmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
                         ['hits.0.numero_siniestro', 'siniestro (solo en lote)'],
                         ['siniestros_revisados', 'cuántos se revisaron (lote)'],
                         ['sin_verificar', 'siniestros sin nombre ni documento'],
-                        ['hits.0.tipo_lista', 'OFAC / PEP / ONU...'],
+                        ['lote_incompleto', 'true si «Leer Siniestros» llegó a su máximo'],
+                        ['hits.0.tipo_lista', 'OFAC / ONU / UE...'],
                         ['hits.0.nombre', 'nombre en la lista'],
                         ['hits.0.motivo', 'razón de inclusión'],
                     ].map(([k, v]) => (

@@ -560,7 +560,7 @@ async function executeNode(
                 .from('siniestros')
                 .select('id,numero_siniestro,estado,ramo,fecha_ocurrencia,monto_reclamado,monto_usd,moneda,asegurado_nombre,asegurado_documento,created_at')
                 .order('created_at', { ascending: false })
-                .limit(Number(cfg.limit) || 10);
+                .limit(Number(cfg.limit) || 10);  // mismo tope que `limite`, abajo
             // `estado` vacío o 'todos' ⇒ cualquier estado. Ausente ⇒ 'pendiente',
             // que es lo que hacían los nodos guardados antes de existir el campo.
             const estado = String(cfg.estado ?? 'pendiente').trim();
@@ -569,12 +569,17 @@ async function executeNode(
             // se revisa una vez, no todos los días mientras siga pendiente.
             const dias = Number(cfg.dias);
             if (dias > 0) query = query.gte('created_at', new Date(Date.now() - dias * 86_400_000).toISOString());
+            const limite = Number(cfg.limit) || 10;
             const { data: siniestros, error } = await query;
             if (error) throw new Error(`RiskGuard: ${error.message}${error.hint ? ` — ${error.hint}` : ''}`);
-            return { siniestros: siniestros ?? [], count: siniestros?.length ?? 0, estado: estado || 'todos', dias: dias > 0 ? dias : null };
+            const count = siniestros?.length ?? 0;
+            // Llegar al tope significa que puede haber más siniestros que no se
+            // leyeron — y que nadie revisará en listas. Se dice, no se calla.
+            return { siniestros: siniestros ?? [], count, estado: estado || 'todos', dias: dias > 0 ? dias : null,
+                     limite, limite_alcanzado: count >= limite };
         }
 
-        // ── Verificación Listas Restrictivas (OFAC/PEP/ONU/UE) ───────────────
+        // ── Verificación Listas Restrictivas (OFAC/ONU/UE) ───────────────────
         case 'processor:aml': {
             const RG_URL = Deno.env.get('RISKGUARD_SUPABASE_URL');
             const RG_KEY = Deno.env.get('RISKGUARD_SERVICE_ROLE_KEY');
@@ -582,7 +587,9 @@ async function executeNode(
             // Parámetros del nodo: nombre y/o documento a verificar
             const nombre    = cfg.nombre    ? resolveValue(String(cfg.nombre),    context) : null;
             const documento = cfg.documento ? resolveValue(String(cfg.documento), context) : null;
-            const tiposLista: string[] = cfg.listas ?? ['OFAC', 'PEP', 'ONU', 'UE', 'LOCAL', 'INTERPOL'];
+            // Sin PEP: RiskGuard no la carga desde el 13/09/2026. Mismo defecto que
+            // `LISTAS_DISPONIBLES` de NodeConfigPanel.tsx.
+            const tiposLista: string[] = cfg.listas ?? ['OFAC', 'ONU', 'UE', 'LOCAL', 'INTERPOL'];
 
             // Sin credenciales RiskGuard → mock (entorno dev / secrets no configurados)
             if (!RG_URL || !RG_KEY) {
@@ -652,10 +659,14 @@ async function executeNode(
             // Siniestro"). Un nombre escrito en el nodo manda sobre el lote.
             if (!nombre && !documento) {
                 let siniestros: any[] | null = null;
+                let loteIncompleto = false;
                 const ids = Object.keys(context).filter(k => k !== '__lastNodeId');
                 for (let i = ids.length - 1; i >= 0 && !siniestros; i--) {
                     const v = context[ids[i]];
-                    if (v && typeof v === 'object' && Array.isArray(v.siniestros)) siniestros = v.siniestros;
+                    if (v && typeof v === 'object' && Array.isArray(v.siniestros)) {
+                        siniestros = v.siniestros;
+                        loteIncompleto = v.limite_alcanzado === true;
+                    }
                 }
                 if (!siniestros) {
                     throw new Error('El nodo Verificar OFAC necesita un nombre o documento, o ir después de un nodo que lea siniestros de RiskGuard para revisar a sus asegurados.');
@@ -692,6 +703,8 @@ async function executeNode(
                     siniestros_revisados: siniestros.length - sinDatos.length,
                     coincidencias,
                     sin_verificar:        sinDatos,
+                    // «Leer Siniestros» llegó a su tope: pudo quedar alguno sin leer.
+                    lote_incompleto:      loteIncompleto,
                     nombre_buscado:    enLista ? coincidencias.map(c => c.asegurado_nombre ?? c.asegurado_documento).join(', ') : null,
                     documento_buscado: enLista ? coincidencias.map(c => c.asegurado_documento).filter(Boolean).join(', ') || null : null,
                     timestamp:  new Date().toISOString(),

@@ -801,7 +801,9 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                             return prev;
                         }
                         const branch = existing.length === 0 ? 'true' : 'false';
-                        toast.info(branch === 'true' ? '✅ Rama SI conectada' : '❌ Rama NO conectada');
+                        // Es una confirmación, no un error: con «❌ Rama NO conectada» se leía como
+                        // «la rama NO no está conectada» justo cuando acababa de conectarse.
+                        toast.success(`Conectado a la rama ${branch === 'true' ? 'SÍ' : 'NO'}`);
                         return [...prev, { id: crypto.randomUUID(), sourceId: connectingFrom, targetId: nodeId, branch: branch as 'true' | 'false' }];
                     }
 

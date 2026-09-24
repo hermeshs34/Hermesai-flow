@@ -59,7 +59,7 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
         color: '#10b981',
         nodes: [
             { id: 'bcv-query',        type: 'processor', category: 'bcv',        title: 'Tasa BCV',              description: 'Obtener tasa de cambio oficial BCV del día',          icon: TrendingUp, color: '#f59e0b' },
-            { id: 'aml-score',        type: 'processor', category: 'aml',        title: 'Score AML',             description: 'Calcular riesgo AML del cliente (PEP, OFAC, ONU)',    icon: Shield,     color: '#ef4444' },
+            { id: 'aml-score',        type: 'processor', category: 'aml',        title: 'Score AML',             description: 'Calcular riesgo AML del cliente (OFAC, ONU, UE)',    icon: Shield,     color: '#ef4444' },
             { id: 'verificar-ofac',   type: 'processor', category: 'aml',        title: 'Verificar OFAC/ONU',    description: 'Consultar listas restrictivas internacionales',        icon: Search,     color: '#dc2626' },
             { id: 'congelar-op',      type: 'processor', category: 'operacion',  title: 'Congelar Operación',    description: 'Bloquear transacción sospechosa y notificar',         icon: Lock,       color: '#7c3aed' },
             { id: 'reporte-sudeban',  type: 'processor', category: 'regulatorio',title: 'Reporte SUDEBAN',       description: 'Generar reporte regulatorio bancario mensual',        icon: FileText,   color: '#0ea5e9' },
