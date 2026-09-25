@@ -474,12 +474,134 @@ async function reglaDeMatriz(
     return resultado.regla;
 }
 
+// ── RiskGuard: cliente y empresa ─────────────────────────────────────────────
+//
+// Flujos lee RiskGuard con su service role, que SE SALTA LA RLS: sin un
+// `.eq('empresa_id', …)` explícito una consulta devuelve las filas de TODAS las
+// empresas de RiskGuard, Demo incluida (contrato de RiskGuard del 26/09/2026).
+// La empresa sale de la configuración del nodo —campo «Empresa en RiskGuard»,
+// por NOMBRE, como el nodo de EE.FF.—, nunca de un UUID escrito en el código.
+// Sin empresa, o con un nombre que no casa con exactamente una, el nodo
+// revienta: no hay empresa por defecto, porque el defecto es lo que convertiría
+// un flujo mal configurado en uno que lee los datos de otro.
+
+function clienteRiskGuard(): any {
+    const url = Deno.env.get('RISKGUARD_SUPABASE_URL')?.trim().replace(/\/$/, '');
+    const key = Deno.env.get('RISKGUARD_SERVICE_ROLE_KEY');
+    if (!url || !key) {
+        throw new Error(
+            'Faltan las credenciales de RiskGuard (RISKGUARD_SUPABASE_URL / RISKGUARD_SERVICE_ROLE_KEY ' +
+            'en Supabase → Edge Functions → Secrets). El flujo se detiene en vez de dar un resultado inventado.'
+        );
+    }
+    if (!url.startsWith('https://') && !url.startsWith('http://')) {
+        throw new Error(
+            `RISKGUARD_SUPABASE_URL inválida. Valor actual: "${url.substring(0, 40)}...". ` +
+            `Debe ser: https://xxxx.supabase.co (sin /rest/v1 ni rutas extra)`
+        );
+    }
+    return createClient(url, key);
+}
+
+const normEmpresa = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+
+async function empresaRiskGuard(rg: any, nombre: unknown): Promise<{ id: string; nombre: string }> {
+    const buscado = String(nombre ?? '').trim();
+    if (!buscado) {
+        throw new Error(
+            'Falta la empresa de RiskGuard. Abre el nodo en el Constructor y escribe en «Empresa en RiskGuard» ' +
+            'el nombre de la empresa tal como aparece en RiskGuard. Sin ella el nodo leería los datos de todas ' +
+            'las empresas de RiskGuard, incluida la de demostración.'
+        );
+    }
+    const { data, error } = await rg.from('empresas').select('id, nombre, activa');
+    if (error) throw new Error(`RiskGuard empresas: ${error.message}${error.hint ? ` — ${error.hint}` : ''}`);
+    const casan = (data ?? []).filter((e: any) => normEmpresa(String(e.nombre ?? '')) === normEmpresa(buscado));
+    // No se enumeran las empresas que sí existen: son los clientes de RiskGuard,
+    // y este mensaje lo lee cualquiera que abra el Monitoreo de Flujos.
+    if (casan.length === 0) {
+        throw new Error(
+            `No hay en RiskGuard ninguna empresa llamada «${buscado}». Escribe el nombre exactamente como ` +
+            `aparece en RiskGuard (no distingue mayúsculas ni espacios de más).`
+        );
+    }
+    if (casan.length > 1) {
+        throw new Error(`Hay ${casan.length} empresas en RiskGuard llamadas «${buscado}»: no se puede saber cuál leer. Pide a RiskGuard que las distinga.`);
+    }
+    if (casan[0].activa === false) {
+        throw new Error(`La empresa «${casan[0].nombre}» está desactivada en RiskGuard.`);
+    }
+    return { id: casan[0].id, nombre: casan[0].nombre };
+}
+
+// ── Cola de revisión de asegurados de RiskGuard, para el correo ─────────────
+//
+// Desde el 26/09/2026 el cribado de asegurados lo hace RiskGuard (cada día a
+// las 05:00 UTC, y los lunes tras actualizar las listas) y la decisión persona
+// por persona se toma en SU pantalla. Este correo no decide nada: dice cuántas
+// personas hay por revisar y lleva a cada una con un enlace. Todo dato que
+// viene de RiskGuard pasa por `escaparHtml`. Colores: COLOR_BANDA, arriba.
+const MAX_FILAS_COLA = 25;
+
+function colaHtml(
+    filas: any[],
+    info: { empresa: string; personas: number; porBanda: Record<string, number>; escaladas: number; nuevas: number; desde: string | null; urlBase: string },
+): string {
+    const celdaEtq = 'padding:10px 14px;font-weight:700;color:#64748b;font-size:12px';
+    const resumen: [string, string][] = [
+        ['Empresa', info.empresa],
+        ['Personas por revisar', `${info.personas} (${filas.length} coincidencia(s) con listas)`],
+        ['Por banda', `Alta ${info.porBanda.alta} · Media ${info.porBanda.media} · Baja ${info.porBanda.baja}`],
+        ['Fuera de plazo (escaladas)', String(info.escaladas)],
+        ['Nuevas', info.desde ? `${info.nuevas} desde ${fechaHoraVE(info.desde)}` : `${info.nuevas} (primera ejecución: todas cuentan como nuevas)`],
+        ['Consultado', fechaHoraVE(new Date().toISOString())],
+    ];
+    const tablaResumen = `<table style="width:100%;border-collapse:collapse;margin:0 0 20px;border:1px solid #e2e8f0">
+      ${resumen.map(([k, v], i) => `<tr style="background:${i % 2 ? '#fff' : '#f8fafc'}"><td style="${celdaEtq};width:40%">${escaparHtml(k)}</td><td style="padding:10px 14px;font-weight:900;color:#0f172a;font-size:13px">${escaparHtml(v)}</td></tr>`).join('')}
+    </table>`;
+
+    if (filas.length === 0) {
+        return `${tablaResumen}<p style="background:#f0fdf4;border-left:4px solid #16a34a;border-radius:0 8px 8px 0;padding:12px 16px;color:#166534;font-size:13px;font-weight:700;margin:0">✅ No hay asegurados pendientes de revisión en RiskGuard</p>`;
+    }
+
+    const avisoEscalado = info.escaladas
+        ? `<p style="background:#fef2f2;border-left:4px solid #dc2626;border-radius:0 8px 8px 0;padding:10px 14px;color:#991b1b;font-size:12px;font-weight:700;margin:0 0 12px">⏰ ${info.escaladas} coincidencia(s) llevan más tiempo pendientes que el plazo fijado en RiskGuard. Este aviso no traspasa la decisión: sigue siendo del Oficial de Cumplimiento.</p>`
+        : '';
+
+    // Primero lo escalado, luego por score.
+    const orden = [...filas].sort((a, b) => Number(b.escalada) - Number(a.escalada) || Number(b.score) - Number(a.score));
+    const th = 'padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px';
+    const td = 'padding:8px 10px;font-size:12px;color:#0f172a;border-bottom:1px solid #f1f5f9;vertical-align:top';
+    const cuerpo = orden.slice(0, MAX_FILAS_COLA).map((f: any) => {
+        const color = COLOR_BANDA[f.banda] ?? '#64748b';
+        const sin = Array.isArray(f.siniestros) && f.siniestros.length
+            ? `<div style="color:#64748b;font-size:11px;margin-top:2px">Siniestro(s): ${escaparHtml(f.siniestros.slice(0, 3).join(', '))}${f.siniestros.length > 3 ? ` y ${f.siniestros.length - 3} más` : ''}</div>` : '';
+        const plazo = f.escalada
+            ? `<div style="color:#dc2626;font-size:10px;font-weight:700;margin-top:2px">ESCALADA</div>` : '';
+        return `<tr>
+          <td style="${td}"><strong>${escaparHtml(f.sujeto_nombre ?? '—')}</strong><div style="color:#64748b;font-size:11px;margin-top:2px">${escaparHtml(f.sujeto_documento ?? 'sin documento')}</div>${sin}</td>
+          <td style="${td}"><span style="font-weight:700">${escaparHtml(f.lista_tipo ?? '—')}</span> · ${escaparHtml(f.lista_nombre ?? '—')}</td>
+          <td style="${td};text-align:center;white-space:nowrap"><span style="color:${color};font-weight:900;font-size:14px">${escaparHtml(String(f.score ?? '—'))}</span><div style="color:${color};font-size:10px;font-weight:700;text-transform:uppercase">${f.metodo === 'documento' ? 'documento' : escaparHtml(f.banda ?? '')}</div>${plazo}</td>
+          <td style="${td};white-space:nowrap">${fechaVE(f.created_at)}<div style="margin-top:4px"><a href="${escaparHtml(info.urlBase + String(f.ruta ?? ''))}" style="color:#1d4ed8;font-weight:700;font-size:11px">Revisar →</a></div></td>
+        </tr>`;
+    }).join('');
+    const resto = filas.length > MAX_FILAS_COLA
+        ? `<tr><td colspan="4" style="padding:8px 10px;color:#64748b;font-size:11px">… y ${filas.length - MAX_FILAS_COLA} más — están todas en la cola de Cumplimiento de RiskGuard.</td></tr>` : '';
+
+    return `${tablaResumen}${avisoEscalado}<table style="width:100%;border-collapse:collapse;margin:0 0 12px;border:1px solid #e2e8f0">
+      <tr style="background:#f8fafc"><td style="${th}">Asegurado</td><td style="${th}">Entrada de lista</td><td style="${th};text-align:center">Score</td><td style="${th}">Detectada</td></tr>
+      ${cuerpo}${resto}
+    </table>
+    <p style="color:#94a3b8;font-size:11px;margin:12px 0 0">La decisión (confirmar o descartar) se toma en RiskGuard, persona por persona. «Detectada» es la primera vez que RiskGuard la encontró; no se reinicia al volver a cribar. Una coincidencia por nombre es un indicio para revisar, no una identificación.</p>`;
+}
+
 // ── Ejecutor de nodo individual ──────────────────────────────────────────────
 async function executeNode(
     node: any,
     context: Record<string, any>,
     db: any,
     organizationId: string,
+    run: { workflowId: string; runId: string | null },
 ): Promise<any> {
     const cfg      = node.config_json ?? {};
     const nodeKey  = `${node.type}:${node.category}`;
@@ -727,13 +849,13 @@ async function executeNode(
                 return { skipped: true, reason: 'RISKGUARD_SUPABASE_URL o RISKGUARD_SERVICE_ROLE_KEY no configurados' };
             }
             const rg = createClient(RG_URL, RG_KEY);
-            // El asegurado viaja en el resultado para que un "Verificar OFAC/ONU"
-            // posterior sin nombre fijo revise a CADA asegurado del lote. Antes el
-            // nodo AML solo sabía buscar un nombre escrito a mano, y el flujo
-            // "Alerta de Siniestro" revisaba siempre a la misma persona.
+            // Siempre acotado a UNA empresa: con la service role, sin este filtro
+            // salían los siniestros de todas, Demo incluida.
+            const empresaRG = await empresaRiskGuard(rg, cfg.empresa);
             let query = rg
                 .from('siniestros')
                 .select('id,empresa_id,numero_siniestro,estado,ramo,fecha_ocurrencia,monto_reclamado,monto_usd,moneda,asegurado_nombre,asegurado_documento,asegurado_oracle_id,created_at')
+                .eq('empresa_id', empresaRG.id)
                 .order('created_at', { ascending: false })
                 .limit(Number(cfg.limit) || 10);  // mismo tope que `limite`, abajo
             // `estado` vacío, ausente o 'todos' ⇒ cualquier estado. Se compara en
@@ -770,6 +892,7 @@ async function executeNode(
                     const { data: filas, error: errPadron } = await rg
                         .from('oracle_asegurados')
                         .select('empresa_id,id_oracle,nombre,rif_ci')
+                        .eq('empresa_id', empresaRG.id)
                         .in('id_oracle', ids.slice(i, i + 200));
                     if (errPadron) throw new Error(`RiskGuard padrón de asegurados: ${errPadron.message}${errPadron.hint ? ` — ${errPadron.hint}` : ''}`);
                     for (const f of filas ?? []) padron.set(`${f.empresa_id}|${f.id_oracle}`, f);
@@ -785,15 +908,12 @@ async function executeNode(
             const count = siniestros?.length ?? 0;
             // Llegar al tope significa que puede haber más siniestros que no se
             // leyeron — y que nadie revisará en listas. Se dice, no se calla.
-            return { siniestros: siniestros ?? [], count, estado: estado || 'todos', dias: dias > 0 ? dias : null,
+            return { siniestros: siniestros ?? [], count, empresa: empresaRG.nombre, estado: estado || 'todos', dias: dias > 0 ? dias : null,
                      limite, limite_alcanzado: count >= limite };
         }
 
         // ── Verificación Listas Restrictivas (OFAC/ONU/UE) ───────────────────
         case 'processor:aml': {
-            const RG_URL = Deno.env.get('RISKGUARD_SUPABASE_URL');
-            const RG_KEY = Deno.env.get('RISKGUARD_SERVICE_ROLE_KEY');
-
             // Parámetros del nodo: nombre y/o documento a verificar
             const nombre    = cfg.nombre    ? resolveValue(String(cfg.nombre),    context) : null;
             const documento = cfg.documento ? resolveValue(String(cfg.documento), context) : null;
@@ -801,28 +921,26 @@ async function executeNode(
             // `LISTAS_DISPONIBLES` de NodeConfigPanel.tsx.
             const tiposLista: string[] = cfg.listas ?? ['OFAC', 'ONU', 'UE', 'LOCAL', 'INTERPOL'];
 
-            // Sin credenciales RiskGuard NO se inventa nada. Hasta el 25/09/2026
-            // devolvía `en_lista: false` con un score al azar: una verificación
-            // de listas que no se hizo salía como «limpio», y la rama `false`
-            // de la decisión seguía como si nada. Decisión de Hermes: «prefiero
-            // que se detenga con error, que inventar».
-            if (!RG_URL || !RG_KEY) {
+            // El modo lote (sin nombre: cribar a cada asegurado de un «Leer
+            // Siniestros» anterior) se retiró el 26/09/2026. Ese cribado lo hace
+            // ahora RiskGuard cada día, con memoria de lo ya descartado y la
+            // decisión persona por persona en su pantalla; Flujos solo lee la
+            // cola con el nodo «Cola AML de RiskGuard». Cribar aquí también daría
+            // dos fuentes de verdad para la misma persona.
+            if (!nombre && !documento) {
                 throw new Error(
-                    'No se pudo verificar en listas restrictivas: faltan las credenciales de RiskGuard ' +
-                    '(RISKGUARD_SUPABASE_URL / RISKGUARD_SERVICE_ROLE_KEY en Supabase → Edge Functions → Secrets). ' +
-                    'El flujo se detiene en vez de dar un resultado inventado.'
+                    'Este nodo ya no revisa a los asegurados de un lote de siniestros: desde el 26/09/2026 lo hace ' +
+                    'RiskGuard cada día y la decisión se toma en su cola de Cumplimiento. Para avisar de lo pendiente ' +
+                    'usa el nodo «Cola AML de RiskGuard». Para verificar a una persona concreta, escribe aquí su nombre o documento.'
                 );
             }
 
-            // Limpiar y validar URL
-            const rgUrl = RG_URL.trim().replace(/\/$/, '');
-            if (!rgUrl.startsWith('https://') && !rgUrl.startsWith('http://')) {
-                throw new Error(
-                    `RISKGUARD_SUPABASE_URL inválida. Valor actual: "${rgUrl.substring(0, 40)}...". ` +
-                    `Debe ser: https://xxxx.supabase.co (sin /rest/v1 ni rutas extra)`
-                );
-            }
-            const rg = createClient(rgUrl, RG_KEY);
+            // Sin credenciales RiskGuard NO se inventa nada (decisión de Hermes
+            // del 25/09/2026: «prefiero que se detenga con error, que inventar»).
+            const rg = clienteRiskGuard();
+            // La lista LOCAL es de cada empresa: sin `p_empresa_id` la RPC solo
+            // ve las globales y una persona de la lista propia saldría limpia.
+            const empresaRG = await empresaRiskGuard(rg, cfg.empresa);
 
             // Una persona contra las listas, con el MISMO criterio que la cola de
             // screening de RiskGuard: su RPC `screening_candidatos` preselecciona
@@ -839,6 +957,7 @@ async function executeNode(
             const buscarEnListas = async (nom: string | null, doc: string | null): Promise<any[]> => {
                 const { data, error } = await rg.rpc('screening_candidatos', {
                     p_nombre: nom, p_documento: doc, p_umbral: UMBRAL_TRGM, p_limite: 200,
+                    p_empresa_id: empresaRG.id,
                 });
                 if (error) throw new Error(`RiskGuard screening: ${error.message}`);
                 const hits: any[] = [];
@@ -874,109 +993,6 @@ async function executeNode(
                 return banda === 'alta' ? 'alto' : banda === 'media' ? 'medio' : 'bajo';
             };
 
-            // ── Modo lote: sin nombre fijo, revisa a cada asegurado del lote ──
-            // Lo alimenta un nodo RiskGuard anterior ("Leer Siniestros" o "Alerta
-            // Siniestro"). Un nombre escrito en el nodo manda sobre el lote.
-            if (!nombre && !documento) {
-                let siniestros: any[] | null = null;
-                let loteIncompleto = false;
-                const ids = Object.keys(context).filter(k => k !== '__lastNodeId');
-                for (let i = ids.length - 1; i >= 0 && !siniestros; i--) {
-                    const v = context[ids[i]];
-                    if (v && typeof v === 'object' && Array.isArray(v.siniestros)) {
-                        siniestros = v.siniestros;
-                        loteIncompleto = v.limite_alcanzado === true;
-                    }
-                }
-                if (!siniestros) {
-                    throw new Error('El nodo Verificar OFAC necesita un nombre o documento, o ir después de un nodo que lea siniestros de RiskGuard para revisar a sus asegurados.');
-                }
-
-                const sinDatos: string[] = [];
-                // Se agrupa por PERSONA, no por siniestro: una sola consulta por
-                // persona y una sola fila en el correo, con sus siniestros al lado.
-                // Hasta el 25/09/2026 las coincidencias iban por siniestro y el
-                // correo repetía «José A. Rodríguez» siete veces.
-                const personas = new Map<string, { nom: string | null; doc: string | null; siniestros: string[] }>();
-                for (const s of siniestros) {
-                    const doc = String(s.asegurado_documento ?? '').trim() || null;
-                    const nom = String(s.asegurado_nombre ?? '').trim() || null;
-                    // Sin nombre ni documento NO es "limpio": es "no se pudo revisar",
-                    // y se devuelve aparte para que no se confunda con un negativo.
-                    if (!doc && !nom) { sinDatos.push(s.numero_siniestro ?? s.id); continue; }
-                    const k = `${doc ?? ''}|${(nom ?? '').toLowerCase()}`;
-                    const p = personas.get(k) ?? { nom, doc, siniestros: [] };
-                    p.siniestros.push(String(s.numero_siniestro ?? s.id));
-                    personas.set(k, p);
-                }
-
-                // De diez en diez: con cientos de personas en serie el nodo rozaba
-                // el límite de 150 s de la Edge Function.
-                // Un asegurado no es un barco ni un avión: una coincidencia POR
-                // NOMBRE con una entrada de tipo buque/aeronave es ruido seguro
-                // («Daniela A. Paredes» contra el buque «DANIEL», 25/09/2026). Se
-                // cuentan para que el descarte se vea. Por documento exacto se
-                // conservan: eso no es un parecido, y lo decide una persona.
-                const NO_ASEGURABLES = new Set(['buque', 'aeronave']);
-                let descartadasEntidad = 0;
-                const lista = [...personas.values()];
-                const coincidencias: any[] = [];
-                for (let i = 0; i < lista.length; i += 10) {
-                    const tanda = lista.slice(i, i + 10);
-                    const resultados = await Promise.all(tanda.map(p => buscarEnListas(p.nom, p.doc)));
-                    tanda.forEach((p, j) => {
-                        const hits = resultados[j].filter((h: any) =>
-                            h.metodo === 'documento' || !NO_ASEGURABLES.has(String(h.tipo_entidad ?? '').toLowerCase()));
-                        descartadasEntidad += resultados[j].length - hits.length;
-                        if (hits.length) coincidencias.push({
-                            asegurado_nombre:    p.nom,
-                            asegurado_documento: p.doc,
-                            siniestros:          p.siniestros,
-                            mejor_score:         mejorScore(hits),
-                            hits,
-                        });
-                    });
-                }
-                // La persona más comprometida primero.
-                coincidencias.sort((a, b) => b.mejor_score - a.mejor_score);
-
-                const enLista = coincidencias.length > 0;
-                const score = coincidencias.reduce((m, c) => Math.max(m, c.mejor_score), 0);
-                const siniestrosRevisados = siniestros.length - sinDatos.length;
-                return {
-                    en_lista:   enLista,
-                    // Aplanado y con la persona al lado, para que las plantillas de
-                    // aprobación y correo ({{previous.hits.0.tipo_lista}}) sigan valiendo.
-                    hits:       coincidencias.flatMap(c => c.hits.map((h: any) => ({
-                        ...h,
-                        asegurado_nombre: c.asegurado_nombre,
-                        numero_siniestro: c.siniestros.join(', '),
-                    }))),
-                    hit_count:  coincidencias.reduce((n, c) => n + c.hits.length, 0),
-                    aml_score:  score,
-                    nivel:      nivelDe(score),
-                    fuente:     'riskguard',
-                    criterio:   'screening RiskGuard',
-                    modo:       'lote',
-                    siniestros_revisados: siniestrosRevisados,
-                    personas_revisadas:   lista.length,
-                    personas_con_coincidencia: coincidencias.length,
-                    descartadas_buque_aeronave: descartadasEntidad,
-                    coincidencias,
-                    sin_verificar:        sinDatos,
-                    // «Leer Siniestros» llegó a su tope: pudo quedar alguno sin leer.
-                    lote_incompleto:      loteIncompleto,
-                    // Sin repetir: siete «José A. Rodríguez» con distinto documento son un nombre.
-                    nombre_buscado:    enLista ? [...new Set(coincidencias.map(c => c.asegurado_nombre ?? c.asegurado_documento))].join(', ') : null,
-                    documento_buscado: enLista ? coincidencias.map(c => c.asegurado_documento).filter(Boolean).join(', ') || null : null,
-                    coincidencias_html: tablaCoincidenciasHtml(coincidencias, {
-                        siniestrosRevisados, personasRevisadas: lista.length, sinVerificar: sinDatos, loteIncompleto,
-                        descartadasEntidad,
-                    }),
-                    timestamp:  new Date().toISOString(),
-                };
-            }
-
             const hits = await buscarEnListas(nombre, documento);
             const enLista = hits.length > 0;
             const amlScore = mejorScore(hits);
@@ -992,6 +1008,7 @@ async function executeNode(
                 nivel:      nivelDe(amlScore),
                 fuente:     'riskguard',
                 criterio:   'screening RiskGuard',
+                empresa:    empresaRG.nombre,
                 nombre_buscado:    nombre ?? null,
                 documento_buscado: documento ?? null,
                 coincidencias_html: tablaCoincidenciasHtml(coincidencias, {
@@ -999,6 +1016,106 @@ async function executeNode(
                     descartadasEntidad: 0,
                 }),
                 timestamp:  new Date().toISOString(),
+            };
+        }
+
+        // ── Cola AML de RiskGuard (asegurados por revisar) ────────────────────
+        // Contrato de RiskGuard del 26/09/2026: se lee la vista
+        // `v_cola_asegurados_pendientes`, siempre filtrada por empresa. Flujos
+        // NO recalcula nada de lo que RiskGuard ya decidió:
+        //   · `escalada` viene hecha; `dias_escalado` NULL = no escala nunca
+        //     (plazo no declarado o banda baja), y no se lee como 0.
+        //   · `created_at` es la PRIMERA detección y sobrevive a los re-cribados:
+        //     «nueva» = detectada después del arranque de la última ejecución
+        //     correcta de este flujo.
+        // Avisar de lo escalado no traspasa la decisión (§6.2): el correo va al
+        // Oficial de Cumplimiento (y sus suplentes con delegación vigente) y,
+        // si hay algo escalado, también a los administradores. Nadie más que el
+        // Oficial decide, y eso lo hace RiskGuard, no este nodo.
+        case 'processor:cola_aml': {
+            const rg = clienteRiskGuard();
+            const empresaRG = await empresaRiskGuard(rg, cfg.empresa);
+
+            // El enlace del correo lleva a la pantalla donde se decide. Sin la
+            // URL de RiskGuard se detiene: un correo con enlaces rotos es peor
+            // que un error en Monitoreo (misma doctrina que APP_URL, §6.4).
+            const urlBase = (Deno.env.get('RISKGUARD_APP_URL') ?? '').trim().replace(/\/$/, '');
+            if (!/^https?:\/\//.test(urlBase)) {
+                throw new Error(
+                    'Falta el secreto RISKGUARD_APP_URL (la dirección pública de RiskGuard, p. ej. https://xxxx.netlify.app) ' +
+                    'en Supabase → Edge Functions → Secrets. Sin él los enlaces del correo no llevarían a ningún sitio.'
+                );
+            }
+
+            const { data: cola, error: errCola } = await rg
+                .from('v_cola_asegurados_pendientes')
+                .select('id, empresa_id, asegurado_id, sujeto_nombre, sujeto_documento, lista_tipo, lista_nombre, score, banda, metodo, created_at, dias_escalado, escala_desde, escalada, siniestros, ruta')
+                .eq('empresa_id', empresaRG.id)
+                .order('created_at', { ascending: true })
+                .limit(5000);
+            if (errCola) throw new Error(`RiskGuard cola de asegurados: ${errCola.message}${errCola.hint ? ` — ${errCola.hint}` : ''}`);
+            const filas = (cola ?? []) as any[];
+            // 5000 filas es un tope técnico; llegar a él significa que la cuenta
+            // del correo sería falsa por lo bajo, y eso no se calla.
+            if (filas.length >= 5000) {
+                throw new Error('La cola de RiskGuard tiene 5000 o más coincidencias pendientes: el recuento del correo no sería fiable. Revisar el cribado en RiskGuard.');
+            }
+
+            // Última ejecución correcta de ESTE flujo, sin contar la actual.
+            let q = db.from('execution_runs')
+                .select('started_at')
+                .eq('organization_id', organizationId)
+                .eq('workflow_id', run.workflowId)
+                .eq('status', 'success')
+                .order('started_at', { ascending: false })
+                .limit(1);
+            if (run.runId) q = q.neq('id', run.runId);
+            const { data: previa, error: errPrevia } = await q;
+            if (errPrevia) throw new Error(`No se pudo leer la ejecución anterior del flujo: ${errPrevia.message}`);
+            const desde: string | null = previa?.[0]?.started_at ?? null;
+            const esNueva = (f: any) => !desde || Date.parse(f.created_at) > Date.parse(desde);
+
+            const porBanda: Record<string, number> = { alta: 0, media: 0, baja: 0 };
+            for (const f of filas) if (f.banda in porBanda) porBanda[f.banda]++;
+            const escaladas = filas.filter(f => f.escalada === true).length;
+            const nuevas = filas.filter(esNueva).length;
+            // Personas distintas, no coincidencias: una persona puede casar con
+            // varias entradas de lista y es una sola revisión.
+            const personas = new Set(filas.map(f => f.asegurado_id ?? `${f.sujeto_documento}|${f.sujeto_nombre}`)).size;
+
+            // Destinatarios: el Oficial (con suplentes por delegación) siempre;
+            // los administradores solo si hay algo fuera de plazo.
+            const destinatarios = new Map<string, string>();
+            for (const p of await destinatariosDelRol(db, organizationId, 'cumplimiento')) destinatarios.set(p.email.toLowerCase(), p.email);
+            if (escaladas > 0) {
+                for (const p of await destinatariosDelRol(db, organizationId, 'admin')) destinatarios.set(p.email.toLowerCase(), p.email);
+            }
+            // Sin nadie a quien avisar el correo saldría vacío o, peor, `{{previous.
+            // destinatarios}}` resolvería hacia atrás al campo de otro nodo.
+            if (destinatarios.size === 0) {
+                throw new Error('No hay ningún Oficial de Cumplimiento activo (ni suplente con delegación vigente) a quien avisar de la cola de RiskGuard.');
+            }
+
+            return {
+                empresa:        empresaRG.nombre,
+                pendientes:     filas.length,
+                personas,
+                por_banda:      porBanda,
+                alta:           porBanda.alta,
+                media:          porBanda.media,
+                baja:           porBanda.baja,
+                escaladas,
+                nuevas,
+                nuevas_desde:   desde,
+                hay_pendientes: filas.length > 0,
+                hay_escaladas:  escaladas > 0,
+                destinatarios:  [...destinatarios.values()].join(', '),
+                filas:          filas.map(f => ({ ...f, enlace: urlBase + String(f.ruta ?? '') })),
+                cola_html:      colaHtml(filas, { empresa: empresaRG.nombre, personas, porBanda, escaladas, nuevas, desde, urlBase }),
+                asunto:         escaladas > 0
+                    ? `⏰ ${personas} persona(s) por revisar en RiskGuard — ${escaladas} fuera de plazo`
+                    : `🔎 ${personas} persona(s) por revisar en RiskGuard${nuevas ? ` (${nuevas} nueva(s))` : ''}`,
+                timestamp:      new Date().toISOString(),
             };
         }
 
@@ -2084,7 +2201,7 @@ serve(async (req) => {
                     .update({ status: 'running' })
                     .eq('id', node.id);
 
-                const result = await executeNode(node, context, supabase, organizationId);
+                const result = await executeNode(node, context, supabase, organizationId, { workflowId, runId });
 
                 context[node.id] = result;
                 completedNodeIds.add(node.id);

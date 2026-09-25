@@ -51,7 +51,8 @@ const CATALOG: { label: string; color: string; nodes: NodeType[] }[] = [
             { id: 'escalar-reaseguro',       type: 'processor', category: 'reaseguro',   title: 'Escalar Reaseguro',       description: 'Si monto > XL → notificar reasegurador',            icon: ArrowUpRight,  color: '#f59e0b' },
             { id: 'notificar-ajustador',     type: 'output',    category: 'notificacion', title: 'Notificar Ajustador',    description: 'Email + WhatsApp al ajustador asignado',             icon: Bell,          color: '#6366f1' },
             { id: 'reporte-sudeaseg',        type: 'processor', category: 'regulatorio',  title: 'Reporte SUDEASEG',       description: 'Generar informe regulatorio en formato SUDEASEG',    icon: FileText,      color: '#8b5cf6' },
-            { id: 'score-fraude',            type: 'processor', category: 'fraude',       title: 'Score Fraude',           description: 'Calcular score de fraude con motor determinístico',  icon: Shield,        color: '#ef4444' },
+            { id: 'cola-aml-riskguard',      type: 'processor', category: 'cola_aml',     title: 'Cola AML de RiskGuard',  description: 'Asegurados pendientes de revisión en listas (decide RiskGuard)', icon: Shield, color: '#dc2626' },
+            { id: 'score-fraude',           type: 'processor', category: 'fraude',       title: 'Score Fraude',           description: 'Calcular score de fraude con motor determinístico',  icon: Shield,        color: '#ef4444' },
         ],
     },
     {

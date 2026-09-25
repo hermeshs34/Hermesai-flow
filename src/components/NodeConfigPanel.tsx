@@ -927,6 +927,7 @@ function RiskguardForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => voi
                 Lee siniestros de RiskGuard (solo lectura) con el nombre y documento del asegurado.
                 Ponlo después de un disparador <strong>Programado</strong> para revisarlos automáticamente.
             </div>
+            <EmpresaRiskGuardField cfg={cfg} set={set} />
             <Field label="Estado del siniestro" hint="Vacío = todos los estados. Valores de RiskGuard: abierto, en_ajuste, en_evaluacion, aviso, asignado, inspeccion, dictamen, aprobado, pagado, pago_parcial, pago_final, rechazado, cerrado, reabierto, apelacion">
                 <Input value={cfg.estado ?? ''} onChange={v => set('estado', v)} placeholder="todos" />
             </Field>
@@ -962,10 +963,12 @@ function AmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
             </div>
 
             <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-800">
-                <strong>Déjalo vacío para revisar un lote de siniestros:</strong> si este nodo va después de
-                «Leer Siniestros» o «Alerta Siniestro», revisa a <em>cada</em> asegurado del lote. Un nombre o
-                documento escrito aquí manda sobre el lote y revisa solo a esa persona.
+                Revisa a <strong>una</strong> persona. Los asegurados de los siniestros ya no se revisan aquí:
+                desde el 26/09/2026 los criba RiskGuard cada día y la decisión se toma allí, persona por persona.
+                Para avisar de lo pendiente usa el nodo <strong>«Cola AML de RiskGuard»</strong>.
             </div>
+
+            <EmpresaRiskGuardField cfg={cfg} set={set} />
 
             <Field label="Nombre de la persona a verificar" hint="Nombre completo tal como aparece en los documentos">
                 <Input value={cfg.nombre ?? ''} onChange={v => set('nombre', v)}
@@ -1000,14 +1003,60 @@ function AmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
                     {[
                         ['en_lista', 'true / false'],
                         ['hit_count', 'número de coincidencias'],
-                        ['nombre_buscado', 'nombre consultado (en lote: los que coinciden)'],
-                        ['hits.0.numero_siniestro', 'siniestro (solo en lote)'],
-                        ['siniestros_revisados', 'cuántos se revisaron (lote)'],
-                        ['sin_verificar', 'siniestros sin nombre ni documento'],
-                        ['lote_incompleto', 'true si «Leer Siniestros» llegó a su máximo'],
+                        ['nombre_buscado', 'nombre consultado'],
                         ['hits.0.tipo_lista', 'OFAC / ONU / UE...'],
                         ['hits.0.nombre', 'nombre en la lista'],
                         ['hits.0.motivo', 'razón de inclusión'],
+                    ].map(([k, v]) => (
+                        <div key={k}>
+                            <code className="bg-gray-200 px-1 rounded text-indigo-700">{`{{previous.${k}}}`}</code>
+                            <span className="text-gray-400 ml-1">{v}</span>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// La service role de RiskGuard se salta su RLS: sin empresa, una lectura trae
+// los datos de todas, la de demostración incluida. El motor se detiene si esto
+// falta o no casa con exactamente una empresa.
+function EmpresaRiskGuardField({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <Field label="Empresa en RiskGuard" hint="Obligatorio. El nombre tal como aparece en RiskGuard (no distingue mayúsculas). El nodo solo lee los datos de esa empresa.">
+            <Input value={cfg.empresa ?? ''} onChange={v => set('empresa', v)} placeholder="Ej: Seguros La Previsora C.A." />
+        </Field>
+    );
+}
+
+function ColaAmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
+    return (
+        <div className="space-y-4">
+            <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-sm text-red-800">
+                <Shield className="w-4 h-4 inline mr-1.5" />
+                Lee la cola de asegurados por revisar de RiskGuard (solo lectura). RiskGuard los criba cada día
+                y el Oficial de Cumplimiento decide allí, persona por persona. Este nodo <strong>no decide nada</strong>:
+                cuenta lo pendiente, marca lo que pasó de plazo y prepara el correo con un enlace a cada caso.
+            </div>
+            <EmpresaRiskGuardField cfg={cfg} set={set} />
+            <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-800">
+                Avisa al Oficial de Cumplimiento (y a su suplente si hay una delegación vigente). Si alguna
+                coincidencia pasó de su plazo, avisa también a los administradores — pero la decisión sigue
+                siendo del Oficial. Necesita el secreto <code>RISKGUARD_APP_URL</code> para los enlaces.
+            </div>
+            <div className="p-3 bg-gray-50 rounded-lg text-xs text-gray-500 space-y-1">
+                <p className="font-semibold text-gray-600">El nodo devuelve estos datos para usar en Decisión y Email:</p>
+                <div className="grid grid-cols-2 gap-1 mt-1">
+                    {[
+                        ['pendientes', 'coincidencias por revisar'],
+                        ['personas', 'personas distintas'],
+                        ['alta / media / baja', 'por banda'],
+                        ['escaladas', 'fuera de plazo'],
+                        ['nuevas', 'desde la última ejecución'],
+                        ['destinatarios', 'correos a quien avisar'],
+                        ['asunto', 'asunto sugerido'],
+                        ['cola_html', 'tabla lista para el correo'],
                     ].map(([k, v]) => (
                         <div key={k}>
                             <code className="bg-gray-200 px-1 rounded text-indigo-700">{`{{previous.${k}}}`}</code>
@@ -1147,6 +1196,7 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
     bcv:          TrendingUp,
     riskguard:    AlertTriangle,
     aml:          Shield,
+    cola_aml:     Shield,
     notificacion: Bell,
     inventario:   Package,
     aprobacion:   UserCheck,
@@ -1166,6 +1216,7 @@ const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, titl
     delay:        (c, s) => <DelayForm cfg={c} set={s} />,
     aprobacion:   (c, s) => <AprobacionForm cfg={c} set={s} />,
     aml:          (c, s) => <AmlForm cfg={c} set={s} />,
+    cola_aml:     (c, s) => <ColaAmlForm cfg={c} set={s} />,
     riskguard:    (c, s) => <RiskguardForm cfg={c} set={s} />,
     agente:       (c, s) => <AgenteIAForm cfg={c} set={s} />,
     // category 'indicadores' cubre tanto Leer Indicadores como Alerta KPI Crítico
@@ -1211,6 +1262,20 @@ function getAutoDefaults(node: WorkflowNodeData, prevNode: WorkflowNodeData | nu
             defaults.subject = '⚠️ Alerta Listas Restrictivas — {{previous.nombre_buscado}}';
         if (!node.config?.body)
             defaults.body = OFAC_EMAIL_TEMPLATE;
+    }
+
+    // Cola AML de RiskGuard → Decisión «hay pendientes» y Email ya armado.
+    // Tras la Decisión, `previous` busca hacia atrás y encuentra los campos de la cola.
+    if (node.category === 'decision' && prevNode.category === 'cola_aml') {
+        if (!node.config?.left)     defaults.left     = '{{previous.pendientes}}';
+        if (!node.config?.operator) defaults.operator = '>';
+        if (!node.config?.right)    defaults.right    = '0';
+    }
+    if (node.category === 'email' && prevNode.category === 'cola_aml') {
+        if (!node.config?.to)      defaults.to      = '{{previous.destinatarios}}';
+        if (!node.config?.subject) defaults.subject = '{{previous.asunto}}';
+        if (!node.config?.body)
+            defaults.body = '<p>Hay asegurados pendientes de revisión en RiskGuard. La decisión se toma allí, persona por persona.</p>{{previous.cola_html}}';
     }
 
     // Email después de aprobación → pre-llenar asunto y plantilla OFAC (datos del nodo AML siguen en contexto)

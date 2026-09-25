@@ -1045,6 +1045,46 @@ verde (288 ms) sin tocar `execute-workflow`, que sigue en v101 = HEAD.
 | Indicadores | KPIs, OKRs, tableros BSC | cron / umbral |
 | LegalTech | expedientes, vencimientos, honorarios, alertas RGPD | webhook / cron |
 
+### 8.2 La cola AML de asegurados es de RiskGuard — Flujos solo la LEE
+
+Desde el 26/09/2026 (encargo `ENCARGO_RISKGUARD_COLA_ASEGURADOS.md`, opción B de
+Hermes) **RiskGuard criba a los asegurados** —cada día a las 05:00 UTC y los
+lunes tras actualizar las listas— y el Oficial de Cumplimiento **decide allí,
+persona por persona** (confirmar / descartar con motivo; un descarte suprime
+6 meses). Flujos dejó de cribar lotes y de pedir una aprobación por lote:
+`processor:aml` en modo lote **revienta** y remite al nodo nuevo.
+
+**`processor:cola_aml` («Cola AML de RiskGuard»)** lee la vista
+`v_cola_asegurados_pendientes` y prepara el correo «tienes N personas por
+revisar en RiskGuard». Reglas del contrato, todas en el código:
+
+1. **Siempre `.eq('empresa_id', …)`.** La service role se salta la RLS de
+   RiskGuard: sin el filtro llegan los datos de todas las empresas, Demo
+   incluida. La empresa sale del campo **«Empresa en RiskGuard»** del nodo, por
+   nombre (`empresaRiskGuard()`), **nunca de un UUID en el código**; vacío, sin
+   casar o con dos que casan ⇒ el nodo revienta. Vale igual para
+   `processor:riskguard` (siniestros y padrón) y `processor:aml`, que además
+   pasa `p_empresa_id` a `screening_candidatos` (la lista LOCAL es por empresa).
+2. **`escalada` la calcula RiskGuard y no se recalcula aquí.** `dias_escalado`
+   NULL = no escala, nunca «0».
+3. **`created_at` es la primera detección** y sobrevive a los re-cribados.
+   «Nueva» = `created_at` posterior al arranque de la última ejecución
+   `success` de ese mismo flujo.
+4. **Escalar es AVISAR, no traspasar** (§6.2). Destinatarios: `cumplimiento`
+   (con suplentes, §6.6) siempre; `admin` solo si hay algo escalado. Sin nadie a
+   quien avisar, revienta.
+5. El enlace es `RISKGUARD_APP_URL + ruta`. **Sin ese secreto el nodo revienta**:
+   un correo con enlaces rotos es peor que un error (misma doctrina que `APP_URL`, §6.4).
+
+Flujo recomendado: Programado → Cola AML → Decisión `{{previous.pendientes}} > 0`
+→ Email a `{{previous.destinatarios}}`, asunto `{{previous.asunto}}`, cuerpo con
+`{{previous.cola_html}}`. El Constructor lo pre-rellena.
+
+⚠️ **`_shared/screeningNucleo.ts` es copia LITERAL del de RiskGuard**
+(`RiskGuard_Insurance/supabase/functions/_shared/screeningNucleo.ts`), sin
+cabecera propia: se verifica con un `diff` completo, que tiene que salir vacío.
+**Manda el de RiskGuard**; aquí no se edita a mano, se vuelve a copiar.
+
 ---
 
 ## 9. Motor de Ejecución — Edge Functions
@@ -1265,6 +1305,8 @@ ANTHROPIC_API_KEY=
 # Service Role Keys de los 4 sistemas (Solo en Edge Functions / Supabase Secrets)
 RISKGUARD_SUPABASE_URL=
 RISKGUARD_SERVICE_ROLE_KEY=
+# URL pública de RiskGuard: base de los enlaces «Revisar →» de la cola AML (§8.2)
+RISKGUARD_APP_URL=
 EEFF_SUPABASE_URL=
 EEFF_SERVICE_ROLE_KEY=
 INDICADORES_SUPABASE_URL=
@@ -1488,7 +1530,7 @@ hoy; para eso está ahora el vigilante, y para eso se mira `net._http_response`.
 ### F2 no está completa: falta LegalTech
 
 Los `case` reales del `switch` de `execute-workflow/index.ts` son `riskguard`, `aml`,
-`indicadores`, `eeff`, `semaforo`, `bcv`, `decision`, `aprobacion`, `agente`,
+`cola_aml`, `indicadores`, `eeff`, `semaforo`, `bcv`, `decision`, `aprobacion`, `agente`,
 `regulatorio`, `email`, `whatsapp`, `reporte` y `log`. **No hay ningún nodo LegalTech**, y
 `health-check` tampoco lo sondea: sus variables `LEGALTECH_SUPABASE_URL` /
 `LEGALTECH_SERVICE_ROLE_KEY` (§11) no las lee nadie. Ojo con confundirlo con

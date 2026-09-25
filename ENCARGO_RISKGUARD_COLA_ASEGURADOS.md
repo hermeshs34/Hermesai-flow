@@ -136,3 +136,13 @@ Hasta que RiskGuard lo tenga en producción, Flujos **sigue como está**.
    cerró en Flujos el 11/08. Al vencer se avisa al Oficial, a los
    administradores y a Hermes, y la decisión sigue siendo del Oficial, salvo
    la cobertura del punto 1. Este aviso es el que mandará Flujos (§3).
+
+## 5. Estado — 26/09/2026
+
+✅ **RiskGuard lo tiene en producción** (vista `v_cola_asegurados_pendientes`,
+cribado diario 05:00 UTC y los lunes tras las listas, `screening_candidatos`
+con `p_empresa_id`). **Lado de Flujos hecho en código** — ver CLAUDE.md §8.2:
+nodo nuevo `processor:cola_aml`, `processor:aml` sin modo lote, filtro por
+`empresa_id` en todas las lecturas de RiskGuard y `screeningNucleo.ts` copiado
+literal. Falta el despliegue (migración `20260926_publicar_nodo_cola_aml.sql`,
+secreto `RISKGUARD_APP_URL`, `execute-workflow`) y rehacer el flujo.

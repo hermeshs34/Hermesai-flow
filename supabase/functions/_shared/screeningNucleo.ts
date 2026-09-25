@@ -1,12 +1,3 @@
-// GEMELO COPIADO de RiskGuard_Insurance/supabase/functions/_shared/screeningNucleo.ts
-// — MANDA EL DE RISKGUARD. Flujos cruza con el MISMO criterio que la cola de
-// screening de RiskGuard, o los dos darían respuestas distintas a la misma
-// pregunta. No se edita aquí: se vuelve a copiar. Verificar con
-//   diff <(tail -n +10 este) <RiskGuard>/supabase/functions/_shared/screeningNucleo.ts
-// (todo salvo estas 9 líneas de cabecera). Copiado el 25/09/2026.
-//
-// Lo usa `processor:aml` de execute-workflow junto a la RPC de RiskGuard
-// `screening_candidatos` (lectura: STABLE, no escribe nada).
 /**
  * screeningNucleo.ts — NUCLEO PURO del motor de screening difuso.
  *
@@ -83,9 +74,12 @@ export const SCORE_MINIMO = 60
 /** Documento exacto => certeza máxima. */
 export const SCORE_DOCUMENTO = 100
 
+/** Score (0–100) desde el que una coincidencia es de banda alta. */
+export const SCORE_BANDA_ALTA = 85
+
 /** Bandas de revisión por score (0–100). */
 export function bandaPorScore(score: number): BandaScreening {
-  if (score >= 85) return 'alta'
+  if (score >= SCORE_BANDA_ALTA) return 'alta'
   if (score >= 72) return 'media'
   return 'baja'
 }
@@ -227,22 +221,53 @@ function similitudToken(a: string, b: string): number {
   return jaroWinkler(a, b)
 }
 
-/** Promedio Monge-Elkan y cobertura de `desde` medidos contra `hacia`. */
-function ladoMongeElkan(desde: string[], hacia: string[]): { promedio: number; cobertura: number } {
+/** ¿`a` y `b` casan SOLO porque una inicial abre la otra palabra? ("e" ~ "enrique") */
+function casaPorInicial(a: string, b: string): boolean {
+  return (a.length === 1) !== (b.length === 1) && similitudToken(a, b) === SIM_INICIAL
+}
+
+/**
+ * Promedio Monge-Elkan y cobertura de `desde` medidos contra `hacia`, y si
+ * algun token de `desde` debe su mejor pareja a una inicial expandida.
+ */
+function ladoMongeElkan(
+  desde: string[], hacia: string[],
+): { promedio: number; cobertura: number; porInicial: boolean } {
   let suma = 0
   let fuertes = 0
+  let porInicial = false
   for (const t of desde) {
     let mejor = 0
+    let pareja = ''
     for (const u of hacia) {
       const s = similitudToken(t, u)
-      if (s > mejor) mejor = s
+      if (s > mejor) { mejor = s; pareja = u }
       if (mejor === 1) break
     }
     suma += mejor
     if (mejor >= UMBRAL_TOKEN_FUERTE) fuertes++
+    if (mejor < 1 && casaPorInicial(t, pareja)) porInicial = true
   }
-  return { promedio: suma / desde.length, cobertura: fuertes / desde.length }
+  return { promedio: suma / desde.length, cobertura: fuertes / desde.length, porInicial }
 }
+
+/**
+ * Techo (0-1) de un nombre que casa gracias a una inicial expandida: el punto
+ * justo por debajo de SCORE_BANDA_ALTA, o sea el alto de la banda media.
+ *
+ * POR QUE (25/09/2026). El correo de Flujos de ese dia llevaba «Omar E. Bracho»
+ * a 87 (alta) contra la entrada LOCAL «Omar Enrique Bracho Aguilar», y «José A.
+ * Rodríguez» igual contra cualquier «José Antonio …», sin que casara el
+ * documento. «E.» puede ser Enrique o Eduardo: la inicial basta para SOSPECHAR
+ * (por eso SIM_INICIAL sigue en 0.9 y el par no cae bajo SCORE_MINIMO, que era
+ * el falso negativo del 12/09), no para IDENTIFICAR. La banda alta queda para
+ * nombres que casan palabra por palabra o para el documento exacto, que no
+ * pasa por aqui (SCORE_DOCUMENTO en screenSujeto).
+ *
+ * La misma inicial en los dos lados no es expansion y no lleva techo: es el
+ * nombre tal como lo publica la lista.
+ */
+const TECHO_CON_INICIAL = (SCORE_BANDA_ALTA - 1) / 100
 
 /**
  * Suelo del factor que aporta el nombre LARGO. Con 0.6, un nombre largo cuyos
@@ -282,5 +307,191 @@ export function similitudNombres(a: string, b: string): number {
   const desdeLargo = ladoMongeElkan(largo, corto)
 
   const base = desdeCorto.promedio * desdeCorto.cobertura
-  return base * (PISO_COBERTURA_LARGO + (1 - PISO_COBERTURA_LARGO) * desdeLargo.cobertura)
+  const sim = base * (PISO_COBERTURA_LARGO + (1 - PISO_COBERTURA_LARGO) * desdeLargo.cobertura)
+  return desdeCorto.porInicial || desdeLargo.porInicial ? Math.min(sim, TECHO_CON_INICIAL) : sim
+}
+
+// ── Memoria de las decisiones humanas (20260926) ─────────────────────────────
+
+/**
+ * Huella del CONTENIDO de una entrada de lista: tipo, nombre, documento, pais,
+ * motivo y tipo de entidad, normalizados. Se guarda en cada fila de la cola
+ * (`screening_coincidencias.lista_huella`) para saber si la entrada contra la
+ * que se descarto sigue diciendo lo mismo.
+ *
+ * `claveEntradaLista` dice QUIEN es la entrada (sobrevive a la resincronizacion
+ * que le cambia el id); la huella dice QUE dice. Si OFAC anade un documento o
+ * cambia el programa, la clave es la misma y la huella no: el descarte deja de
+ * suprimir y la coincidencia vuelve a la cola. `fecha_actualizacion` NO entra:
+ * cambia en cada sincronizacion aunque la entrada sea identica.
+ *
+ * FNV-1a de 32 bits: sin imports, igual en la app y en el cron. No es criptografica
+ * ni lo necesita — una colision solo haria que un descarte siguiera valiendo.
+ */
+export function huellaEntradaLista(c: {
+  lista_tipo: string | null
+  lista_nombre: string | null
+  lista_documento: string | null
+  lista_pais: string | null
+  lista_motivo: string | null
+  lista_tipo_entidad: string | null
+}): string {
+  const doc = (c.lista_documento ?? '').replace(/\s/g, '').toUpperCase()
+  const texto = [
+    claveEntradaLista(c.lista_tipo, c.lista_nombre),
+    doc,
+    (c.lista_pais ?? '').trim().toUpperCase(),
+    normalizarNombre(c.lista_motivo ?? ''),
+    (c.lista_tipo_entidad ?? '').trim().toLowerCase(),
+  ].join('|')
+  let h = 0x811c9dc5
+  for (let i = 0; i < texto.length; i++) {
+    h ^= texto.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return `v1:${(h >>> 0).toString(16).padStart(8, '0')}`
+}
+
+/** Una decision previa del MISMO sujeto, tal como la guarda la cola. */
+export interface DecisionPrevia {
+  lista_tipo: string | null
+  lista_nombre: string | null
+  /** NULL en las filas anteriores a 20260926: no se sabe que decia la entrada. */
+  lista_huella: string | null
+  estado: 'confirmada' | 'descartada'
+  revisado_at: string | null
+  created_at: string
+}
+
+/** Suma meses de calendario en UTC. Un dia de mas o de menos a fin de mes no cambia nada aqui. */
+function sumarMeses(ms: number, meses: number): number {
+  const d = new Date(ms)
+  d.setUTCMonth(d.getUTCMonth() + meses)
+  return d.getTime()
+}
+
+/**
+ * Que coincidencias de un sujeto entran en la cola, dadas sus decisiones previas.
+ * La usan la app (`screeningCola.registrar`) y el cron (`reScreenAll`): una
+ * sola regla, como el motor de similitud.
+ *
+ * Por entrada de lista (`claveEntradaLista`) manda la decision MAS RECIENTE:
+ *   · confirmada → no se duplica nunca. Ya es un verdadero positivo; lo que
+ *     toca es el caso AML, no otra fila en la cola.
+ *   · descartada → suprime mientras se cumplan las DOS condiciones:
+ *       - la entrada dice lo mismo (misma huella; sin huella guardada, la
+ *         fila es anterior a 20260926 y se da por igual), y
+ *       - no han pasado `mesesSupresion` meses desde la decision.
+ *     `mesesSupresion` NULL = la empresa no lo ha declarado: el descarte no
+ *     caduca (lo que hacia el sistema antes de 20260926). Nunca se lee como 0,
+ *     que reabriria cada descarte en la siguiente corrida.
+ *
+ * Hasta el 26/09/2026 un descarte suprimia PARA SIEMPRE y sin mirar si la
+ * entrada habia cambiado: si OFAC le anadia un documento a la entrada
+ * descartada, el sujeto no volvia a la cola jamas.
+ */
+export function coincidenciasAEncolar<C extends CoincidenciaScreening>(
+  coincidencias: C[],
+  decisiones: DecisionPrevia[],
+  mesesSupresion: number | null,
+  ahora: Date,
+): C[] {
+  const ultima = new Map<string, DecisionPrevia>()
+  // Date.parse y no comparar cadenas: PostgREST y el cliente no escriben la
+  // zona igual (`+00:00` frente a `Z`).
+  const fecha = (d: DecisionPrevia) => Date.parse(d.revisado_at ?? d.created_at)
+  for (const d of decisiones) {
+    const k = claveEntradaLista(d.lista_tipo, d.lista_nombre)
+    const prev = ultima.get(k)
+    if (!prev || fecha(d) > fecha(prev)) ultima.set(k, d)
+  }
+  return coincidencias.filter(c => {
+    const d = ultima.get(claveEntradaLista(c.lista_tipo, c.lista_nombre))
+    if (!d) return true
+    if (d.estado === 'confirmada') return false
+    if (d.lista_huella && d.lista_huella !== huellaEntradaLista(c)) return true
+    if (mesesSupresion === null) return false
+    return sumarMeses(fecha(d), mesesSupresion) <= ahora.getTime()
+  })
+}
+
+// ── Pertinencia por tipo de entidad (20260926, decision de Hermes) ───────────
+
+/**
+ * Cedula venezolana de persona natural: V (venezolano) o E (extranjero
+ * residente), con o sin guion, puntos o espacios. J, G, P y cualquier otra
+ * cosa NO cuentan: una J es juridica y de un pasaporte no se sabe nada.
+ */
+export function esCedulaPersonaNatural(documento: string | null): boolean {
+  const d = (documento ?? '').replace(/[\s.\-]/g, '').toUpperCase()
+  return /^[VE]\d+$/.test(d)
+}
+
+/**
+ * Quita de las coincidencias de un sujeto las que no pueden ser el: un buque o
+ * una aeronave de la lista frente a un ASEGURADO con cedula V- o E-.
+ *
+ * El 12/09/2026 se decidio mostrar el tipo de entidad como pista y NO filtrar,
+ * porque del sujeto de un caso o de un ROS no se sabe si es persona natural o
+ * juridica: en AML el error caro es el falso negativo. Del asegurado con
+ * cedula V- o E- si se sabe. Medido en la re-criba de Atlantida (Demo) del
+ * 25/09/2026: «DANIEL» (buque, OFAC) casaba con cada «Daniela A. Paredes»
+ * y «MARIA» (buque) con «Maria G. Perez».
+ *
+ * Solo la coincidencia POR NOMBRE: la de documento exacto no se toca nunca.
+ * Casos, beneficiarios, clientes DDC y ROS pasan intactos.
+ */
+export function coincidenciasPertinentes<C extends CoincidenciaScreening>(
+  sujeto: { tipo: string; documento: string | null },
+  coincidencias: C[],
+): C[] {
+  if (sujeto.tipo !== 'asegurado' || !esCedulaPersonaNatural(sujeto.documento)) return coincidencias
+  return coincidencias.filter(c => {
+    if (c.metodo === 'documento') return true
+    const t = (c.lista_tipo_entidad ?? '').trim().toLowerCase()
+    return t !== 'buque' && t !== 'aeronave'
+  })
+}
+
+// ── Fecha de primera deteccion (25/09/2026) ─────────────────────────────────
+
+/** Lo que hace falta de una pendiente anterior para conservar su fecha. */
+export interface PendientePrevia {
+  lista_tipo: string | null
+  lista_nombre: string | null
+  created_at: string
+}
+
+/**
+ * Fecha de primera deteccion de cada coincidencia pendiente, por entrada de
+ * lista (`claveEntradaLista`: el id de la entrada cambia en cada resync).
+ *
+ * Cada re-criba borra y reinserta las pendientes del sujeto. Hasta el
+ * 25/09/2026 la fila reinsertada tomaba `created_at = now()`, y de esa fecha
+ * cuelgan el escalado (`dias_escalado_*`) y el «entraron hoy» de Flujos: con
+ * el cribado diario el reloj volvia a cero cada madrugada y NADA escalaba
+ * nunca. Con esto la fila reinsertada conserva la fecha de la primera vez.
+ * Si hubiera dos previas para la misma entrada, manda la mas antigua.
+ */
+export function fechasPrimeraDeteccion(previas: PendientePrevia[]): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const p of previas) {
+    const clave = claveEntradaLista(p.lista_tipo, p.lista_nombre)
+    const actual = out.get(clave)
+    if (!actual || Date.parse(p.created_at) < Date.parse(actual)) out.set(clave, p.created_at)
+  }
+  return out
+}
+
+/**
+ * `created_at` para una fila que se va a encolar: el de su primera deteccion o,
+ * si es nueva, `ahoraISO`. Se escribe SIEMPRE explicito: en un insert por lotes
+ * una clave ausente en algunas filas se manda como NULL, no como DEFAULT.
+ */
+export function fechaDeteccion(
+  previas: Map<string, string>,
+  c: { lista_tipo: string | null; lista_nombre: string | null },
+  ahoraISO: string,
+): string {
+  return previas.get(claveEntradaLista(c.lista_tipo, c.lista_nombre)) ?? ahoraISO
 }
