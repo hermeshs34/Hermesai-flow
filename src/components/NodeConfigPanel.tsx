@@ -406,7 +406,8 @@ function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void })
                 <p className="text-xs text-gray-400 mt-1">
                     Variables: <code className="bg-gray-100 px-1 rounded">{'{{previous.bcv_rate}}'}</code>{' '}
                     <code className="bg-gray-100 px-1 rounded">{'{{previous.en_lista}}'}</code>{' '}
-                    <code className="bg-gray-100 px-1 rounded">{'{{previous.nombre_buscado}}'}</code>
+                    <code className="bg-gray-100 px-1 rounded">{'{{previous.nombre_buscado}}'}</code>{' '}
+                    <code className="bg-gray-100 px-1 rounded">{'{{previous.coincidencias_html}}'}</code>
                 </p>
             </div>
             <Field label="Remitente (opcional)" hint="Dejar vacío usa el remitente por defecto del sistema">
@@ -891,25 +892,32 @@ const NO_COINCIDENCIA_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-w
   </div>
 </div>`;
 
-const OFAC_EMAIL_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff">
-  <div style="background:linear-gradient(135deg,#7f1d1d,#dc2626);padding:28px 24px;border-radius:12px 12px 0 0;text-align:center">
-    <h1 style="color:#fff;margin:0;font-size:20px;font-weight:700">⚠️ Alerta Listas Restrictivas</h1>
-    <p style="color:#fca5a5;margin:8px 0 0;font-size:13px">Verificación OFAC/ONU/UE — HermesAI Flow</p>
+// Estilo de los correos de alerta de RiskGuard. La tabla la arma el motor
+// (`coincidencias_html` del nodo Verificar OFAC) con TODAS las coincidencias,
+// agrupadas por persona; antes esta plantilla leía `hits.0.*` y enseñaba solo
+// la primera de todo el lote.
+const OFAC_EMAIL_TEMPLATE = `<div style="background:#f8fafc;padding:24px 0;font-family:Arial,sans-serif">
+<div style="max-width:640px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
+  <div style="background:#0a0f1e;padding:20px 28px">
+    <div style="color:#fff;font-weight:900;font-size:14px;letter-spacing:1px">⚠ HermesAI Flow</div>
+    <div style="color:#64748b;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:2px">Sistema de Alertas</div>
   </div>
-  <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">Se detectó una coincidencia en las listas restrictivas:</p>
-    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:8px;border:1px solid #e5e7eb;margin:16px 0">
-      <tr style="background:#fef2f2"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Nombre buscado</td><td style="padding:12px 16px;font-size:13px;font-weight:700;color:#dc2626">{{previous.nombre_buscado}}</td></tr>
-      <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Lista</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.hits.0.tipo_lista}}</td></tr>
-      <tr style="background:#fef2f2"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Nombre en lista</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.hits.0.nombre}}</td></tr>
-      <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">País</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.hits.0.pais}}</td></tr>
-      <tr style="background:#fef2f2"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Motivo</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.hits.0.motivo}}</td></tr>
-    </table>
-    <div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:16px">
-      <p style="margin:0;font-size:13px;color:#92400e"><strong>Acción requerida:</strong> Este proceso requiere revisión y aprobación antes de continuar.</p>
-    </div>
-    <p style="color:#9ca3af;font-size:11px;text-align:center">HermesAI Flow · Automatización Inteligente de Procesos</p>
+  <div style="background:#dc262615;border-left:4px solid #dc2626;padding:14px 28px">
+    <span style="color:#dc2626;font-weight:900;font-size:13px;text-transform:uppercase;letter-spacing:1px">⚡ Coincidencias en listas restrictivas</span>
   </div>
+  <div style="padding:24px 28px 0">
+    <h1 style="margin:0;font-size:20px;font-weight:900;color:#0f172a">Verificación OFAC / ONU / UE</h1>
+  </div>
+  <div style="padding:20px 28px 28px;color:#374151;font-size:14px;line-height:1.6">
+    {{previous.coincidencias_html}}
+    <p style="background:#f1f5f9;border-radius:8px;padding:10px 14px;color:#475569;font-size:12px;margin:16px 0 0">
+      Una coincidencia por nombre es un indicio, no una identificación: confirmar con el documento de identidad antes de actuar.
+    </p>
+  </div>
+  <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:14px 28px">
+    <span style="color:#94a3b8;font-size:11px;font-weight:700">© 2026 HermesAI Tech — Confidencial · GAFI/AML</span>
+  </div>
+</div>
 </div>`;
 
 function RiskguardForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {

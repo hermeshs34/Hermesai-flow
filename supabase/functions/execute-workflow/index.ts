@@ -10,6 +10,10 @@ import { fechaHoraVE, fechaVE } from '../_shared/fecha.ts';
 import { resolverRegla, type ReglaMatriz } from '../_shared/matriz.ts';
 import { destinatariosDelRol } from '../_shared/delegaciones.ts';
 import { resolverModelo, saldosBalanceVacios, saldosResultadoVacios } from '../_shared/modelosFinancieros.ts';
+import {
+    bandaPorScore, similitudNombres, UMBRAL_TRGM, SCORE_MINIMO, SCORE_DOCUMENTO,
+    type CandidatoLista, type MetodoScreening,
+} from '../_shared/screeningNucleo.ts';
 
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -260,6 +264,78 @@ function buildContextSummary(context: Record<string, any>): string {
     return rows
         ? `<table style="width:100%;border-collapse:collapse;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb">${rows}</table>`
         : '<p style="color:#9ca3af;font-size:13px">Sin datos disponibles</p>';
+}
+
+// ── Tabla de coincidencias en listas restrictivas, para el correo ───────────
+//
+// TODAS las coincidencias, una cabecera por persona con sus siniestros, y
+// debajo cada entrada de lista con su score. Estilo de los correos de alerta de
+// RiskGuard (`_shared/alertas.ts` de ese proyecto). Sale del motor como campo
+// `coincidencias_html` —el sufijo `_html` es lo que `buildContextSummary`
+// reconoce como HTML propio— y la plantilla lo usa con
+// {{previous.coincidencias_html}}. Antes la plantilla leía `hits.0.*` y el
+// correo enseñaba solo la primera coincidencia de todo el lote.
+//
+// Todo dato que viene de RiskGuard pasa por `escaparHtml`.
+const COLOR_BANDA: Record<string, string> = { alta: '#dc2626', media: '#d97706', baja: '#64748b' };
+const ETIQUETA_ENTIDAD: Record<string, string> = {
+    individual: 'Persona', entidad: 'Entidad', buque: 'Buque', aeronave: 'Aeronave',
+};
+
+function tablaCoincidenciasHtml(
+    coincidencias: any[],
+    info: { siniestrosRevisados: number | null; personasRevisadas: number; sinVerificar: string[]; loteIncompleto: boolean },
+): string {
+    const celdaEtq = 'padding:10px 14px;font-weight:700;color:#64748b;font-size:12px';
+    const resumen: [string, string][] = [];
+    if (info.siniestrosRevisados !== null) resumen.push(['Siniestros revisados', String(info.siniestrosRevisados)]);
+    resumen.push(['Personas revisadas', String(info.personasRevisadas)]);
+    resumen.push(['Personas con coincidencia', String(coincidencias.length)]);
+    resumen.push(['Verificado', fechaHoraVE(new Date().toISOString())]);
+    resumen.push(['Criterio', `Screening RiskGuard — documento exacto o nombre con score ≥ ${SCORE_MINIMO}`]);
+    const tablaResumen = `<table style="width:100%;border-collapse:collapse;margin:0 0 20px;border:1px solid #e2e8f0">
+      ${resumen.map(([k, v], i) => `<tr style="background:${i % 2 ? '#fff' : '#f8fafc'}"><td style="${celdaEtq};width:45%">${escaparHtml(k)}</td><td style="padding:10px 14px;font-weight:900;color:#0f172a;font-size:13px">${escaparHtml(v)}</td></tr>`).join('')}
+    </table>`;
+
+    const avisos: string[] = [];
+    if (info.loteIncompleto) avisos.push('El lote de siniestros llegó a su tope: puede haber siniestros que no se leyeron ni se cruzaron con las listas.');
+    if (info.sinVerificar.length) avisos.push(`${info.sinVerificar.length} siniestro(s) sin nombre ni documento del asegurado: NO se pudieron verificar (${info.sinVerificar.map(String).join(', ')}).`);
+    const htmlAvisos = avisos.map(a =>
+        `<p style="background:#fffbeb;border-left:4px solid #f59e0b;border-radius:0 8px 8px 0;padding:10px 14px;color:#92400e;font-size:12px;font-weight:600;margin:0 0 12px">${escaparHtml(a)}</p>`
+    ).join('');
+
+    if (coincidencias.length === 0) {
+        return `${tablaResumen}${htmlAvisos}<p style="background:#f0fdf4;border-left:4px solid #16a34a;border-radius:0 8px 8px 0;padding:12px 16px;color:#166534;font-size:13px;font-weight:700;margin:0">✅ Sin coincidencias en listas restrictivas</p>`;
+    }
+
+    const th = 'padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px';
+    const td = 'padding:8px 10px;font-size:12px;color:#0f172a;border-bottom:1px solid #f1f5f9;vertical-align:top';
+    const bloques = coincidencias.map((c: any) => {
+        const quien = escaparHtml(c.asegurado_nombre ?? c.asegurado_documento ?? '—');
+        const doc = c.asegurado_documento && c.asegurado_nombre
+            ? ` <span style="color:#94a3b8;font-weight:400;font-size:11px">(${escaparHtml(c.asegurado_documento)})</span>` : '';
+        const sins = (c.siniestros ?? []).length
+            ? `<div style="color:#cbd5e1;font-size:11px;font-weight:400;margin-top:2px">Siniestro${c.siniestros.length > 1 ? 's' : ''}: ${escaparHtml(c.siniestros.join(', '))}</div>` : '';
+        const filas = (c.hits ?? []).map((h: any) => {
+            const color = COLOR_BANDA[h.banda] ?? '#64748b';
+            const entidad = h.tipo_entidad ? ETIQUETA_ENTIDAD[h.tipo_entidad] ?? h.tipo_entidad : null;
+            const extra = [entidad, h.pais, h.documento ? `Doc. ${h.documento}` : null].filter(Boolean).map(x => escaparHtml(String(x))).join(' · ');
+            return `<tr>
+              <td style="${td};font-weight:700;white-space:nowrap">${escaparHtml(h.tipo_lista ?? '—')}</td>
+              <td style="${td}"><strong>${escaparHtml(h.nombre ?? '—')}</strong>${extra ? `<div style="color:#64748b;font-size:11px;margin-top:2px">${extra}</div>` : ''}</td>
+              <td style="${td};color:#475569;font-size:11px">${escaparHtml(h.motivo ?? '—')}</td>
+              <td style="${td};text-align:center;white-space:nowrap"><span style="color:${color};font-weight:900;font-size:14px">${escaparHtml(String(h.score ?? '—'))}</span><div style="color:${color};font-size:10px;font-weight:700;text-transform:uppercase">${h.metodo === 'documento' ? 'documento' : escaparHtml(h.banda ?? '')}</div></td>
+            </tr>`;
+        }).join('');
+        return `<table style="width:100%;border-collapse:collapse;margin:0 0 16px;border:1px solid #e2e8f0">
+          <tr><td colspan="4" style="background:#0f172a;padding:10px 14px;color:#fff;font-weight:900;font-size:13px">${quien}${doc}${sins}</td></tr>
+          <tr style="background:#f8fafc"><td style="${th}">Lista</td><td style="${th}">Nombre en lista</td><td style="${th}">Motivo</td><td style="${th};text-align:center">Score</td></tr>
+          ${filas}
+        </table>`;
+    }).join('');
+
+    return `${tablaResumen}${htmlAvisos}${bloques}
+    <p style="color:#94a3b8;font-size:11px;margin:4px 0 0">Score 0–100: documento exacto = ${SCORE_DOCUMENTO}; por nombre, alta ≥ 85, media ≥ 72, baja ≥ ${SCORE_MINIMO}. Una coincidencia por nombre es un indicio para revisar, no una identificación.</p>`;
 }
 
 // ── Quién aprueba, según la matriz ──────────────────────────────────────────
@@ -649,52 +725,54 @@ async function executeNode(
             }
             const rg = createClient(rgUrl, RG_KEY);
 
-            // Una persona contra las listas: por documento (exacto) Y por nombre
-            // (parcial, con post-filtro de dos palabras). Antes el documento
-            // EXCLUÍA al nombre, y las listas OFAC/ONU/UE casi nunca traen una
-            // cédula venezolana: quien tenía documento no se cruzaba por nombre
-            // jamás, y salía limpio sin haber sido comparado.
+            // Una persona contra las listas, con el MISMO criterio que la cola de
+            // screening de RiskGuard: su RPC `screening_candidatos` preselecciona
+            // por trigramas (o documento exacto) y `screeningNucleo.ts` —gemelo
+            // copiado— puntúa 0–100. Documento exacto = 100; por nombre se
+            // reporta desde SCORE_MINIMO (60). Hasta el 25/09/2026 esto era un
+            // `ilike` sobre la palabra más larga con tope de 20 filas y un
+            // post-filtro de «dos palabras en común»: casó «José A. Rodríguez»
+            // con «José Dionisio BRITO RODRÍGUEZ», y con un apellido común el
+            // tope de 20 podía dejar fuera al sancionado de verdad. Si Flujos y
+            // RiskGuard cribaran distinto, la misma persona saldría limpia en uno
+            // y señalada en el otro.
+            const tiposPedidos = new Set(tiposLista.map(t => String(t).toUpperCase()));
             const buscarEnListas = async (nom: string | null, doc: string | null): Promise<any[]> => {
-                const porDoc = doc ? await buscarPorDocumento(doc) : [];
-                const porNombre = nom ? await buscarPorNombre(nom) : [];
-                const vistos = new Set(porDoc.map((h: any) => h.id));
-                return [...porDoc, ...porNombre.filter((h: any) => !vistos.has(h.id))];
-            };
-            const buscarPorDocumento = async (doc: string): Promise<any[]> => {
-                const res = await rg
-                    .from('listas_restrictivas')
-                    .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
-                    .in('tipo_lista', tiposLista)
-                    .eq('activo', true)
-                    .eq('documento', doc)
-                    .limit(10);
-                if (res.error) throw new Error(`RiskGuard listas: ${res.error.message}`);
-                return res.data ?? [];
-            };
-            const buscarPorNombre = async (nom: string): Promise<any[]> => {
-                // El tipo explícito no es adorno: sin él los callbacks de abajo dan TS7006.
-                const palabras: string[] = nom.trim().split(/\s+/);
-                const palabraMasFuerte = palabras.reduce((a, b) => b.length > a.length ? b : a, palabras[0]);
-                const res = await rg
-                    .from('listas_restrictivas')
-                    .select('id, tipo_lista, nombre, documento, pais, motivo, fecha_inclusion')
-                    .in('tipo_lista', tiposLista)
-                    .eq('activo', true)
-                    .ilike('nombre', `%${palabraMasFuerte}%`)
-                    .limit(20);
-                if (res.error) throw new Error(`RiskGuard listas: ${res.error.message}`);
-                // Post-filtrar: al menos 2 palabras del nombre deben coincidir
-                const resData = res.data ?? [];
-                const nombreLower = nom.toLowerCase();
-                const hits = resData.filter((r: any) => {
-                    const rl = (r.nombre ?? '').toLowerCase();
-                    return palabras.filter(p => p.length > 2 && rl.includes(p.toLowerCase())).length >= Math.min(2, palabras.length);
+                const { data, error } = await rg.rpc('screening_candidatos', {
+                    p_nombre: nom, p_documento: doc, p_umbral: UMBRAL_TRGM, p_limite: 200,
                 });
-                // Si no hay coincidencias con 2 palabras, usar resultado ilike directo
-                if (hits.length === 0 && resData.length > 0) {
-                    return resData.filter((r: any) => (r.nombre ?? '').toLowerCase().includes(nombreLower));
+                if (error) throw new Error(`RiskGuard screening: ${error.message}`);
+                const hits: any[] = [];
+                for (const c of (data ?? []) as CandidatoLista[]) {
+                    // La RPC no filtra por lista; las que el nodo no pidió se descartan aquí.
+                    if (!tiposPedidos.has(String(c.tipo_lista).toUpperCase())) continue;
+                    let score: number;
+                    let metodo: MetodoScreening;
+                    if (c.doc_exacto) {
+                        score = SCORE_DOCUMENTO;
+                        metodo = 'documento';
+                    } else {
+                        if (!nom) continue;
+                        score = Math.round(similitudNombres(nom, c.nombre) * 100);
+                        metodo = 'nombre_fuzzy';
+                        if (score < SCORE_MINIMO) continue;
+                    }
+                    // Mismos campos que antes (id, tipo_lista, nombre, documento, pais,
+                    // motivo) para que las plantillas {{previous.hits.0.*}} sigan valiendo.
+                    hits.push({
+                        id: c.id, tipo_lista: c.tipo_lista, nombre: c.nombre, documento: c.documento,
+                        pais: c.pais, motivo: c.motivo, tipo_entidad: c.tipo_entidad ?? null,
+                        score, banda: bandaPorScore(score), metodo,
+                    });
                 }
+                hits.sort((a, b) => b.score - a.score);
                 return hits;
+            };
+            const mejorScore = (hits: any[]) => hits.reduce((m, h) => Math.max(m, h.score), 0);
+            const nivelDe = (score: number) => {
+                if (score === 0) return 'bajo';
+                const banda = bandaPorScore(score);
+                return banda === 'alta' ? 'alto' : banda === 'media' ? 'medio' : 'bajo';
             };
 
             // ── Modo lote: sin nombre fijo, revisa a cada asegurado del lote ──
@@ -715,83 +793,98 @@ async function executeNode(
                     throw new Error('El nodo Verificar OFAC necesita un nombre o documento, o ir después de un nodo que lea siniestros de RiskGuard para revisar a sus asegurados.');
                 }
 
-                const coincidencias: any[] = [];
                 const sinDatos: string[] = [];
-                // Una consulta por PERSONA, no por siniestro, y de diez en diez: con
-                // cientos de siniestros en serie el nodo rozaba el límite de 150 s
-                // de la Edge Function.
-                const porPersona = new Map<string, Promise<any[]>>();
-                const clave = (nom: string | null, doc: string | null) => `${doc ?? ''}|${(nom ?? '').toLowerCase()}`;
-                const aRevisar = siniestros.filter((s: any) => {
+                // Se agrupa por PERSONA, no por siniestro: una sola consulta por
+                // persona y una sola fila en el correo, con sus siniestros al lado.
+                // Hasta el 25/09/2026 las coincidencias iban por siniestro y el
+                // correo repetía «José A. Rodríguez» siete veces.
+                const personas = new Map<string, { nom: string | null; doc: string | null; siniestros: string[] }>();
+                for (const s of siniestros) {
                     const doc = String(s.asegurado_documento ?? '').trim() || null;
                     const nom = String(s.asegurado_nombre ?? '').trim() || null;
                     // Sin nombre ni documento NO es "limpio": es "no se pudo revisar",
                     // y se devuelve aparte para que no se confunda con un negativo.
-                    if (!doc && !nom) { sinDatos.push(s.numero_siniestro ?? s.id); return false; }
-                    return true;
-                });
-                const personas = [...new Map(aRevisar.map((s: any) => {
-                    const doc = String(s.asegurado_documento ?? '').trim() || null;
-                    const nom = String(s.asegurado_nombre ?? '').trim() || null;
-                    return [clave(nom, doc), { nom, doc }] as const;
-                })).entries()];
-                for (let i = 0; i < personas.length; i += 10) {
-                    const tanda = personas.slice(i, i + 10).map(([k, p]) => {
-                        const pr = buscarEnListas(p.nom, p.doc);
-                        porPersona.set(k, pr);
-                        return pr;
-                    });
-                    await Promise.all(tanda);
-                }
-                for (const s of aRevisar) {
-                    const doc = String(s.asegurado_documento ?? '').trim() || null;
-                    const nom = String(s.asegurado_nombre ?? '').trim() || null;
-                    const hits = await porPersona.get(clave(nom, doc))!;
-                    if (hits.length) coincidencias.push({
-                        numero_siniestro:    s.numero_siniestro ?? s.id,
-                        asegurado_nombre:    nom,
-                        asegurado_documento: doc,
-                        hits,
-                    });
+                    if (!doc && !nom) { sinDatos.push(s.numero_siniestro ?? s.id); continue; }
+                    const k = `${doc ?? ''}|${(nom ?? '').toLowerCase()}`;
+                    const p = personas.get(k) ?? { nom, doc, siniestros: [] };
+                    p.siniestros.push(String(s.numero_siniestro ?? s.id));
+                    personas.set(k, p);
                 }
 
+                // De diez en diez: con cientos de personas en serie el nodo rozaba
+                // el límite de 150 s de la Edge Function.
+                const lista = [...personas.values()];
+                const coincidencias: any[] = [];
+                for (let i = 0; i < lista.length; i += 10) {
+                    const tanda = lista.slice(i, i + 10);
+                    const resultados = await Promise.all(tanda.map(p => buscarEnListas(p.nom, p.doc)));
+                    tanda.forEach((p, j) => {
+                        if (resultados[j].length) coincidencias.push({
+                            asegurado_nombre:    p.nom,
+                            asegurado_documento: p.doc,
+                            siniestros:          p.siniestros,
+                            mejor_score:         mejorScore(resultados[j]),
+                            hits:                resultados[j],
+                        });
+                    });
+                }
+                // La persona más comprometida primero.
+                coincidencias.sort((a, b) => b.mejor_score - a.mejor_score);
+
                 const enLista = coincidencias.length > 0;
+                const score = coincidencias.reduce((m, c) => Math.max(m, c.mejor_score), 0);
+                const siniestrosRevisados = siniestros.length - sinDatos.length;
                 return {
                     en_lista:   enLista,
-                    // Aplanado y con el siniestro al lado, para que las plantillas
-                    // de aprobación y correo ({{previous.hits.0.tipo_lista}}) sigan valiendo.
-                    hits:       coincidencias.flatMap(c => c.hits.map((h: any) => ({ ...h, numero_siniestro: c.numero_siniestro }))),
+                    // Aplanado y con la persona al lado, para que las plantillas de
+                    // aprobación y correo ({{previous.hits.0.tipo_lista}}) sigan valiendo.
+                    hits:       coincidencias.flatMap(c => c.hits.map((h: any) => ({
+                        ...h,
+                        asegurado_nombre: c.asegurado_nombre,
+                        numero_siniestro: c.siniestros.join(', '),
+                    }))),
                     hit_count:  coincidencias.reduce((n, c) => n + c.hits.length, 0),
-                    aml_score:  enLista ? 100 : 0,
-                    nivel:      enLista ? 'alto' : 'bajo',
+                    aml_score:  score,
+                    nivel:      nivelDe(score),
                     fuente:     'riskguard',
+                    criterio:   'screening RiskGuard',
                     modo:       'lote',
-                    siniestros_revisados: siniestros.length - sinDatos.length,
-                    personas_revisadas:   personas.length,
+                    siniestros_revisados: siniestrosRevisados,
+                    personas_revisadas:   lista.length,
+                    personas_con_coincidencia: coincidencias.length,
                     coincidencias,
                     sin_verificar:        sinDatos,
                     // «Leer Siniestros» llegó a su tope: pudo quedar alguno sin leer.
                     lote_incompleto:      loteIncompleto,
                     nombre_buscado:    enLista ? coincidencias.map(c => c.asegurado_nombre ?? c.asegurado_documento).join(', ') : null,
                     documento_buscado: enLista ? coincidencias.map(c => c.asegurado_documento).filter(Boolean).join(', ') || null : null,
+                    coincidencias_html: tablaCoincidenciasHtml(coincidencias, {
+                        siniestrosRevisados, personasRevisadas: lista.length, sinVerificar: sinDatos, loteIncompleto,
+                    }),
                     timestamp:  new Date().toISOString(),
                 };
             }
 
             const hits = await buscarEnListas(nombre, documento);
             const enLista = hits.length > 0;
-            // Score: 100 si está en lista, 0 si no
-            const amlScore = enLista ? 100 : 0;
+            const amlScore = mejorScore(hits);
+            const coincidencias = enLista
+                ? [{ asegurado_nombre: nombre, asegurado_documento: documento, siniestros: [], mejor_score: amlScore, hits }]
+                : [];
 
             return {
                 en_lista:   enLista,
                 hits,
                 hit_count:  hits.length,
                 aml_score:  amlScore,
-                nivel:      enLista ? 'alto' : 'bajo',
+                nivel:      nivelDe(amlScore),
                 fuente:     'riskguard',
+                criterio:   'screening RiskGuard',
                 nombre_buscado:    nombre ?? null,
                 documento_buscado: documento ?? null,
+                coincidencias_html: tablaCoincidenciasHtml(coincidencias, {
+                    siniestrosRevisados: null, personasRevisadas: 1, sinVerificar: [], loteIncompleto: false,
+                }),
                 timestamp:  new Date().toISOString(),
             };
         }
