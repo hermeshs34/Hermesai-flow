@@ -72,6 +72,15 @@ contra su propio código y su base.
    banda alta sin documento. Es el criterio de `screening_candidatos`; su
    gemelo en Flujos (`_shared/screeningNucleo.ts`) se copia después, porque
    manda el de RiskGuard.
+6. **Una entrada de lista ficticia está generando alertas.** En el correo del
+   25/09, «Omar E. Bracho» (4 asegurados) casó con **87 (banda alta)** contra la
+   entrada LOCAL «Omar Enrique Bracho Aguilar». Su propio motivo dice que es una
+   entrada DEMO **ficticia** sembrada por la migración `20260912`, que no
+   corresponde a ninguna persona real y que se puede borrar sin afectar a
+   producción. Hay que decidir si se borra.
+
+   Con este punto y el 5, **las dos únicas personas del correo** vienen de
+   defectos de RiskGuard, no de coincidencias reales.
 
 ## 3. El contrato con Flujos — lo único que Flujos necesita LEER
 
