@@ -708,8 +708,8 @@ ejecuciones o autorizaciones**. `workflows` borra en cascada `execution_runs`,
 `execution_logs`, `tareas_aprobacion` y `workflow_autorizaciones`, así que un
 clic de admin se llevaba toda la evidencia. Un flujo que ya no sirve se deja en
 borrador e inactivo. ⚠️ **Hueco — cerrado por `20260925_cerrar_escritura_directa_runs_tareas.sql`
-(ensayada 12/12 con rollback el 25/09/2026; comprobar en `pg_policies` que
-está aplicada antes de fiarse de esta línea).** `tareas_aprobacion` tenía
+(ensayada 12/12 con rollback y aplicada por Hermes el 25/09/2026; comprobada
+después en `pg_policies` y en los permisos por columna).** `tareas_aprobacion` tenía
 `org_isolation` para ALL: cualquier usuario de la organización podía, por API,
 borrar tareas **o ponerles `estado='aprobado'`** sin pasar por
 `resolve-approval` ni por §6.2. `execution_runs` dejaba reescribir

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict lQIklSsoCbWJBhklIAbjovJED5fVPb8ExWyhp0ASC6SgWxMGxkTL9EabZj5TXz2
+-- \restrict GbfGBxLVWYy7xS4ZfvTtua6TB1UNd6EMiyuLgoOPaNhnBB9bdb3W0bg2v5OjSny
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -1926,13 +1926,6 @@ CREATE POLICY "integrations_tenant_read" ON "public"."integrations" FOR SELECT T
 
 
 --
--- Name: execution_logs logs_system_insert; Type: POLICY; Schema: public; Owner: postgres
---
-
-CREATE POLICY "logs_system_insert" ON "public"."execution_logs" FOR INSERT TO "authenticated" WITH CHECK (("organization_id" = "public"."my_organization_id"()));
-
-
---
 -- Name: execution_logs logs_tenant_read; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -1981,13 +1974,6 @@ CREATE POLICY "org_admin_update" ON "public"."organizations" FOR UPDATE TO "auth
 
 
 --
--- Name: tareas_aprobacion org_isolation; Type: POLICY; Schema: public; Owner: postgres
---
-
-CREATE POLICY "org_isolation" ON "public"."tareas_aprobacion" USING (("organization_id" = "public"."my_organization_id"()));
-
-
---
 -- Name: organizations org_read_own; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -2021,17 +2007,10 @@ CREATE POLICY "profiles_read_own_org" ON "public"."profiles" FOR SELECT TO "auth
 
 
 --
--- Name: execution_runs runs_system_insert; Type: POLICY; Schema: public; Owner: postgres
+-- Name: execution_runs runs_marcar_resuelto; Type: POLICY; Schema: public; Owner: postgres
 --
 
-CREATE POLICY "runs_system_insert" ON "public"."execution_runs" FOR INSERT TO "authenticated" WITH CHECK (("organization_id" = "public"."my_organization_id"()));
-
-
---
--- Name: execution_runs runs_system_update; Type: POLICY; Schema: public; Owner: postgres
---
-
-CREATE POLICY "runs_system_update" ON "public"."execution_runs" FOR UPDATE TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+CREATE POLICY "runs_marcar_resuelto" ON "public"."execution_runs" FOR UPDATE TO "authenticated" USING ((("organization_id" = "public"."my_organization_id"()) AND ("status" = 'error'::"text"))) WITH CHECK ((("organization_id" = "public"."my_organization_id"()) AND ("status" = 'cancelled'::"text")));
 
 
 --
@@ -2046,6 +2025,13 @@ CREATE POLICY "runs_tenant_read" ON "public"."execution_runs" FOR SELECT TO "aut
 --
 
 ALTER TABLE "public"."tareas_aprobacion" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: tareas_aprobacion tareas_tenant_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "tareas_tenant_read" ON "public"."tareas_aprobacion" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
 
 --
 -- Name: vigilante_reloj; Type: ROW SECURITY; Schema: public; Owner: postgres
@@ -2268,8 +2254,8 @@ GRANT ALL ON TABLE "public"."delegaciones" TO "service_role";
 -- Name: TABLE "execution_logs"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."execution_logs" TO "anon";
-GRANT ALL ON TABLE "public"."execution_logs" TO "authenticated";
+GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."execution_logs" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."execution_logs" TO "authenticated";
 GRANT ALL ON TABLE "public"."execution_logs" TO "service_role";
 
 
@@ -2277,9 +2263,16 @@ GRANT ALL ON TABLE "public"."execution_logs" TO "service_role";
 -- Name: TABLE "execution_runs"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."execution_runs" TO "anon";
-GRANT ALL ON TABLE "public"."execution_runs" TO "authenticated";
+GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."execution_runs" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."execution_runs" TO "authenticated";
 GRANT ALL ON TABLE "public"."execution_runs" TO "service_role";
+
+
+--
+-- Name: COLUMN "execution_runs"."status"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("status") ON TABLE "public"."execution_runs" TO "authenticated";
 
 
 --
@@ -2322,8 +2315,8 @@ GRANT ALL ON TABLE "public"."profiles" TO "service_role";
 -- Name: TABLE "tareas_aprobacion"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "anon";
-GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "authenticated";
+GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."tareas_aprobacion" TO "anon";
+GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."tareas_aprobacion" TO "authenticated";
 GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "service_role";
 
 
@@ -2436,5 +2429,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict lQIklSsoCbWJBhklIAbjovJED5fVPb8ExWyhp0ASC6SgWxMGxkTL9EabZj5TXz2
+-- \unrestrict GbfGBxLVWYy7xS4ZfvTtua6TB1UNd6EMiyuLgoOPaNhnBB9bdb3W0bg2v5OjSny
 

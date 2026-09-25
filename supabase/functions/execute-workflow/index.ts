@@ -268,74 +268,166 @@ function buildContextSummary(context: Record<string, any>): string {
 
 // ── Tabla de coincidencias en listas restrictivas, para el correo ───────────
 //
-// TODAS las coincidencias, una cabecera por persona con sus siniestros, y
-// debajo cada entrada de lista con su score. Estilo de los correos de alerta de
-// RiskGuard (`_shared/alertas.ts` de ese proyecto). Sale del motor como campo
-// `coincidencias_html` —el sufijo `_html` es lo que `buildContextSummary`
-// reconoce como HTML propio— y la plantilla lo usa con
-// {{previous.coincidencias_html}}. Antes la plantilla leía `hits.0.*` y el
-// correo enseñaba solo la primera coincidencia de todo el lote.
+// Sale del motor como campo `coincidencias_html` —el sufijo `_html` es lo que
+// `buildContextSummary` reconoce como HTML propio— y la plantilla lo usa con
+// {{previous.coincidencias_html}}. Estilo de los correos de alerta de RiskGuard.
+//
+// El correo es para DECIDIR QUÉ REVISAR, no el expediente. El 25/09/2026 el
+// primer lote completo (376 siniestros) mandó 26 bloques y una pared de 256
+// números de siniestro delante de todo; Hermes: «son muchas y no sé qué
+// mostrar». Desde entonces:
+//   · una tabla con una fila por persona, solo bandas alta y media, con tope;
+//   · la misma persona repetida (mismo nombre y mismas coincidencias, distinto
+//     documento) sale UNA vez con sus documentos al lado;
+//   · detalle de entradas solo para la banda alta, y con tope por persona;
+//   · la banda baja se CUENTA pero no se detalla;
+//   · los siniestros sin datos del asegurado van a un recuadro de calidad de
+//     datos, al final, con unos pocos de ejemplo.
+// Nada de esto cambia la decisión del flujo (`en_lista` sigue contando todas
+// las bandas): solo lo que se enseña. El detalle completo queda en la salida
+// del nodo (`coincidencias`, `sin_verificar`) y se ve en Monitoreo.
 //
 // Todo dato que viene de RiskGuard pasa por `escaparHtml`.
 const COLOR_BANDA: Record<string, string> = { alta: '#dc2626', media: '#d97706', baja: '#64748b' };
 const ETIQUETA_ENTIDAD: Record<string, string> = {
     individual: 'Persona', entidad: 'Entidad', buque: 'Buque', aeronave: 'Aeronave',
 };
+const MAX_FILAS_TABLA = 25;
+const MAX_BLOQUES_DETALLE = 10;
+const MAX_ENTRADAS_POR_PERSONA = 3;
+const MAX_EJEMPLOS_SIN_VERIFICAR = 10;
+
+const enumerar = (xs: string[], max: number) =>
+    xs.length <= max ? xs.join(', ') : `${xs.slice(0, max).join(', ')} y ${xs.length - max} más`;
+
+// Personas con el mismo nombre y exactamente las mismas coincidencias (mismas
+// entradas por el mismo método) se juntan. Si una casa por documento y la otra
+// solo por nombre, NO se juntan: no significan lo mismo.
+function agruparCoincidencias(coincidencias: any[]) {
+    const grupos = new Map<string, any>();
+    for (const c of coincidencias) {
+        const quien = c.asegurado_nombre ? String(c.asegurado_nombre).trim().toLowerCase() : `doc:${c.asegurado_documento}`;
+        const k = `${quien}|${(c.hits ?? []).map((h: any) => `${h.id}:${h.metodo}`).sort().join(',')}`;
+        const g = grupos.get(k);
+        if (g) {
+            if (c.asegurado_documento) g.documentos.push(String(c.asegurado_documento));
+            g.siniestros.push(...(c.siniestros ?? []));
+            g.personas++;
+        } else {
+            grupos.set(k, {
+                nombre: c.asegurado_nombre ?? null,
+                documentos: c.asegurado_documento ? [String(c.asegurado_documento)] : [],
+                siniestros: [...(c.siniestros ?? [])],
+                personas: 1,
+                mejor_score: c.mejor_score,
+                banda: bandaPorScore(c.mejor_score),
+                hits: c.hits ?? [],
+            });
+        }
+    }
+    return [...grupos.values()].sort((a, b) => b.mejor_score - a.mejor_score);
+}
 
 function tablaCoincidenciasHtml(
     coincidencias: any[],
-    info: { siniestrosRevisados: number | null; personasRevisadas: number; sinVerificar: string[]; loteIncompleto: boolean },
+    info: {
+        siniestrosRevisados: number | null; personasRevisadas: number; sinVerificar: string[];
+        loteIncompleto: boolean; descartadasEntidad: number;
+    },
 ): string {
+    const grupos = agruparCoincidencias(coincidencias);
+    const porBanda = { alta: 0, media: 0, baja: 0 } as Record<string, number>;
+    for (const c of coincidencias) porBanda[bandaPorScore(c.mejor_score)]++;
+
     const celdaEtq = 'padding:10px 14px;font-weight:700;color:#64748b;font-size:12px';
     const resumen: [string, string][] = [];
     if (info.siniestrosRevisados !== null) resumen.push(['Siniestros revisados', String(info.siniestrosRevisados)]);
     resumen.push(['Personas revisadas', String(info.personasRevisadas)]);
     resumen.push(['Personas con coincidencia', String(coincidencias.length)]);
+    if (coincidencias.length) resumen.push(['Por banda', `Alta ${porBanda.alta} · Media ${porBanda.media} · Baja ${porBanda.baja}`]);
+    if (info.descartadasEntidad) resumen.push(['Descartadas', `${info.descartadasEntidad} coincidencia(s) por nombre con buques o aeronaves`]);
     resumen.push(['Verificado', fechaHoraVE(new Date().toISOString())]);
     resumen.push(['Criterio', `Screening RiskGuard — documento exacto o nombre con score ≥ ${SCORE_MINIMO}`]);
     const tablaResumen = `<table style="width:100%;border-collapse:collapse;margin:0 0 20px;border:1px solid #e2e8f0">
-      ${resumen.map(([k, v], i) => `<tr style="background:${i % 2 ? '#fff' : '#f8fafc'}"><td style="${celdaEtq};width:45%">${escaparHtml(k)}</td><td style="padding:10px 14px;font-weight:900;color:#0f172a;font-size:13px">${escaparHtml(v)}</td></tr>`).join('')}
+      ${resumen.map(([k, v], i) => `<tr style="background:${i % 2 ? '#fff' : '#f8fafc'}"><td style="${celdaEtq};width:40%">${escaparHtml(k)}</td><td style="padding:10px 14px;font-weight:900;color:#0f172a;font-size:13px">${escaparHtml(v)}</td></tr>`).join('')}
     </table>`;
 
-    const avisos: string[] = [];
-    if (info.loteIncompleto) avisos.push('El lote de siniestros llegó a su tope: puede haber siniestros que no se leyeron ni se cruzaron con las listas.');
-    if (info.sinVerificar.length) avisos.push(`${info.sinVerificar.length} siniestro(s) sin nombre ni documento del asegurado: NO se pudieron verificar (${info.sinVerificar.map(String).join(', ')}).`);
-    const htmlAvisos = avisos.map(a =>
-        `<p style="background:#fffbeb;border-left:4px solid #f59e0b;border-radius:0 8px 8px 0;padding:10px 14px;color:#92400e;font-size:12px;font-weight:600;margin:0 0 12px">${escaparHtml(a)}</p>`
-    ).join('');
+    const aviso = (texto: string) =>
+        `<p style="background:#fffbeb;border-left:4px solid #f59e0b;border-radius:0 8px 8px 0;padding:10px 14px;color:#92400e;font-size:12px;font-weight:600;margin:0 0 12px">${texto}</p>`;
+    // Arriba, porque cambia cómo se lee todo lo demás: el lote no está completo.
+    const avisoLote = info.loteIncompleto
+        ? aviso('El lote de siniestros llegó a su tope: puede haber siniestros que no se leyeron ni se cruzaron con las listas.') : '';
+    // Abajo: es calidad de datos, no una alerta. Antes abría el correo con 256 números.
+    const calidad = info.sinVerificar.length
+        ? `<div style="margin:20px 0 0">${aviso(
+            `<strong>Calidad de datos:</strong> ${info.sinVerificar.length} siniestro(s) sin nombre ni documento del asegurado — ` +
+            `<strong>NO se verificaron</strong>. Ejemplos: ${escaparHtml(enumerar(info.sinVerificar.map(String), MAX_EJEMPLOS_SIN_VERIFICAR))}. ` +
+            `La lista completa está en Monitoreo (nodo Verificar OFAC, campo «Sin verificar»).`)}</div>` : '';
 
     if (coincidencias.length === 0) {
-        return `${tablaResumen}${htmlAvisos}<p style="background:#f0fdf4;border-left:4px solid #16a34a;border-radius:0 8px 8px 0;padding:12px 16px;color:#166534;font-size:13px;font-weight:700;margin:0">✅ Sin coincidencias en listas restrictivas</p>`;
+        return `${tablaResumen}${avisoLote}<p style="background:#f0fdf4;border-left:4px solid #16a34a;border-radius:0 8px 8px 0;padding:12px 16px;color:#166534;font-size:13px;font-weight:700;margin:0">✅ Sin coincidencias en listas restrictivas</p>${calidad}`;
     }
 
     const th = 'padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px';
     const td = 'padding:8px 10px;font-size:12px;color:#0f172a;border-bottom:1px solid #f1f5f9;vertical-align:top';
-    const bloques = coincidencias.map((c: any) => {
-        const quien = escaparHtml(c.asegurado_nombre ?? c.asegurado_documento ?? '—');
-        const doc = c.asegurado_documento && c.asegurado_nombre
-            ? ` <span style="color:#94a3b8;font-weight:400;font-size:11px">(${escaparHtml(c.asegurado_documento)})</span>` : '';
-        const sins = (c.siniestros ?? []).length
-            ? `<div style="color:#cbd5e1;font-size:11px;font-weight:400;margin-top:2px">Siniestro${c.siniestros.length > 1 ? 's' : ''}: ${escaparHtml(c.siniestros.join(', '))}</div>` : '';
-        const filas = (c.hits ?? []).map((h: any) => {
-            const color = COLOR_BANDA[h.banda] ?? '#64748b';
+    const scoreCelda = (score: number, banda: string, metodo?: string) => {
+        const color = COLOR_BANDA[banda] ?? '#64748b';
+        return `<span style="color:${color};font-weight:900;font-size:14px">${escaparHtml(String(score))}</span><div style="color:${color};font-size:10px;font-weight:700;text-transform:uppercase">${metodo === 'documento' ? 'documento' : escaparHtml(banda)}</div>`;
+    };
+    const nombreGrupo = (g: any) => escaparHtml(g.nombre ?? g.documentos[0] ?? '—');
+    const docsGrupo = (g: any) => g.personas > 1
+        ? `${g.personas} asegurados: ${escaparHtml(enumerar(g.documentos, 3))}`
+        : escaparHtml(g.documentos[0] ?? '—');
+
+    // 1) Tabla principal: una fila por persona (o grupo), solo alta y media.
+    const relevantes = grupos.filter(g => g.banda !== 'baja');
+    const filas = relevantes.slice(0, MAX_FILAS_TABLA).map((g: any) => {
+        const h = g.hits[0] ?? {};
+        return `<tr>
+          <td style="${td}"><strong>${nombreGrupo(g)}</strong><div style="color:#64748b;font-size:11px;margin-top:2px">${docsGrupo(g)}</div></td>
+          <td style="${td};color:#475569;font-size:11px">${escaparHtml(enumerar(g.siniestros, 3))}</td>
+          <td style="${td}"><span style="font-weight:700">${escaparHtml(h.tipo_lista ?? '—')}</span> · ${escaparHtml(h.nombre ?? '—')}${g.hits.length > 1 ? `<div style="color:#94a3b8;font-size:11px;margin-top:2px">+${g.hits.length - 1} entrada(s) más</div>` : ''}</td>
+          <td style="${td};text-align:center;white-space:nowrap">${scoreCelda(g.mejor_score, g.banda, h.metodo)}</td>
+        </tr>`;
+    }).join('');
+    const restoTabla = relevantes.length > MAX_FILAS_TABLA
+        ? `<tr><td colspan="4" style="padding:8px 10px;color:#64748b;font-size:11px">… y ${relevantes.length - MAX_FILAS_TABLA} persona(s) más — ver en Monitoreo.</td></tr>` : '';
+    const tablaPrincipal = relevantes.length
+        ? `<table style="width:100%;border-collapse:collapse;margin:0 0 20px;border:1px solid #e2e8f0">
+            <tr style="background:#f8fafc"><td style="${th}">Asegurado</td><td style="${th}">Siniestros</td><td style="${th}">Mejor coincidencia</td><td style="${th};text-align:center">Score</td></tr>
+            ${filas}${restoTabla}
+          </table>`
+        : `<p style="background:#f8fafc;border-left:4px solid #64748b;border-radius:0 8px 8px 0;padding:10px 14px;color:#334155;font-size:12px;margin:0 0 16px">Solo hay coincidencias de banda <strong>baja</strong> (${porBanda.baja} persona(s)): indicios débiles por nombre. El detalle está en Monitoreo.</p>`;
+
+    // 2) Detalle: solo banda alta, con tope de bloques y de entradas por persona.
+    const altas = grupos.filter(g => g.banda === 'alta');
+    const bloques = altas.slice(0, MAX_BLOQUES_DETALLE).map((g: any) => {
+        const entradas = g.hits.slice(0, MAX_ENTRADAS_POR_PERSONA).map((h: any) => {
             const entidad = h.tipo_entidad ? ETIQUETA_ENTIDAD[h.tipo_entidad] ?? h.tipo_entidad : null;
             const extra = [entidad, h.pais, h.documento ? `Doc. ${h.documento}` : null].filter(Boolean).map(x => escaparHtml(String(x))).join(' · ');
             return `<tr>
               <td style="${td};font-weight:700;white-space:nowrap">${escaparHtml(h.tipo_lista ?? '—')}</td>
               <td style="${td}"><strong>${escaparHtml(h.nombre ?? '—')}</strong>${extra ? `<div style="color:#64748b;font-size:11px;margin-top:2px">${extra}</div>` : ''}</td>
               <td style="${td};color:#475569;font-size:11px">${escaparHtml(h.motivo ?? '—')}</td>
-              <td style="${td};text-align:center;white-space:nowrap"><span style="color:${color};font-weight:900;font-size:14px">${escaparHtml(String(h.score ?? '—'))}</span><div style="color:${color};font-size:10px;font-weight:700;text-transform:uppercase">${h.metodo === 'documento' ? 'documento' : escaparHtml(h.banda ?? '')}</div></td>
+              <td style="${td};text-align:center;white-space:nowrap">${scoreCelda(h.score, h.banda, h.metodo)}</td>
             </tr>`;
         }).join('');
+        const mas = g.hits.length > MAX_ENTRADAS_POR_PERSONA
+            ? `<tr><td colspan="4" style="padding:6px 10px;color:#94a3b8;font-size:11px">+${g.hits.length - MAX_ENTRADAS_POR_PERSONA} entrada(s) más</td></tr>` : '';
         return `<table style="width:100%;border-collapse:collapse;margin:0 0 16px;border:1px solid #e2e8f0">
-          <tr><td colspan="4" style="background:#0f172a;padding:10px 14px;color:#fff;font-weight:900;font-size:13px">${quien}${doc}${sins}</td></tr>
+          <tr><td colspan="4" style="background:#0f172a;padding:10px 14px;color:#fff;font-weight:900;font-size:13px">${nombreGrupo(g)}
+            <div style="color:#cbd5e1;font-size:11px;font-weight:400;margin-top:2px">${docsGrupo(g)} · Siniestro(s): ${escaparHtml(enumerar(g.siniestros, 5))}</div></td></tr>
           <tr style="background:#f8fafc"><td style="${th}">Lista</td><td style="${th}">Nombre en lista</td><td style="${th}">Motivo</td><td style="${th};text-align:center">Score</td></tr>
-          ${filas}
+          ${entradas}${mas}
         </table>`;
     }).join('');
+    const detalle = bloques
+        ? `<h2 style="font-size:14px;font-weight:900;color:#0f172a;margin:8px 0 12px">Detalle — banda alta</h2>${bloques}${altas.length > MAX_BLOQUES_DETALLE ? `<p style="color:#64748b;font-size:11px;margin:0 0 12px">… y ${altas.length - MAX_BLOQUES_DETALLE} persona(s) más de banda alta — ver en Monitoreo.</p>` : ''}` : '';
 
-    return `${tablaResumen}${htmlAvisos}${bloques}
-    <p style="color:#94a3b8;font-size:11px;margin:4px 0 0">Score 0–100: documento exacto = ${SCORE_DOCUMENTO}; por nombre, alta ≥ 85, media ≥ 72, baja ≥ ${SCORE_MINIMO}. Una coincidencia por nombre es un indicio para revisar, no una identificación.</p>`;
+    const notaBaja = porBanda.baja && relevantes.length
+        ? ` ${porBanda.baja} persona(s) con coincidencia de banda baja no se detallan aquí; están en Monitoreo.` : '';
+    return `${tablaResumen}${avisoLote}${tablaPrincipal}${detalle}${calidad}
+    <p style="color:#94a3b8;font-size:11px;margin:12px 0 0">Score 0–100: documento exacto = ${SCORE_DOCUMENTO}; por nombre, alta ≥ 85, media ≥ 72, baja ≥ ${SCORE_MINIMO}. Una coincidencia por nombre es un indicio para revisar, no una identificación.${escaparHtml(notaBaja)}</p>`;
 }
 
 // ── Quién aprueba, según la matriz ──────────────────────────────────────────
@@ -813,18 +905,28 @@ async function executeNode(
 
                 // De diez en diez: con cientos de personas en serie el nodo rozaba
                 // el límite de 150 s de la Edge Function.
+                // Un asegurado no es un barco ni un avión: una coincidencia POR
+                // NOMBRE con una entrada de tipo buque/aeronave es ruido seguro
+                // («Daniela A. Paredes» contra el buque «DANIEL», 25/09/2026). Se
+                // cuentan para que el descarte se vea. Por documento exacto se
+                // conservan: eso no es un parecido, y lo decide una persona.
+                const NO_ASEGURABLES = new Set(['buque', 'aeronave']);
+                let descartadasEntidad = 0;
                 const lista = [...personas.values()];
                 const coincidencias: any[] = [];
                 for (let i = 0; i < lista.length; i += 10) {
                     const tanda = lista.slice(i, i + 10);
                     const resultados = await Promise.all(tanda.map(p => buscarEnListas(p.nom, p.doc)));
                     tanda.forEach((p, j) => {
-                        if (resultados[j].length) coincidencias.push({
+                        const hits = resultados[j].filter((h: any) =>
+                            h.metodo === 'documento' || !NO_ASEGURABLES.has(String(h.tipo_entidad ?? '').toLowerCase()));
+                        descartadasEntidad += resultados[j].length - hits.length;
+                        if (hits.length) coincidencias.push({
                             asegurado_nombre:    p.nom,
                             asegurado_documento: p.doc,
                             siniestros:          p.siniestros,
-                            mejor_score:         mejorScore(resultados[j]),
-                            hits:                resultados[j],
+                            mejor_score:         mejorScore(hits),
+                            hits,
                         });
                     });
                 }
@@ -852,14 +954,17 @@ async function executeNode(
                     siniestros_revisados: siniestrosRevisados,
                     personas_revisadas:   lista.length,
                     personas_con_coincidencia: coincidencias.length,
+                    descartadas_buque_aeronave: descartadasEntidad,
                     coincidencias,
                     sin_verificar:        sinDatos,
                     // «Leer Siniestros» llegó a su tope: pudo quedar alguno sin leer.
                     lote_incompleto:      loteIncompleto,
-                    nombre_buscado:    enLista ? coincidencias.map(c => c.asegurado_nombre ?? c.asegurado_documento).join(', ') : null,
+                    // Sin repetir: siete «José A. Rodríguez» con distinto documento son un nombre.
+                    nombre_buscado:    enLista ? [...new Set(coincidencias.map(c => c.asegurado_nombre ?? c.asegurado_documento))].join(', ') : null,
                     documento_buscado: enLista ? coincidencias.map(c => c.asegurado_documento).filter(Boolean).join(', ') || null : null,
                     coincidencias_html: tablaCoincidenciasHtml(coincidencias, {
                         siniestrosRevisados, personasRevisadas: lista.length, sinVerificar: sinDatos, loteIncompleto,
+                        descartadasEntidad,
                     }),
                     timestamp:  new Date().toISOString(),
                 };
@@ -884,6 +989,7 @@ async function executeNode(
                 documento_buscado: documento ?? null,
                 coincidencias_html: tablaCoincidenciasHtml(coincidencias, {
                     siniestrosRevisados: null, personasRevisadas: 1, sinVerificar: [], loteIncompleto: false,
+                    descartadasEntidad: 0,
                 }),
                 timestamp:  new Date().toISOString(),
             };
