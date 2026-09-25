@@ -101,15 +101,38 @@ Con eso, en Flujos:
 
 Hasta que RiskGuard lo tenga en producción, Flujos **sigue como está**.
 
-## 4. Decisiones que no son técnicas — de Hermes o de Cumplimiento
+## 4. Decisiones de Hermes (25/09/2026)
 
-1. **Plazo de la supresión.** ¿Cuánto dura un descarte antes de volver a
-   revisar a esa persona? La práctica habitual es 12 meses, o hasta que cambie
-   la entrada de lista.
-2. **Quién decide.** La política `screening_coinc_write` deja escribir a
-   `admin` **y** a `cumplimiento`. En Flujos, las tareas de AML solo las
-   resuelve el Oficial de Cumplimiento, **ni siquiera un admin**
-   (CLAUDE.md de Flujos, §6.2). Si esa regla vale también aquí, hay que
-   estrechar la política en RiskGuard, o la decisión «por persona» tendría una
-   puerta más ancha que la de «por lote».
-3. **Horas para escalar** una coincidencia de banda alta pendiente, y a quién.
+1. **Quién decide: el Oficial de Cumplimiento, igual que en Flujos.** Como
+   RiskGuard es un sistema más grande, **el administrador puede cubrir
+   incidencias**.
+
+   ⚠️ Esa cobertura tiene que ser una excepción visible, no una segunda puerta.
+   En Flujos, el escalamiento a `admin` dejaba saltarse la regla del Oficial
+   con solo esperar 48 h (CLAUDE.md de Flujos, §6.2). Hoy la política
+   `screening_coinc_write` deja decidir a `admin` exactamente igual que a
+   `cumplimiento`, sin rastro de que fue una cobertura. La sesión de RiskGuard
+   debe proponer a Hermes una de estas dos formas:
+   - **a) Por delegación.** El admin decide solo mientras exista una
+     delegación que **creó el propio Oficial**, como en Flujos §6.6.
+   - **b) Por contingencia.** El admin puede decidir, pero con el motivo
+     obligatorio, y la fila queda marcada como *decidida por contingencia*.
+     El Oficial la ve después y la ratifica o la revoca.
+
+   En los dos casos la decisión dice **quién la tomó y en calidad de qué**.
+2. **Supresión de un descarte: 6 meses** (recomendación de Hermes). Se vuelve
+   a alertar antes si cambia la entrada de lista.
+3. **Plazo antes de escalar: 15 días como máximo, menos según la
+   criticidad.** Propuesta para que Hermes la confirme:
+
+   | Coincidencia | Escala a los |
+   |---|---|
+   | documento exacto (score 100) | 2 días |
+   | banda alta por nombre | 5 días |
+   | banda media | 15 días |
+
+   ⚠️ **Escalar es avisar, no traspasar la decisión.** Si al vencer el plazo
+   la coincidencia pasara a manos del admin, sería la misma puerta que se
+   cerró en Flujos el 11/08. Al vencer se avisa al Oficial, a los
+   administradores y a Hermes, y la decisión sigue siendo del Oficial, salvo
+   la cobertura del punto 1. Este aviso es el que mandará Flujos (§3).
