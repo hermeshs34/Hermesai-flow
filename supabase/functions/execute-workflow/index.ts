@@ -341,10 +341,17 @@ function tablaCoincidenciasHtml(
 
     const celdaEtq = 'padding:10px 14px;font-weight:700;color:#64748b;font-size:12px';
     const resumen: [string, string][] = [];
-    if (info.siniestrosRevisados !== null) resumen.push(['Siniestros revisados', String(info.siniestrosRevisados)]);
+    // Leídos arriba, para que revisados + sin verificar (al pie) cuadren a la vista.
+    if (info.siniestrosRevisados !== null) {
+        resumen.push(['Siniestros leídos', String(info.siniestrosRevisados + info.sinVerificar.length)]);
+        resumen.push(['Siniestros revisados', info.sinVerificar.length
+            ? `${info.siniestrosRevisados} (${info.sinVerificar.length} sin datos del asegurado, ver al pie)`
+            : String(info.siniestrosRevisados)]);
+    }
     resumen.push(['Personas revisadas', String(info.personasRevisadas)]);
     resumen.push(['Personas con coincidencia', String(coincidencias.length)]);
-    if (coincidencias.length) resumen.push(['Por banda', `Alta ${porBanda.alta} · Media ${porBanda.media} · Baja ${porBanda.baja}`]);
+    // Cuenta personas, no filas: la tabla agrupa a las que comparten nombre y coincidencias.
+    if (coincidencias.length) resumen.push(['Personas por banda',`Alta ${porBanda.alta} · Media ${porBanda.media} · Baja ${porBanda.baja}`]);
     if (info.descartadasEntidad) resumen.push(['Descartadas', `${info.descartadasEntidad} coincidencia(s) por nombre con buques o aeronaves`]);
     resumen.push(['Verificado', fechaHoraVE(new Date().toISOString())]);
     resumen.push(['Criterio', `Screening RiskGuard — documento exacto o nombre con score ≥ ${SCORE_MINIMO}`]);
