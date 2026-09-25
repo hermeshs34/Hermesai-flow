@@ -702,17 +702,17 @@ async function executeNode(
             // `LISTAS_DISPONIBLES` de NodeConfigPanel.tsx.
             const tiposLista: string[] = cfg.listas ?? ['OFAC', 'ONU', 'UE', 'LOCAL', 'INTERPOL'];
 
-            // Sin credenciales RiskGuard → mock (entorno dev / secrets no configurados)
+            // Sin credenciales RiskGuard NO se inventa nada. Hasta el 25/09/2026
+            // devolvía `en_lista: false` con un score al azar: una verificación
+            // de listas que no se hizo salía como «limpio», y la rama `false`
+            // de la decisión seguía como si nada. Decisión de Hermes: «prefiero
+            // que se detenga con error, que inventar».
             if (!RG_URL || !RG_KEY) {
-                const score = Math.floor(Math.random() * 100);
-                return {
-                    en_lista:   false,
-                    hits:       [],
-                    aml_score:  score,
-                    nivel:      score >= 70 ? 'alto' : score >= 40 ? 'medio' : 'bajo',
-                    fuente:     'mock',
-                    timestamp:  new Date().toISOString(),
-                };
+                throw new Error(
+                    'No se pudo verificar en listas restrictivas: faltan las credenciales de RiskGuard ' +
+                    '(RISKGUARD_SUPABASE_URL / RISKGUARD_SERVICE_ROLE_KEY en Supabase → Edge Functions → Secrets). ' +
+                    'El flujo se detiene en vez de dar un resultado inventado.'
+                );
             }
 
             // Limpiar y validar URL

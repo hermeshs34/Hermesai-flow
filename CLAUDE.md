@@ -707,9 +707,18 @@ La misma migración pone `workflow_borrado_guard`: **no se borra un flujo con
 ejecuciones o autorizaciones**. `workflows` borra en cascada `execution_runs`,
 `execution_logs`, `tareas_aprobacion` y `workflow_autorizaciones`, así que un
 clic de admin se llevaba toda la evidencia. Un flujo que ya no sirve se deja en
-borrador e inactivo. ⚠️ **Hueco abierto:** `tareas_aprobacion` tiene la política
-`org_isolation` para ALL, así que cualquier usuario de la organización puede
-BORRAR tareas de aprobación por API.
+borrador e inactivo. ⚠️ **Hueco — cerrado por `20260925_cerrar_escritura_directa_runs_tareas.sql`
+(ensayada 12/12 con rollback el 25/09/2026; comprobar en `pg_policies` que
+está aplicada antes de fiarse de esta línea).** `tareas_aprobacion` tenía
+`org_isolation` para ALL: cualquier usuario de la organización podía, por API,
+borrar tareas **o ponerles `estado='aprobado'`** sin pasar por
+`resolve-approval` ni por §6.2. `execution_runs` dejaba reescribir
+`context_json` y `definicion_huella` (§9.5), y `execution_logs` fabricar líneas
+de registro. Hoy las tres son **solo lectura** para la organización —las
+escriben las Edge Functions con la clave de servicio— salvo el «marcar como
+resuelto» del Dashboard: UPDATE solo de la columna `status`, solo de `error` a
+`cancelled`. Sin política **y** sin GRANT, para que una política permisiva
+añadida mañana no reabra la puerta.
 
 **Tres triggers, porque la pantalla no es una capa de seguridad:**
 

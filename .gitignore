@@ -29,3 +29,6 @@ supabase/functions/.env
 tsconfig.tsbuildinfo
 *.tsbuildinfo
 Thumbs.db
+
+# Lo genera `deno check` en local; Supabase no lo usa al desplegar (25/09/2026)
+deno.lock
