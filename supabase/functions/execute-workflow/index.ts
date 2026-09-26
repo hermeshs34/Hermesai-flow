@@ -541,7 +541,13 @@ async function empresaRiskGuard(rg: any, nombre: unknown): Promise<{ id: string;
 // por persona se toma en SU pantalla. Este correo no decide nada: dice cuántas
 // personas hay por revisar y lleva a cada una con un enlace. Todo dato que
 // viene de RiskGuard pasa por `escaparHtml`. Colores: COLOR_BANDA, arriba.
-const MAX_FILAS_COLA = 25;
+const MAX_PERSONAS_COLA = 25;   // filas (personas) de la tabla del correo
+const MAX_COINC_PERSONA = 6;     // coincidencias listadas dentro de cada persona
+
+// Una persona = un asegurado de RiskGuard. Sin id (no debería pasar) se cae a
+// documento+nombre. La usan el recuento `personas` y la tabla: si divergieran,
+// el resumen diría 13 y la tabla pintaría otra cifra.
+const clavePersonaCola = (f: any): string => f.asegurado_id ?? `${f.sujeto_documento}|${f.sujeto_nombre}`;
 
 function colaHtml(
     filas: any[],
@@ -568,31 +574,50 @@ function colaHtml(
         ? `<p style="background:#fef2f2;border-left:4px solid #dc2626;border-radius:0 8px 8px 0;padding:10px 14px;color:#991b1b;font-size:12px;font-weight:700;margin:0 0 12px">⏰ ${info.escaladas} coincidencia(s) llevan más tiempo pendientes que el plazo fijado en RiskGuard. Este aviso no traspasa la decisión: sigue siendo del Oficial de Cumplimiento.</p>`
         : '';
 
-    // Primero lo escalado, luego por score.
-    const orden = [...filas].sort((a, b) => Number(b.escalada) - Number(a.escalada) || Number(b.score) - Number(a.score));
+    // Una fila por PERSONA, no por coincidencia: la misma persona puede casar
+    // con varias entradas de lista (José A. Rodríguez salía 5 veces seguidas el
+    // 26/09) y es una sola revisión. La clave es la misma que cuenta `personas`.
+    const grupos = new Map<string, any[]>();
+    for (const f of filas) {
+        const k = clavePersonaCola(f);
+        if (!grupos.has(k)) grupos.set(k, []);
+        grupos.get(k)!.push(f);
+    }
+    // Dentro de cada persona: lo escalado primero, luego por score. Entre
+    // personas: quien tenga algo escalado primero, luego su score más alto.
+    const porPrioridad = (a: any, b: any) => Number(b.escalada) - Number(a.escalada) || Number(b.score) - Number(a.score);
+    const personasOrden = [...grupos.values()].map(g => [...g].sort(porPrioridad)).sort((a, b) => porPrioridad(a[0], b[0]));
     const th = 'padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px';
     const td = 'padding:8px 10px;font-size:12px;color:#0f172a;border-bottom:1px solid #f1f5f9;vertical-align:top';
-    const cuerpo = orden.slice(0, MAX_FILAS_COLA).map((f: any) => {
+    const cuerpo = personasOrden.slice(0, MAX_PERSONAS_COLA).map((g: any[]) => {
+        const f = g[0];   // la coincidencia de más prioridad representa a la persona
         const color = COLOR_BANDA[f.banda] ?? '#64748b';
         const sin = Array.isArray(f.siniestros) && f.siniestros.length
             ? `<div style="color:#64748b;font-size:11px;margin-top:2px">Siniestro(s): ${escaparHtml(f.siniestros.slice(0, 3).join(', '))}${f.siniestros.length > 3 ? ` y ${f.siniestros.length - 3} más` : ''}</div>` : '';
-        const plazo = f.escalada
+        const hayEscalada = g.some(x => x.escalada === true);
+        const plazo = hayEscalada
             ? `<div style="color:#dc2626;font-size:10px;font-weight:700;margin-top:2px">ESCALADA</div>` : '';
+        const lista = g.slice(0, MAX_COINC_PERSONA).map(x => {
+            const c = COLOR_BANDA[x.banda] ?? '#64748b';
+            return `<div style="margin-bottom:3px"><span style="font-weight:700">${escaparHtml(x.lista_tipo ?? '—')}</span> · ${escaparHtml(x.lista_nombre ?? '—')} <span style="color:${c};font-weight:700;font-size:11px">${escaparHtml(String(x.score ?? '—'))}</span></div>`;
+        }).join('') + (g.length > MAX_COINC_PERSONA
+            ? `<div style="color:#64748b;font-size:11px">… y ${g.length - MAX_COINC_PERSONA} más</div>` : '');
+        const primera = g.reduce((min: string, x: any) => Date.parse(x.created_at) < Date.parse(min) ? x.created_at : min, g[0].created_at);
         return `<tr>
           <td style="${td}"><strong>${escaparHtml(f.sujeto_nombre ?? '—')}</strong><div style="color:#64748b;font-size:11px;margin-top:2px">${escaparHtml(f.sujeto_documento ?? 'sin documento')}</div>${sin}</td>
-          <td style="${td}"><span style="font-weight:700">${escaparHtml(f.lista_tipo ?? '—')}</span> · ${escaparHtml(f.lista_nombre ?? '—')}</td>
+          <td style="${td}"><div style="color:#64748b;font-size:10px;font-weight:700;margin-bottom:4px">${g.length} COINCIDENCIA(S)</div>${lista}</td>
           <td style="${td};text-align:center;white-space:nowrap"><span style="color:${color};font-weight:900;font-size:14px">${escaparHtml(String(f.score ?? '—'))}</span><div style="color:${color};font-size:10px;font-weight:700;text-transform:uppercase">${f.metodo === 'documento' ? 'documento' : escaparHtml(f.banda ?? '')}</div>${plazo}</td>
-          <td style="${td};white-space:nowrap">${fechaVE(f.created_at)}<div style="margin-top:4px"><a href="${escaparHtml(info.urlBase + String(f.ruta ?? ''))}" style="color:#1d4ed8;font-weight:700;font-size:11px">Revisar →</a></div></td>
+          <td style="${td};white-space:nowrap">${fechaVE(primera)}<div style="margin-top:4px"><a href="${escaparHtml(info.urlBase + String(f.ruta ?? ''))}" style="color:#1d4ed8;font-weight:700;font-size:11px">Revisar →</a></div></td>
         </tr>`;
     }).join('');
-    const resto = filas.length > MAX_FILAS_COLA
-        ? `<tr><td colspan="4" style="padding:8px 10px;color:#64748b;font-size:11px">… y ${filas.length - MAX_FILAS_COLA} más — están todas en la cola de Cumplimiento de RiskGuard.</td></tr>` : '';
+    const resto = personasOrden.length > MAX_PERSONAS_COLA
+        ? `<tr><td colspan="4" style="padding:8px 10px;color:#64748b;font-size:11px">… y ${personasOrden.length - MAX_PERSONAS_COLA} persona(s) más — están todas en la cola de Cumplimiento de RiskGuard.</td></tr>` : '';
 
     return `${tablaResumen}${avisoEscalado}<table style="width:100%;border-collapse:collapse;margin:0 0 12px;border:1px solid #e2e8f0">
-      <tr style="background:#f8fafc"><td style="${th}">Asegurado</td><td style="${th}">Entrada de lista</td><td style="${th};text-align:center">Score</td><td style="${th}">Detectada</td></tr>
+      <tr style="background:#f8fafc"><td style="${th}">Asegurado</td><td style="${th}">Coincidencias con listas</td><td style="${th};text-align:center">Score máx.</td><td style="${th}">Detectada</td></tr>
       ${cuerpo}${resto}
     </table>
-    <p style="color:#94a3b8;font-size:11px;margin:12px 0 0">La decisión (confirmar o descartar) se toma en RiskGuard, persona por persona. «Detectada» es la primera vez que RiskGuard la encontró; no se reinicia al volver a cribar. Una coincidencia por nombre es un indicio para revisar, no una identificación.</p>`;
+    <p style="color:#94a3b8;font-size:11px;margin:12px 0 0">La decisión (confirmar o descartar) se toma en RiskGuard, persona por persona. «Detectada» es la primera vez que RiskGuard encontró a esa persona; no se reinicia al volver a cribar. «Revisar →» abre su coincidencia de score más alto. Una coincidencia por nombre es un indicio para revisar, no una identificación.</p>`;
 }
 
 // ── Ejecutor de nodo individual ──────────────────────────────────────────────
@@ -1081,7 +1106,7 @@ async function executeNode(
             const nuevas = filas.filter(esNueva).length;
             // Personas distintas, no coincidencias: una persona puede casar con
             // varias entradas de lista y es una sola revisión.
-            const personas = new Set(filas.map(f => f.asegurado_id ?? `${f.sujeto_documento}|${f.sujeto_nombre}`)).size;
+            const personas = new Set(filas.map(clavePersonaCola)).size;
 
             // Destinatarios: el Oficial (con suplentes por delegación) siempre;
             // los administradores solo si hay algo fuera de plazo.
