@@ -201,3 +201,8 @@ falso: se escribió antes de ver la pantalla.)
 2. Si sí está, mostrar **solo el expediente de esa persona** con todas sus
    coincidencias y un botón «Ver toda la cola». Así no depende del
    `scrollIntoView` y cumple lo que promete el correo: un enlace por persona.
+
+✅ **Causa confirmada por Hermes el 26/09/2026:** con un usuario de Cumplimiento
+de «Aseguradora Atlántida C.A. (Demo)», «Revisar →» abre la cola y **muestra a
+la persona**. El enlace funciona; lo que falta en RiskGuard es solo el aviso del
+punto 1 para cuando la coincidencia es de otra empresa.
