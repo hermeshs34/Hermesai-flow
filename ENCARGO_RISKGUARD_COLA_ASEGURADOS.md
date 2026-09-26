@@ -206,3 +206,74 @@ falso: se escribió antes de ver la pantalla.)
 de «Aseguradora Atlántida C.A. (Demo)», «Revisar →» abre la cola y **muestra a
 la persona**. El enlace funciona; lo que falta en RiskGuard es solo el aviso del
 punto 1 para cuando la coincidencia es de otra empresa.
+
+## 8. Dos cosas que hoy se callan: lo que no se pudo cribar y lo que nadie ratificó (26/09/2026)
+
+Decisión de Hermes del 26/09/2026. El flujo diario de Flujos ya apunta a
+**Seguros HermesAI**, la empresa real, y está inactivo hasta que exista esto.
+
+### 8.1 Una cola vacía no es una cola limpia
+
+Seguros HermesAI tiene **256 siniestros sin asegurado identificable**
+(`TAREAS_PENDIENTES.md`). No entran en la cola, así que
+`v_cola_asegurados_pendientes` devuelve cero filas. Hoy Flujos lee ese cero,
+el flujo va por la rama «No» y no manda nada. **El silencio se lee como «sin
+coincidencias» cuando significa «no se pudo mirar».** La pantalla de RiskGuard
+ya lo avisa (`contarIdentidadSiniestros`); el contrato con Flujos no.
+
+**Pedido:** exponer esa misma cifra en el contrato, con la misma regla que la
+pantalla (un solo cálculo, no dos que acaben divergiendo). Por ejemplo, una
+vista `v_cobertura_screening_asegurados` con una fila por empresa:
+`empresa_id`, `siniestros`, `identificados` y `sin_identidad`.
+
+### 8.2 Nadie avisa al Oficial de las decisiones por contingencia
+
+El disparador `screening_coinc_decision` hace bien su parte: el admin decide
+con motivo, la fila queda `decidido_como='contingencia'` y solo el Oficial
+ratifica o revoca. Pero **nada le avisa de que tiene algo que ratificar**:
+
+1. La cola abre en el filtro «Pendientes», y una decisión por contingencia ya
+   no está pendiente: está `confirmada` o `descartada`.
+2. El KPI «Coincidencias pendientes» tampoco la cuenta.
+3. `v_cola_asegurados_pendientes` filtra `estado='pendiente'`, así que Flujos
+   no la recibe.
+4. No hay correo ni aviso en RiskGuard.
+
+Sin aviso, la ratificación depende de que el Oficial se acuerde de mirar, y la
+contingencia deja de ser una excepción revisada: es la puerta de al lado que
+Flujos cerró el 11/08 (CLAUDE.md de Flujos, §6.2).
+
+**Pedido:**
+1. **En el contrato:** una vista `v_decisiones_por_ratificar` con las filas
+   `decidido_como='contingencia' AND ratificacion IS NULL AND estado <> 'pendiente'`,
+   de **todos** los tipos de sujeto, no solo asegurados, porque la contingencia
+   vale para toda la cola. Columnas: `id`, `empresa_id`, `sujeto_tipo`,
+   `sujeto_nombre`, `lista_nombre`, `estado`, `revisado_at`, quién decidió
+   (nombre, no solo el id) y `ruta` al registro.
+2. **En la pantalla:** un indicador «Por ratificar: N» junto al de pendientes,
+   que lleve a esas filas. El enlace `ruta` tiene que abrirlas aunque no estén en
+   el filtro «Pendientes».
+
+### 8.3 Comprobar al hacerlo
+
+`v_oficial` da por Oficial a cualquier usuario con rol `cumplimiento` **o** al
+designado en `parametros_aml.oficial_cumplimiento_id`. Si ahí figura un
+administrador, ese admin decide como Oficial y no como contingencia, y el
+control desaparece sin avisar. Comprobar que en cada empresa el designado no
+es un admin.
+
+### 8.4 Lo que hará Flujos cuando existan las dos vistas
+
+1. El nodo Cola AML leerá también las dos vistas, filtrando por `empresa_id`.
+   **Si una vista no existe, el nodo revienta**: no hay «0» por defecto.
+2. Nuevas salidas: `sin_identidad`, `por_ratificar` y `requiere_aviso`
+   (hay pendientes, o hay algo por ratificar, o hay siniestros sin cribar).
+3. El correo gana dos secciones: «N siniestros no se pudieron cribar» y
+   «N decisiones por contingencia pendientes de ratificar», con su enlace.
+4. En el flujo, el nodo Decisión pasa de `{{previous.pendientes}} > 0` a
+   `{{previous.requiere_aviso}}`. Es un cambio de configuración, así que el
+   flujo vuelve a borrador y hay que reautorizarlo.
+
+Consecuencia querida: mientras los 256 siniestros sigan sin identidad, el
+correo saldrá **cada día** diciéndolo. Es incómodo a propósito; deja de salir
+cuando se carguen los asegurados.
