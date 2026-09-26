@@ -175,21 +175,29 @@ entretanto), en vez de decidir con un cache vacío. Denegar con datos que aún n
 han llegado es la misma familia que el `'' === ''`: una comprobación que nadie
 preparó no puede contestar.
 
-## 7. El enlace abre la cola ENTERA, no a la persona (26/09/2026)
+## 7. El enlace lleva a una cola de OTRA empresa y no lo dice (26/09/2026)
 
 Con el usuario de Cumplimiento el enlace ya llega a `/cumplimiento` (el §6 solo
-afecta al admin). Pero al pulsar «Revisar →» de **Omar E. Bracho**, Hermes ve
-**a los José A. Rodríguez**.
+afecta al admin). Pero la cola sale **vacía** («No hay coincidencias pendientes
+de revisión»), la Lista LOCAL también, y el aviso dice «259 de 259 siniestros
+no tienen asegurado identificable». Debajo, la tabla de casos AML muestra a
+«Jorge Rodríguez»: es un caso AML, no la coincidencia enlazada.
 
-Leído en `ColaScreeningPanel.tsx`: con `?coincidencia=` la pantalla carga **la
-cola completa de asegurados** (13 expedientes, 49 filas), ordenada por score y
-luego por fecha. Como todas valen 84, los nueve José A. Rodríguez quedan arriba y
-Omar más abajo. La fila enlazada se marca en azul, pero encontrarla depende de
-un único `scrollIntoView({ behavior: 'smooth' })` que salta al terminar de cargar
-la cola. Por encima del panel hay KPIs y la distribución de casos, que cargan por
-separado y pueden empujar la página cuando el desplazamiento ya ha terminado.
+**Causa, leída en `ColaScreeningPanel.tsx`:** la cola se carga con el
+`empresa_id` **de la sesión**, no con el de la coincidencia del enlace. El correo
+de prueba era de «Aseguradora Atlántida C.A. (Demo)», y el usuario de Cumplimiento
+pertenece a otra empresa (la Lista LOCAL vacía lo delata: la de Atlántida tiene
+la entrada ficticia de Omar Bracho). Que no se vean los datos de otra empresa es
+**correcto**. Lo que falla es que la pantalla **no avise**: el `?coincidencia=`
+no casa con ninguna fila cargada y la pantalla lo ignora en silencio, así que
+«no hay pendientes» se lee como «todo limpio».
 
-**Propuesta:** al llegar con `?coincidencia=`, mostrar **solo el expediente de
-esa persona**, con todas sus coincidencias y un botón «Ver toda la cola». Así no
-depende de dónde acabe el desplazamiento, y es lo que el correo promete: un
-enlace por persona.
+(La primera versión de esta sección culpaba al desplazamiento automático. Era
+falso: se escribió antes de ver la pantalla.)
+
+**Propuesta:**
+1. Si llega un `?coincidencia=` que no está entre las filas cargadas, avisar:
+   «Esta coincidencia no pertenece a su empresa o ya fue decidida».
+2. Si sí está, mostrar **solo el expediente de esa persona** con todas sus
+   coincidencias y un botón «Ver toda la cola». Así no depende del
+   `scrollIntoView` y cumple lo que promete el correo: un enlace por persona.
