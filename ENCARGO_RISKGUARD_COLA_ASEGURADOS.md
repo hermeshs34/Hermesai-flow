@@ -179,8 +179,8 @@ preparó no puede contestar.
 
 Con el usuario de Cumplimiento el enlace ya llega a `/cumplimiento` (el §6 solo
 afecta al admin). Pero la cola sale **vacía** («No hay coincidencias pendientes
-de revisión»), la Lista LOCAL también, y el aviso dice «259 de 259 siniestros
-no tienen asegurado identificable». Debajo, la tabla de casos AML muestra a
+de revisión»), la Lista LOCAL también, y el aviso dice que **ninguno** de los siniestros
+tiene asegurado identificable. Debajo, la tabla de casos AML muestra a
 «Jorge Rodríguez»: es un caso AML, no la coincidencia enlazada.
 
 **Causa, leída en `ColaScreeningPanel.tsx`:** la cola se carga con el
