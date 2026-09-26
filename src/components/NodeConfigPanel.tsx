@@ -1038,6 +1038,8 @@ function ColaAmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void 
                 Lee la cola de asegurados por revisar de RiskGuard (solo lectura). RiskGuard los criba cada día
                 y el Oficial de Cumplimiento decide allí, persona por persona. Este nodo <strong>no decide nada</strong>:
                 cuenta lo pendiente, marca lo que pasó de plazo y prepara el correo con un enlace a cada caso.
+                También avisa de lo que la cola no enseña: los siniestros que no se pudieron cribar y las
+                decisiones por contingencia que el Oficial aún no ha ratificado.
             </div>
             <EmpresaRiskGuardField cfg={cfg} set={set} />
             <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-800">
@@ -1054,6 +1056,9 @@ function ColaAmlForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void 
                         ['alta / media / baja', 'por banda'],
                         ['escaladas', 'fuera de plazo'],
                         ['nuevas', 'desde la última ejecución'],
+                        ['sin_identidad', 'siniestros sin cribar'],
+                        ['por_ratificar', 'decisiones por contingencia'],
+                        ['requiere_aviso', 'true si hay algo que avisar'],
                         ['destinatarios', 'correos a quien avisar'],
                         ['asunto', 'asunto sugerido'],
                         ['cola_html', 'tabla lista para el correo'],
@@ -1264,18 +1269,20 @@ function getAutoDefaults(node: WorkflowNodeData, prevNode: WorkflowNodeData | nu
             defaults.body = OFAC_EMAIL_TEMPLATE;
     }
 
-    // Cola AML de RiskGuard → Decisión «hay pendientes» y Email ya armado.
+    // Cola AML de RiskGuard → Decisión «hay que avisar» y Email ya armado.
+    // `requiere_aviso`, no `pendientes > 0`: una cola vacía con siniestros sin
+    // cribar o decisiones por ratificar también tiene que avisar (encargo §8.4).
     // Tras la Decisión, `previous` busca hacia atrás y encuentra los campos de la cola.
     if (node.category === 'decision' && prevNode.category === 'cola_aml') {
-        if (!node.config?.left)     defaults.left     = '{{previous.pendientes}}';
-        if (!node.config?.operator) defaults.operator = '>';
-        if (!node.config?.right)    defaults.right    = '0';
+        if (!node.config?.left)     defaults.left     = '{{previous.requiere_aviso}}';
+        if (!node.config?.operator) defaults.operator = '==';
+        if (!node.config?.right)    defaults.right    = 'true';
     }
     if (node.category === 'email' && prevNode.category === 'cola_aml') {
         if (!node.config?.to)      defaults.to      = '{{previous.destinatarios}}';
         if (!node.config?.subject) defaults.subject = '{{previous.asunto}}';
         if (!node.config?.body)
-            defaults.body = '<p>Hay asegurados pendientes de revisión en RiskGuard. La decisión se toma allí, persona por persona.</p>{{previous.cola_html}}';
+            defaults.body = '<p>Resumen de Cumplimiento en RiskGuard. Las decisiones se toman allí, persona por persona.</p>{{previous.cola_html}}';
     }
 
     // Email después de aprobación → pre-llenar asunto y plantilla OFAC (datos del nodo AML siguen en contexto)

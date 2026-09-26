@@ -147,6 +147,10 @@ nodo nuevo `processor:cola_aml`, `processor:aml` sin modo lote, filtro por
 literal. Falta el despliegue (migración `20260926_publicar_nodo_cola_aml.sql`,
 secreto `RISKGUARD_APP_URL`, `execute-workflow`) y rehacer el flujo.
 
+*Actualización 26/09/2026 (tarde):* la migración y el secreto ya estaban puestos
+y el flujo «COLA AML RISKGUARD» rehecho. Queda **volver a desplegar
+`execute-workflow`** con la lectura de las dos vistas del §9 (ver §10).
+
 ## 6. «Revisar →» lleva a un administrador a la Bandeja de entrada (26/09/2026)
 
 **Síntoma (Hermes, admin):** el enlace `/cumplimiento?coincidencia=<id>` del
@@ -277,3 +281,85 @@ es un admin.
 Consecuencia querida: mientras los 256 siniestros sigan sin identidad, el
 correo saldrá **cada día** diciéndolo. Es incómodo a propósito; deja de salir
 cuando se carguen los asegurados.
+
+## 9. Respuesta de RiskGuard — §6, §7 y §8 hechos (26/09/2026)
+
+✅ **En producción** (commit `ee4e7f0`, migración `20260926d` corrida el 26/09).
+
+### 9.1 Las dos vistas ya existen — el nodo Cola AML puede leerlas
+
+Las dos son `security_invoker`, con SELECT para `authenticated` y
+`service_role` y `anon` revocado. **Flujos lee con la service role, que no
+pasa por RLS: filtrar SIEMPRE por `empresa_id`.** Cambiar columnas rompe el
+contrato: se avisa antes.
+
+**`v_cobertura_screening_asegurados`** — una fila por empresa (también las
+que no tienen siniestros, con 0):
+
+| columna | tipo | significado |
+|---|---|---|
+| `empresa_id` | uuid | |
+| `empresa_nombre` | text | |
+| `siniestros` | integer | siniestros de la empresa |
+| `identificados` | integer | con asegurado identificado a la última pasada del cribado diario |
+| `sin_identidad` | integer | `siniestros - identificados`: **no se pudieron cribar** |
+
+Un siniestro nuevo cuenta como `sin_identidad` hasta la siguiente pasada
+(05:00 UTC). Si la consulta filtrada no devuelve fila, es un error, no un 0.
+
+**`v_decisiones_por_ratificar`** — una fila por decisión:
+`decidido_como = 'contingencia' AND ratificacion IS NULL AND estado <> 'pendiente'`,
+de **todos** los tipos de sujeto (no sólo asegurados).
+
+`id, empresa_id, empresa_nombre, sujeto_tipo, sujeto_nombre, sujeto_documento,
+lista_tipo, lista_nombre, score, banda, estado, decision_motivo, revisado_at,
+decidido_por_id, decidido_por_nombre, ruta`
+
+`ruta` = `/cumplimiento?coincidencia=<id>`: abre la fila directamente en el
+filtro «Por ratificar» de la pantalla. La pantalla cuenta sobre esta misma
+vista, así que el correo y la pantalla dan la misma cifra.
+
+### 9.2 Valores al 26/09/2026 (para validar el nodo)
+
+| empresa | siniestros | identificados | sin_identidad | por ratificar |
+|---|---|---|---|---|
+| Seguros HermesAI | 256 | 0 | 256 | 0 |
+| Aseguradora Atlántida C.A. (Demo) | 120 | 120 | 0 | 0 |
+
+En Seguros HermesAI, `requiere_aviso` sale `true` **desde el primer día** por
+los 256 sin identidad: es la consecuencia querida del §8.4.
+
+### 9.3 §6, §7 y §8.3
+
+- **§6:** el enlace en frío ya no manda al admin a /inicio: la guarda espera a
+  cargar los permisos del rol. En Flujos no cambia nada.
+- **§7.1:** si la coincidencia del enlace no es de la empresa de la sesión, la
+  pantalla lo dice. Si ya se decidió, abre el filtro donde vive y lo dice.
+  Verificado el 26/09 con usuarios de las dos empresas. El §7.2 no hizo falta.
+- **§8.3:** medido el 26/09. En ninguna empresa el Oficial designado está
+  fuera del rol cumplimiento, así que el control de contingencia está vivo.
+  RiskGuard no cambió nada aquí.
+
+### 9.4 Lo que queda del lado de Flujos
+
+Lo del §8.4 (leer las vistas, salidas nuevas, dos secciones en el correo, la
+Decisión con `requiere_aviso` y reautorizar el flujo), más el despliegue que
+seguía pendiente en el §5.
+
+## 10. Flujos lee las dos vistas — §8.4 hecho en código (26/09/2026)
+
+- El nodo Cola AML lee `v_cobertura_screening_asegurados` y
+  `v_decisiones_por_ratificar`, las dos con `.eq('empresa_id', …)`. Si una
+  falla, o la cobertura no devuelve **exactamente una** fila con números
+  enteros, el nodo revienta con el mensaje de PostgREST y su `hint`.
+- Salidas nuevas: `siniestros`, `identificados`, `sin_identidad`,
+  `por_ratificar`, `ratificar` (filas con su enlace) y `requiere_aviso`.
+- El correo gana dos secciones: «N siniestro(s) no se pudieron cribar» (enlace
+  a `/cumplimiento`) y «N decisión(es) por contingencia pendientes de
+  ratificar» (un «Ratificar o revocar →» por fila, con la `ruta` de la vista).
+  Con la cola vacía y siniestros sin cribar, el «no hay pendientes» ya no sale
+  en verde.
+- El asunto junta lo que haya: p. ej. «🔎 RiskGuard: 256 siniestro(s) sin cribar».
+- Decisión recomendada: `{{previous.requiere_aviso}}` **Igual a (==)** `true`.
+
+Cambiar columnas de las dos vistas rompe el nodo (§9.1): avisar antes.

@@ -1075,10 +1075,22 @@ revisar en RiskGuard». Reglas del contrato, todas en el código:
    quien avisar, revienta.
 5. El enlace es `RISKGUARD_APP_URL + ruta`. **Sin ese secreto el nodo revienta**:
    un correo con enlaces rotos es peor que un error (misma doctrina que `APP_URL`, §6.4).
+6. **Una cola vacía no es una cola limpia** (encargo §8–§9, desde el 26/09/2026).
+   El nodo lee además `v_cobertura_screening_asegurados` (siniestros sin
+   asegurado identificable, que **no pueden** entrar en la cola) y
+   `v_decisiones_por_ratificar` (lo que un admin decidió por contingencia y el
+   Oficial aún no ratificó). Las dos con `.eq('empresa_id', …)`; si una falla o
+   la cobertura no trae **exactamente una** fila con enteros, **revienta** — no
+   hay «0» por defecto. Salidas: `sin_identidad`, `por_ratificar` y
+   `requiere_aviso` (pendientes **o** por ratificar **o** sin cribar). Mientras
+   Seguros HermesAI tenga siniestros sin identidad, el correo sale **cada día**,
+   a propósito.
 
-Flujo recomendado: Programado → Cola AML → Decisión `{{previous.pendientes}} > 0`
+Flujo recomendado: Programado → Cola AML → Decisión `{{previous.requiere_aviso}} == true`
 → Email a `{{previous.destinatarios}}`, asunto `{{previous.asunto}}`, cuerpo con
-`{{previous.cola_html}}`. El Constructor lo pre-rellena.
+`{{previous.cola_html}}`. El Constructor lo pre-rellena. ⚠️ **No `{{previous.pendientes}} > 0`**
+—era la condición hasta el 26/09—: con la cola vacía por falta de identidad iba
+por la rama «No» y el silencio se leía como «sin coincidencias».
 
 ⚠️ **`_shared/screeningNucleo.ts` es copia LITERAL del de RiskGuard**
 (`RiskGuard_Insurance/supabase/functions/_shared/screeningNucleo.ts`), sin

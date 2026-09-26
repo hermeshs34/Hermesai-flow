@@ -549,9 +549,17 @@ const MAX_COINC_PERSONA = 6;     // coincidencias listadas dentro de cada person
 // el resumen diría 13 y la tabla pintaría otra cifra.
 const clavePersonaCola = (f: any): string => f.asegurado_id ?? `${f.sujeto_documento}|${f.sujeto_nombre}`;
 
+// Lo que la cola NO dice, y el correo sí tiene que decir (encargo §8–§9):
+//  · `cobertura`: siniestros sin asegurado identificable. No entran en la cola,
+//    así que una cola vacía puede ser «no se pudo mirar», no «todo limpio».
+//  · `ratificar`: decisiones que tomó un admin por contingencia y que el
+//    Oficial todavía no ha ratificado ni revocado. Ya no están pendientes, así
+//    que la cola no las muestra y nadie más avisa de ellas.
+interface CoberturaCola { siniestros: number; identificados: number; sin_identidad: number }
+
 function colaHtml(
     filas: any[],
-    info: { empresa: string; personas: number; porBanda: Record<string, number>; escaladas: number; nuevas: number; desde: string | null; urlBase: string },
+    info: { empresa: string; personas: number; porBanda: Record<string, number>; escaladas: number; nuevas: number; desde: string | null; urlBase: string; cobertura: CoberturaCola; ratificar: any[] },
 ): string {
     const celdaEtq = 'padding:10px 14px;font-weight:700;color:#64748b;font-size:12px';
     const resumen: [string, string][] = [
@@ -560,14 +568,48 @@ function colaHtml(
         ['Por banda', `Alta ${info.porBanda.alta} · Media ${info.porBanda.media} · Baja ${info.porBanda.baja}`],
         ['Fuera de plazo (escaladas)', String(info.escaladas)],
         ['Nuevas', info.desde ? `${info.nuevas} desde ${fechaHoraVE(info.desde)}` : `${info.nuevas} (primera ejecución: todas cuentan como nuevas)`],
+        ['Siniestros sin cribar', `${info.cobertura.sin_identidad} de ${info.cobertura.siniestros} (sin asegurado identificable)`],
+        ['Decisiones por ratificar', String(info.ratificar.length)],
         ['Consultado', fechaHoraVE(new Date().toISOString())],
     ];
     const tablaResumen = `<table style="width:100%;border-collapse:collapse;margin:0 0 20px;border:1px solid #e2e8f0">
       ${resumen.map(([k, v], i) => `<tr style="background:${i % 2 ? '#fff' : '#f8fafc'}"><td style="${celdaEtq};width:40%">${escaparHtml(k)}</td><td style="padding:10px 14px;font-weight:900;color:#0f172a;font-size:13px">${escaparHtml(v)}</td></tr>`).join('')}
     </table>`;
 
+    const th = 'padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px';
+    const td = 'padding:8px 10px;font-size:12px;color:#0f172a;border-bottom:1px solid #f1f5f9;vertical-align:top';
+
+    // Va primero porque cambia cómo se lee todo lo demás: sin identidad no hay
+    // cribado, y lo que no se criba no puede aparecer en la cola.
+    const sinCribar = info.cobertura.sin_identidad > 0
+        ? `<div style="background:#fffbeb;border-left:4px solid #d97706;border-radius:0 8px 8px 0;padding:12px 16px;margin:0 0 16px">
+             <p style="color:#92400e;font-size:13px;font-weight:900;margin:0 0 4px">⚠️ ${info.cobertura.sin_identidad} siniestro(s) no se pudieron cribar</p>
+             <p style="color:#92400e;font-size:12px;margin:0">De ${info.cobertura.siniestros} siniestros de la empresa, ${info.cobertura.sin_identidad} no tienen un asegurado identificable, así que RiskGuard no los ha podido comparar con las listas. <strong>Que la cola esté vacía no significa que esas personas estén limpias: significa que no se pudieron mirar.</strong> Este aviso se repite cada día hasta que se carguen los asegurados. <a href="${escaparHtml(`${info.urlBase}/cumplimiento`)}" style="color:#1d4ed8;font-weight:700">Ver en RiskGuard →</a></p>
+           </div>`
+        : '';
+
+    const porRatificar = info.ratificar.length > 0
+        ? `<p style="color:#0f172a;font-size:13px;font-weight:900;margin:0 0 6px">🖊️ ${info.ratificar.length} decisión(es) por contingencia pendientes de ratificar</p>
+           <p style="color:#64748b;font-size:12px;margin:0 0 8px">Las tomó un administrador cubriendo al Oficial de Cumplimiento. Siguen vigentes, pero el Oficial tiene que ratificarlas o revocarlas en RiskGuard.</p>
+           <table style="width:100%;border-collapse:collapse;margin:0 0 20px;border:1px solid #e2e8f0">
+             <tr style="background:#f8fafc"><td style="${th}">Sujeto</td><td style="${th}">Lista</td><td style="${th}">Decisión</td><td style="${th}">Decidió</td></tr>
+             ${info.ratificar.slice(0, MAX_PERSONAS_COLA).map((r: any) => `<tr>
+               <td style="${td}"><strong>${escaparHtml(r.sujeto_nombre ?? '—')}</strong><div style="color:#64748b;font-size:11px;margin-top:2px">${escaparHtml(r.sujeto_tipo ?? '—')} · ${escaparHtml(r.sujeto_documento ?? 'sin documento')}</div></td>
+               <td style="${td}">${escaparHtml(r.lista_tipo ?? '—')} · ${escaparHtml(r.lista_nombre ?? '—')}</td>
+               <td style="${td}"><strong style="text-transform:uppercase;font-size:11px">${escaparHtml(r.estado ?? '—')}</strong>${r.decision_motivo ? `<div style="color:#64748b;font-size:11px;margin-top:2px">${escaparHtml(r.decision_motivo)}</div>` : ''}</td>
+               <td style="${td};white-space:nowrap">${escaparHtml(r.decidido_por_nombre ?? 'sin nombre')}<div style="color:#64748b;font-size:11px">${r.revisado_at ? fechaVE(r.revisado_at) : '—'}</div><div style="margin-top:4px"><a href="${escaparHtml(info.urlBase + String(r.ruta ?? ''))}" style="color:#1d4ed8;font-weight:700;font-size:11px">Ratificar o revocar →</a></div></td>
+             </tr>`).join('')}
+             ${info.ratificar.length > MAX_PERSONAS_COLA ? `<tr><td colspan="4" style="padding:8px 10px;color:#64748b;font-size:11px">… y ${info.ratificar.length - MAX_PERSONAS_COLA} más — están todas en el filtro «Por ratificar» de RiskGuard.</td></tr>` : ''}
+           </table>`
+        : '';
+
     if (filas.length === 0) {
-        return `${tablaResumen}<p style="background:#f0fdf4;border-left:4px solid #16a34a;border-radius:0 8px 8px 0;padding:12px 16px;color:#166534;font-size:13px;font-weight:700;margin:0">✅ No hay asegurados pendientes de revisión en RiskGuard</p>`;
+        // Con siniestros sin cribar, «no hay pendientes» no es un visto bueno:
+        // se dice en gris y remitiendo al aviso de arriba, no en verde.
+        const vacia = info.cobertura.sin_identidad > 0
+            ? `<p style="background:#f8fafc;border-left:4px solid #94a3b8;border-radius:0 8px 8px 0;padding:12px 16px;color:#475569;font-size:13px;font-weight:700;margin:0">No hay coincidencias pendientes en la cola — pero la cola no incluye los ${info.cobertura.sin_identidad} siniestro(s) que no se pudieron cribar (aviso de arriba).</p>`
+            : `<p style="background:#f0fdf4;border-left:4px solid #16a34a;border-radius:0 8px 8px 0;padding:12px 16px;color:#166534;font-size:13px;font-weight:700;margin:0">✅ No hay asegurados pendientes de revisión en RiskGuard</p>`;
+        return `${tablaResumen}${sinCribar}${porRatificar}${vacia}`;
     }
 
     const avisoEscalado = info.escaladas
@@ -587,8 +629,6 @@ function colaHtml(
     // personas: quien tenga algo escalado primero, luego su score más alto.
     const porPrioridad = (a: any, b: any) => Number(b.escalada) - Number(a.escalada) || Number(b.score) - Number(a.score);
     const personasOrden = [...grupos.values()].map(g => [...g].sort(porPrioridad)).sort((a, b) => porPrioridad(a[0], b[0]));
-    const th = 'padding:8px 10px;text-align:left;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px';
-    const td = 'padding:8px 10px;font-size:12px;color:#0f172a;border-bottom:1px solid #f1f5f9;vertical-align:top';
     const cuerpo = personasOrden.slice(0, MAX_PERSONAS_COLA).map((g: any[]) => {
         const f = g[0];   // la coincidencia de más prioridad representa a la persona
         const color = COLOR_BANDA[f.banda] ?? '#64748b';
@@ -613,7 +653,7 @@ function colaHtml(
     const resto = personasOrden.length > MAX_PERSONAS_COLA
         ? `<tr><td colspan="4" style="padding:8px 10px;color:#64748b;font-size:11px">… y ${personasOrden.length - MAX_PERSONAS_COLA} persona(s) más — están todas en la cola de Cumplimiento de RiskGuard.</td></tr>` : '';
 
-    return `${tablaResumen}${avisoEscalado}<table style="width:100%;border-collapse:collapse;margin:0 0 12px;border:1px solid #e2e8f0">
+    return `${tablaResumen}${sinCribar}${porRatificar}${avisoEscalado}<table style="width:100%;border-collapse:collapse;margin:0 0 12px;border:1px solid #e2e8f0">
       <tr style="background:#f8fafc"><td style="${th}">Asegurado</td><td style="${th}">Coincidencias con listas</td><td style="${th};text-align:center">Score máx.</td><td style="${th}">Detectada</td></tr>
       ${cuerpo}${resto}
     </table>
@@ -1086,6 +1126,44 @@ async function executeNode(
                 throw new Error('La cola de RiskGuard tiene 5000 o más coincidencias pendientes: el recuento del correo no sería fiable. Revisar el cribado en RiskGuard.');
             }
 
+            // Cobertura del cribado (encargo §9.1). Una fila por empresa, también
+            // con 0 siniestros: si no llega la fila es un error, no un cero. Las
+            // cifras las calcula RiskGuard —la misma cuenta que su pantalla— y
+            // aquí no se recalculan.
+            const { data: cob, error: errCob } = await rg
+                .from('v_cobertura_screening_asegurados')
+                .select('empresa_id, siniestros, identificados, sin_identidad')
+                .eq('empresa_id', empresaRG.id);
+            if (errCob) throw new Error(`RiskGuard cobertura del cribado (v_cobertura_screening_asegurados): ${errCob.message}${errCob.hint ? ` — ${errCob.hint}` : ''}`);
+            if (!cob || cob.length !== 1) {
+                throw new Error(
+                    `RiskGuard devolvió ${cob?.length ?? 0} filas de cobertura del cribado para «${empresaRG.nombre}» y debía ser exactamente una. ` +
+                    'Sin esa cifra no se sabe cuántos siniestros quedaron sin cribar, y una cola vacía se leería como «todo limpio».'
+                );
+            }
+            const cobertura: CoberturaCola = { siniestros: 0, identificados: 0, sin_identidad: 0 };
+            for (const k of ['siniestros', 'identificados', 'sin_identidad'] as const) {
+                const v = Number(cob[0][k]);
+                if (cob[0][k] === null || !Number.isInteger(v) || v < 0) {
+                    throw new Error(`RiskGuard devolvió un valor no válido en la cobertura del cribado (${k} = ${JSON.stringify(cob[0][k])}).`);
+                }
+                cobertura[k] = v;
+            }
+
+            // Decisiones por contingencia sin ratificar (encargo §9.1), de todos
+            // los tipos de sujeto: la contingencia vale para toda la cola.
+            const { data: rat, error: errRat } = await rg
+                .from('v_decisiones_por_ratificar')
+                .select('id, empresa_id, sujeto_tipo, sujeto_nombre, sujeto_documento, lista_tipo, lista_nombre, score, banda, estado, decision_motivo, revisado_at, decidido_por_nombre, ruta')
+                .eq('empresa_id', empresaRG.id)
+                .order('revisado_at', { ascending: true })
+                .limit(5000);
+            if (errRat) throw new Error(`RiskGuard decisiones por ratificar (v_decisiones_por_ratificar): ${errRat.message}${errRat.hint ? ` — ${errRat.hint}` : ''}`);
+            const ratificar = (rat ?? []) as any[];
+            if (ratificar.length >= 5000) {
+                throw new Error('RiskGuard tiene 5000 o más decisiones por ratificar: el recuento del correo no sería fiable.');
+            }
+
             // Última ejecución correcta de ESTE flujo, sin contar la actual.
             let q = db.from('execution_runs')
                 .select('started_at')
@@ -1121,6 +1199,20 @@ async function executeNode(
                 throw new Error('No hay ningún Oficial de Cumplimiento activo (ni suplente con delegación vigente) a quien avisar de la cola de RiskGuard.');
             }
 
+            // Hay que avisar si hay algo que hacer O algo que no se pudo mirar.
+            // Con siniestros sin cribar el correo sale cada día, a propósito
+            // (encargo §8.4): deja de salir cuando se carguen los asegurados.
+            const requiereAviso = filas.length > 0 || ratificar.length > 0 || cobertura.sin_identidad > 0;
+            const partesAsunto: string[] = [];
+            if (personas > 0) partesAsunto.push(`${personas} persona(s) por revisar${nuevas ? ` (${nuevas} nueva(s))` : ''}`);
+            if (ratificar.length > 0) partesAsunto.push(`${ratificar.length} decisión(es) por ratificar`);
+            if (cobertura.sin_identidad > 0) partesAsunto.push(`${cobertura.sin_identidad} siniestro(s) sin cribar`);
+            const asunto = escaladas > 0
+                ? `⏰ RiskGuard: ${partesAsunto.join(' · ')} — ${escaladas} fuera de plazo`
+                : partesAsunto.length
+                    ? `🔎 RiskGuard: ${partesAsunto.join(' · ')}`
+                    : '✅ RiskGuard: nada pendiente en Cumplimiento';
+
             return {
                 empresa:        empresaRG.nombre,
                 pendientes:     filas.length,
@@ -1134,12 +1226,16 @@ async function executeNode(
                 nuevas_desde:   desde,
                 hay_pendientes: filas.length > 0,
                 hay_escaladas:  escaladas > 0,
+                siniestros:     cobertura.siniestros,
+                identificados:  cobertura.identificados,
+                sin_identidad:  cobertura.sin_identidad,
+                por_ratificar:  ratificar.length,
+                requiere_aviso: requiereAviso,
                 destinatarios:  [...destinatarios.values()].join(', '),
                 filas:          filas.map(f => ({ ...f, enlace: urlBase + String(f.ruta ?? '') })),
-                cola_html:      colaHtml(filas, { empresa: empresaRG.nombre, personas, porBanda, escaladas, nuevas, desde, urlBase }),
-                asunto:         escaladas > 0
-                    ? `⏰ ${personas} persona(s) por revisar en RiskGuard — ${escaladas} fuera de plazo`
-                    : `🔎 ${personas} persona(s) por revisar en RiskGuard${nuevas ? ` (${nuevas} nueva(s))` : ''}`,
+                ratificar:      ratificar.map(r => ({ ...r, enlace: urlBase + String(r.ruta ?? '') })),
+                cola_html:      colaHtml(filas, { empresa: empresaRG.nombre, personas, porBanda, escaladas, nuevas, desde, urlBase, cobertura, ratificar }),
+                asunto,
                 timestamp:      new Date().toISOString(),
             };
         }
