@@ -146,3 +146,31 @@ nodo nuevo `processor:cola_aml`, `processor:aml` sin modo lote, filtro por
 `empresa_id` en todas las lecturas de RiskGuard y `screeningNucleo.ts` copiado
 literal. Falta el despliegue (migración `20260926_publicar_nodo_cola_aml.sql`,
 secreto `RISKGUARD_APP_URL`, `execute-workflow`) y rehacer el flujo.
+
+## 6. «Revisar →» lleva a un administrador a la Bandeja de entrada (26/09/2026)
+
+**Síntoma (Hermes, admin):** el enlace `/cumplimiento?coincidencia=<id>` del
+correo abre RiskGuard en `/inicio`, no en Cumplimiento.
+
+**Causa, leída en el código de RiskGuard (no tocado desde Flujos):**
+
+1. `AuthContext` lanza `permisosService.cargarPermisos(...)` **sin esperar**
+   (`void …`) y pone `loading=false` antes de que termine.
+2. `RutaGuard` decide en ese primer render. Con el cache aún `null`,
+   `rutasDelRol('admin')` **no** devuelve un conjunto vacío: le añade
+   `ADMIN_PROTECTED_ROUTES` (`/admin`, `/usuarios`, `/dashboard`).
+3. Como el tamaño es > 0, `canAccessRoute` va por la rama dinámica en vez del
+   respaldo `navigationItems`, `/cumplimiento` no está en esas tres, y
+   `<Navigate to="/inicio" replace />` se lleva la URL **y el `?coincidencia`**.
+
+Dentro de la app no se nota porque, cuando uno navega por el menú, el cache ya
+cargó. Solo pasa al **entrar en frío por un enlace** — justo lo que hace el
+correo. Para los roles que no son `admin` el cache `null` da conjunto vacío y cae
+al respaldo, que sí deja pasar a `cumplimiento`: **Nohemy debería llegar bien**
+(pendiente de comprobar).
+
+**Arreglo sugerido:** que `RutaGuard` **no decida mientras los permisos no
+hayan cargado** (exponer un estado `permisosCargados` y pintar el cargador
+entretanto), en vez de decidir con un cache vacío. Denegar con datos que aún no
+han llegado es la misma familia que el `'' === ''`: una comprobación que nadie
+preparó no puede contestar.
