@@ -174,3 +174,22 @@ hayan cargado** (exponer un estado `permisosCargados` y pintar el cargador
 entretanto), en vez de decidir con un cache vacío. Denegar con datos que aún no
 han llegado es la misma familia que el `'' === ''`: una comprobación que nadie
 preparó no puede contestar.
+
+## 7. El enlace abre la cola ENTERA, no a la persona (26/09/2026)
+
+Con el usuario de Cumplimiento el enlace ya llega a `/cumplimiento` (el §6 solo
+afecta al admin). Pero al pulsar «Revisar →» de **Omar E. Bracho**, Hermes ve
+**a los José A. Rodríguez**.
+
+Leído en `ColaScreeningPanel.tsx`: con `?coincidencia=` la pantalla carga **la
+cola completa de asegurados** (13 expedientes, 49 filas), ordenada por score y
+luego por fecha. Como todas valen 84, los nueve José A. Rodríguez quedan arriba y
+Omar más abajo. La fila enlazada se marca en azul, pero encontrarla depende de
+un único `scrollIntoView({ behavior: 'smooth' })` que salta al terminar de cargar
+la cola. Por encima del panel hay KPIs y la distribución de casos, que cargan por
+separado y pueden empujar la página cuando el desplazamiento ya ha terminado.
+
+**Propuesta:** al llegar con `?coincidencia=`, mostrar **solo el expediente de
+esa persona**, con todas sus coincidencias y un botón «Ver toda la cola». Así no
+depende de dónde acabe el desplazamiento, y es lo que el correo promete: un
+enlace por persona.
