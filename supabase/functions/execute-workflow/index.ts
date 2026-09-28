@@ -9,6 +9,7 @@ import { enviarEmail as enviar, enviarEmailPersonalizado as enviarPersonalizado,
 import { fechaHoraVE, fechaVE } from '../_shared/fecha.ts';
 import { resolverRegla, type ReglaMatriz } from '../_shared/matriz.ts';
 import { destinatariosDelRol } from '../_shared/delegaciones.ts';
+import { leerRuta, textoDeValor } from '../_shared/webhook.ts';
 import { resolverModelo, saldosBalanceVacios, saldosResultadoVacios } from '../_shared/modelosFinancieros.ts';
 import {
     bandaPorScore, similitudNombres, UMBRAL_TRGM, SCORE_MINIMO, SCORE_DOCUMENTO,
@@ -147,13 +148,32 @@ function topologicalSort(nodes: any[], connections: any[]): any[] {
 }
 
 // ── Resolución de valores de contexto ───────────────────────────────────────
-function resolveValue(expr: string, context: Record<string, any>): any {
+// `escaparWebhook`: los valores de {{webhook.…}} vienen de un sistema externo;
+// en el CUERPO HTML de un correo se escapan (se escapa el dato, nunca la
+// plantilla — ver escaparHtml en _shared/email.ts). En asunto y destinatario
+// van como texto.
+function resolveValue(
+    expr: string,
+    context: Record<string, any>,
+    opciones: { escaparWebhook?: boolean } = {},
+): any {
     if (!expr) return expr;
 
-    // Reemplazar todas las expresiones {{...}} dentro de una cadena
+    // Reemplazar todas las expresiones {{...}} dentro de una cadena.
+    // String.replace con función NO vuelve a analizar lo que inserta: un
+    // "{{summary}}" que llegue dentro del payload se escribe literal.
     if (expr.includes('{{')) {
         return expr.replace(/\{\{([^}]+)\}\}/g, (_, rawPath) => {
             const path = rawPath.trim();
+
+            // {{webhook}} o {{webhook.campo.0.sub}} → lo recibido por webhook-in.
+            // Vive en una propiedad NO enumerable (ver el anclaje en el handler),
+            // así que solo se alcanza por aquí: ni {{previous.…}} ni {{summary}}
+            // ni el agente IA la ven.
+            if (path === 'webhook' || path.startsWith('webhook.')) {
+                const texto = textoDeValor(leerRuta(context.__webhook, path === 'webhook' ? '' : path.slice(8)));
+                return opciones.escaparWebhook ? escaparHtml(texto) : texto;
+            }
 
             // {{summary}} → tabla HTML con todos los datos del contexto
             if (path === 'summary') return buildContextSummary(context);
@@ -676,8 +696,22 @@ async function executeNode(
         // ── Triggers ─────────────────────────────────────────────────────
         case 'trigger:manual':
         case 'trigger:cron':
-        case 'trigger:webhook':
             return { triggered: true, timestamp: new Date().toISOString() };
+
+        // Un flujo que arranca por webhook sin la llamada que lo origina (Ejecutar
+        // a mano, «Reintentar» en Monitoreo o en la bandeja) correría con todos
+        // los {{webhook.…}} en blanco y mandaría el correo igual. Se detiene.
+        case 'trigger:webhook': {
+            const recibido = context.__webhook as Record<string, unknown> | undefined;
+            if (!recibido) {
+                throw new Error(
+                    'Este flujo arranca con una llamada a su webhook y esta ejecución no trae ninguna, ' +
+                    'así que no hay datos que usar. Se lanza llamando a su dirección (ver el panel del nodo Webhook), ' +
+                    'no con Ejecutar ni con Reintentar.',
+                );
+            }
+            return { triggered: true, timestamp: new Date().toISOString(), recibido: true, evento_id: recibido._evento_id ?? null };
+        }
 
         // ── Email (ver _shared/email.ts) ──────────────────────────────────
         case 'output:email': {
@@ -686,7 +720,7 @@ async function executeNode(
             }
             const to      = resolveValue(cfg.to ?? '', context);
             const subject = resolveValue(cfg.subject ?? 'Notificación HermesAI Flow', context);
-            let   body    = resolveValue(cfg.body ?? '', context);
+            let   body    = resolveValue(cfg.body ?? '', context, { escaparWebhook: true });
 
             if (!to) throw new Error('Nodo Email: campo "to" requerido');
 
@@ -1762,7 +1796,7 @@ async function executeNode(
             if (canalEmail() === 'ninguno') throw new Error('Sin canal de correo configurado');
             const to      = resolveValue(cfg.to ?? '', context);
             const subject = resolveValue(cfg.subject ?? '📊 Reporte Gerencial — HermesAI Flow', context);
-            let   body    = resolveValue(cfg.body ?? '', context);
+            let   body    = resolveValue(cfg.body ?? '', context, { escaparWebhook: true });
             if (!to) throw new Error('Nodo Reporte Gerencial: campo "to" requerido');
 
             if (!body?.trim()) {
@@ -2034,6 +2068,23 @@ serve(async (req) => {
             (CRON_SECRET !== '' && secretoCron === CRON_SECRET) ||
             (token !== '' && token === SERVICE_ROLE_KEY);
 
+        // ── Llamada recibida por webhook (webhook-in) ────────────────────────
+        // Solo la vía interna puede decir «esta ejecución viene de un webhook».
+        // En una llamada de usuario se ignora: si no, cualquier sesión podría
+        // hacerse pasar por un sistema externo o anclar la recepción de otro.
+        // Los datos NO viajan en el cuerpo: se leen de la base por este id al
+        // anclar la recepción (paso 5, más abajo).
+        const recepcionId: string | null =
+            esLlamadaInterna && triggeredBy === 'webhook' && action !== 'resume' && typeof body.recepcionId === 'string'
+                ? body.recepcionId
+                : null;
+        if (triggeredBy === 'webhook' && action !== 'resume' && !recepcionId) {
+            return new Response(
+                JSON.stringify({ error: 'Una ejecución por webhook solo la lanza la puerta webhook-in, con la llamada que recibió.' }),
+                { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
+            );
+        }
+
         let callerUserId: string | null = null;
         let callerRole: string | null = null;
         if (!esLlamadaInterna) {
@@ -2163,12 +2214,13 @@ serve(async (req) => {
         let startedAt: number;
         let restoredContext: Record<string, any> = {};
         let completedNodeIds: Set<string> = new Set();
+        let runTriggeredBy: string | null = null;
 
         if (action === 'resume' && resumeRunId) {
             // Reanudar run pausado — acepta esperando_aprobacion o error (reintento tras fallo de resume)
             const { data: existingRun, error: fetchErr } = await supabase
                 .from('execution_runs')
-                .select('id, context_json, completed_node_ids, definicion_huella')
+                .select('id, context_json, completed_node_ids, definicion_huella, triggered_by')
                 .eq('id', resumeRunId)
                 .in('status', ['esperando_aprobacion', 'error'])
                 .not('paused_node_id', 'is', null)
@@ -2227,6 +2279,7 @@ serve(async (req) => {
             startedAt        = Date.now();
             restoredContext  = (existingRun.context_json as Record<string, any>) ?? {};
             completedNodeIds = new Set((existingRun.completed_node_ids as string[]) ?? []);
+            runTriggeredBy   = (existingRun.triggered_by as string | null) ?? null;
             await supabase.from('execution_runs').update({ status: 'running' }).eq('id', runId);
         } else {
             const { data: run, error: runErr } = await supabase
@@ -2272,6 +2325,58 @@ serve(async (req) => {
 
         // 5. Ejecutar nodos en secuencia
         const context: Record<string, any> = { ...restoredContext };
+
+        // ── Datos recibidos por webhook ─────────────────────────────────────
+        // Anclar y leer es UN paso: el UPDATE solo casa si la recepción sigue
+        // en 'aceptada' y es de este flujo y organización, y devuelve los datos.
+        // Si no casa, la llamada ya se lanzó (o no es nuestra): no se ejecuta
+        // otra vez. Cualquier fallo lanza ⇒ el catch pone el run en error y
+        // devuelve 500 ⇒ webhook-in marca 'fallo_al_lanzar' y avisa.
+        let recepcion: { payload: unknown; evento_id: string | null; recibido_at: string } | null = null;
+        if (recepcionId) {
+            const { data, error: recErr } = await supabase
+                .from('webhook_recepciones')
+                .update({ estado: 'lanzada', execution_run_id: runId })
+                .eq('id', recepcionId)
+                .eq('workflow_id', workflowId)
+                .eq('organization_id', organizationId)
+                .eq('estado', 'aceptada')
+                .select('payload, evento_id, recibido_at')
+                .maybeSingle();
+            if (recErr) throw new Error(`No se pudo enlazar la llamada recibida con esta ejecución: ${recErr.message}`);
+            if (!data) throw new Error('La llamada recibida ya no está pendiente de lanzar (¿se lanzó dos veces?). No se ejecuta de nuevo.');
+            recepcion = data;
+        } else if (action === 'resume' && runTriggeredBy === 'webhook') {
+            // Los datos no están en context_json (propiedad no enumerable): se
+            // recargan de la recepción que lanzó este run.
+            const { data, error: recErr } = await supabase
+                .from('webhook_recepciones')
+                .select('payload, evento_id, recibido_at')
+                .eq('execution_run_id', runId)
+                .eq('estado', 'lanzada')
+                .maybeSingle();
+            if (recErr) throw new Error(`No se pudieron recuperar los datos recibidos por webhook: ${recErr.message}`);
+            if (!data) throw new Error('Esta ejecución arrancó por webhook y ya no se encuentra la llamada que la originó. No se reanuda sin sus datos.');
+            recepcion = data;
+        }
+
+        // NO enumerable a propósito: todo lo que recorre el contexto —la búsqueda
+        // de {{previous.…}}, {{summary}}, el prompt del agente IA
+        // (Object.values), el consolidado del reporte y el context_json que se
+        // guarda al pausar (JSON.stringify)— se la salta. El dato externo solo
+        // entra donde el diseñador escribe {{webhook.…}}, y no se guarda dos veces.
+        if (recepcion) {
+            Object.defineProperty(context, '__webhook', {
+                value: {
+                    ...((recepcion.payload as Record<string, unknown> | null) ?? {}),
+                    _evento_id: recepcion.evento_id ?? null,
+                    _recibido:  recepcion.recibido_at,
+                },
+                enumerable: false,
+                writable:   false,
+            });
+        }
+
         const skippedNodes = new Set<string>();
 
         // Al reanudar: reconstruir qué ramas fueron descartadas por nodos Decisión ya completados.
