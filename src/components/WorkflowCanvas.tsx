@@ -1290,6 +1290,9 @@ export function WorkflowCanvas({ currentUser }: WorkflowCanvasProps) {
                 isOpen={configPanelOpen}
                 onClose={() => { setConfigPanelOpen(false); setNodeToConfig(null); setPrevNodeToConfig(null); }}
                 onSave={handleSaveNodeConfig}
+                workflowId={activeWorkflowId}
+                organizationId={currentUser.organizationId}
+                puedeEditar={puedeEditar}
             />
 
             {/* Asistente de Diseño IA (F3.2) */}

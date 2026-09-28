@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import type { WorkflowNodeData } from '../types/workflow';
 import { OPCIONES_MODELO } from '../utils/modelosFinancieros';
+import WebhookSection from './WebhookSection';
 
 interface Props {
     node:     WorkflowNodeData | null;
@@ -14,6 +15,9 @@ interface Props {
     isOpen:   boolean;
     onClose:  () => void;
     onSave:   (nodeId: string, config: Record<string, any>) => void;
+    workflowId:     string | null;
+    organizationId: string;
+    puedeEditar:    boolean;
 }
 
 // ── Campo genérico ────────────────────────────────────────────────────────────
@@ -321,6 +325,30 @@ function ManualTriggerForm() {
     );
 }
 
+function WebhookTriggerForm() {
+    return (
+        <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg text-xs text-amber-800 space-y-1.5">
+            <p><Zap className="w-3.5 h-3.5 inline mr-1" />Este flujo arranca cuando otro sistema llama a su dirección con el secreto.</p>
+            <p>Lo que envíe en el cuerpo JSON se usa en los nodos siguientes como <code>{'{{webhook.campo}}'}</code> — por ejemplo <code>{'{{webhook.cliente.nombre}}'}</code>.</p>
+            <p>Son datos de fuera: en el cuerpo de un correo se escapan, y no entran en <code>{'{{previous.…}}'}</code> ni en <code>{'{{summary}}'}</code>.</p>
+        </div>
+    );
+}
+
+/** El destinatario lo decide quien tenga el secreto del webhook: se avisa. */
+function AvisoDestinatarioWebhook({ to }: { to: unknown }) {
+    if (!String(to ?? '').includes('{{webhook.')) return null;
+    return (
+        <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+            <span>
+                El destinatario sale de los datos que manda el sistema externo: quien tenga el secreto del webhook decide
+                a quién se envía este correo. Úsalo solo para responder a quien hizo la llamada (p. ej. confirmar un formulario).
+            </span>
+        </div>
+    );
+}
+
 const BCV_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff">
   <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);padding:32px 24px;border-radius:12px 12px 0 0;text-align:center">
     <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700">📊 Informe Diario — Tasa BCV</h1>
@@ -385,6 +413,7 @@ function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void })
             <Field label="Para (destinatario)" hint="Email de quien recibirá el mensaje">
                 <Input value={cfg.to ?? ''} onChange={v => set('to', v)} placeholder="nombre@empresa.com" type="email" />
             </Field>
+            <AvisoDestinatarioWebhook to={cfg.to} />
             <Field label="Asunto">
                 <Input value={cfg.subject ?? ''} onChange={v => set('subject', v)} placeholder="Alerta desde HermesAI Flow" />
             </Field>
@@ -752,6 +781,7 @@ function ReporteGerencialForm({ cfg, set }: { cfg: any; set: (k: string, v: any)
             <Field label="Para (destinatario)">
                 <Input value={cfg.to ?? ''} onChange={v => set('to', v)} placeholder="gerencia@empresa.com" type="email" />
             </Field>
+            <AvisoDestinatarioWebhook to={cfg.to} />
             <Field label="Asunto">
                 <Input value={cfg.subject ?? ''} onChange={v => set('subject', v)} placeholder="📊 Reporte Gerencial — {{previous.empresa}} ({{previous.periodo}})" />
             </Field>
@@ -1213,6 +1243,7 @@ const ICON_MAP: Record<string, React.ComponentType<any>> = {
 const FORM_MAP: Record<string, (cfg: any, set: (k: string, v: any) => void, title: string) => React.ReactNode> = {
     cron:    (c, s)    => <CronForm cfg={c} set={s} />,
     manual:  ()        => <ManualTriggerForm />,
+    webhook: ()        => <WebhookTriggerForm />,
     email:   (c, s)    => <EmailForm cfg={c} set={s} />,
     whatsapp:(c, s)    => <WhatsAppForm cfg={c} set={s} />,
     decision:(c, s)    => <DecisionForm cfg={c} set={s} />,
@@ -1297,7 +1328,7 @@ function getAutoDefaults(node: WorkflowNodeData, prevNode: WorkflowNodeData | nu
 }
 
 // ── Componente principal ──────────────────────────────────────────────────────
-const NodeConfigPanel: React.FC<Props> = ({ node, prevNode, isOpen, onClose, onSave }) => {
+const NodeConfigPanel: React.FC<Props> = ({ node, prevNode, isOpen, onClose, onSave, workflowId, organizationId, puedeEditar }) => {
     const [cfg, setCfg] = useState<Record<string, any>>({});
 
     useEffect(() => {
@@ -1358,6 +1389,9 @@ const NodeConfigPanel: React.FC<Props> = ({ node, prevNode, isOpen, onClose, onS
                         </div>
                     )}
                     {formNode}
+                    {node.type === 'trigger' && node.category === 'webhook' && (
+                        <WebhookSection workflowId={workflowId} organizationId={organizationId} puedeEditar={puedeEditar} />
+                    )}
                 </div>
 
                 {/* Footer */}
