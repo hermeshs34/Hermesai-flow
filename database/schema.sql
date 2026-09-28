@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict GbfGBxLVWYy7xS4ZfvTtua6TB1UNd6EMiyuLgoOPaNhnBB9bdb3W0bg2v5OjSny
+-- \restrict sqR4O4sVw0DL9qvXzv4i0VvJllh2cXzwcWu6ZVL0DETHHaZbBt64xvttFY3EdWB
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -34,6 +34,71 @@ ALTER SCHEMA "public" OWNER TO "pg_database_owner";
 
 COMMENT ON SCHEMA "public" IS 'standard public schema';
 
+
+--
+-- Name: configurar_webhook_url("uuid", boolean); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."configurar_webhook_url"("p_workflow_id" "uuid", "p_permitir" boolean) RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+DECLARE
+    v_uid    uuid := auth.uid();
+    v_rol    text;
+    v_org    uuid;
+    v_email  text;
+    v_activo boolean;
+    v_wf_org uuid;
+    v_nombre text;
+BEGIN
+    IF v_uid IS NULL THEN
+        RAISE EXCEPTION 'No hay sesión. Vuelve a entrar en la aplicación.';
+    END IF;
+
+    SELECT p.role, p.organization_id, p.email, p.is_active
+      INTO v_rol, v_org, v_email, v_activo
+      FROM profiles p WHERE p.id = v_uid;
+
+    IF v_rol IS NULL OR v_activo IS NOT TRUE THEN
+        RAISE EXCEPTION 'Tu usuario no está activo.';
+    END IF;
+
+    SELECT w.organization_id, w.name INTO v_wf_org, v_nombre
+      FROM workflows w WHERE w.id = p_workflow_id;
+
+    IF v_wf_org IS NULL OR v_wf_org <> v_org THEN
+        RAISE EXCEPTION 'Ese flujo no existe o no pertenece a tu organización.';
+    END IF;
+
+    -- ⚠️ Copia de `manage_workflows` (ver generar_secreto_webhook).
+    IF v_rol NOT IN ('admin', 'dueno_proceso', 'editor') THEN
+        RAISE EXCEPTION 'Solo el Administrador o el Dueño de Proceso pueden cambiar cómo se autentica el webhook de un flujo.';
+    END IF;
+
+    IF p_permitir IS NULL THEN
+        RAISE EXCEPTION 'Falta indicar si se permite o no el secreto en la URL.';
+    END IF;
+
+    UPDATE workflow_webhooks SET permite_secreto_url = p_permitir
+     WHERE workflow_id = p_workflow_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Ese flujo todavía no tiene secreto. Genera uno primero.';
+    END IF;
+
+    INSERT INTO audit_log (organization_id, usuario_id, usuario_email, accion,
+                           entidad, entidad_id, descripcion)
+    VALUES (v_org, v_uid, v_email, 'modificar', 'webhook', p_workflow_id,
+            CASE WHEN p_permitir
+                 THEN format('Permitió el secreto en la URL del webhook del flujo «%s».', v_nombre)
+                 ELSE format('Retiró el secreto en la URL del webhook del flujo «%s».', v_nombre)
+            END);
+END;
+$$;
+
+
+ALTER FUNCTION "public"."configurar_webhook_url"("p_workflow_id" "uuid", "p_permitir" boolean) OWNER TO "postgres";
 
 --
 -- Name: delegaciones_validar(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -95,6 +160,90 @@ $$;
 
 
 ALTER FUNCTION "public"."delegaciones_validar"() OWNER TO "postgres";
+
+--
+-- Name: generar_secreto_webhook("uuid"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."generar_secreto_webhook"("p_workflow_id" "uuid") RETURNS "text"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+DECLARE
+    v_uid     uuid := auth.uid();
+    v_rol     text;
+    v_org     uuid;
+    v_email   text;
+    v_activo  boolean;
+    v_wf_org  uuid;
+    v_nombre  text;
+    v_habia   boolean;
+    v_secreto text;
+BEGIN
+    IF v_uid IS NULL THEN
+        RAISE EXCEPTION 'No hay sesión. Vuelve a entrar en la aplicación.';
+    END IF;
+
+    SELECT p.role, p.organization_id, p.email, p.is_active
+      INTO v_rol, v_org, v_email, v_activo
+      FROM profiles p WHERE p.id = v_uid;
+
+    IF v_rol IS NULL OR v_activo IS NOT TRUE THEN
+        RAISE EXCEPTION 'Tu usuario no está activo.';
+    END IF;
+
+    SELECT w.organization_id, w.name INTO v_wf_org, v_nombre
+      FROM workflows w WHERE w.id = p_workflow_id;
+
+    -- DEFINER se salta la RLS: la organización se comprueba a mano.
+    IF v_wf_org IS NULL OR v_wf_org <> v_org THEN
+        RAISE EXCEPTION 'Ese flujo no existe o no pertenece a tu organización.';
+    END IF;
+
+    -- ⚠️ Copia de `manage_workflows` en ROLE_PERMISSIONS (src/core/user.types.ts).
+    -- Si cambia una, cambia la otra (como transicionar_flujo, CLAUDE.md §6.7).
+    IF v_rol NOT IN ('admin', 'dueno_proceso', 'editor') THEN
+        RAISE EXCEPTION 'Solo el Administrador o el Dueño de Proceso pueden generar el secreto del webhook de un flujo.';
+    END IF;
+
+    v_habia := EXISTS (SELECT 1 FROM workflow_webhooks WHERE workflow_id = p_workflow_id);
+
+    -- Dos uuid v4 = 244 bits aleatorios, sin depender de pgcrypto. Una variable
+    -- de plpgsql se evalúa UNA vez: cumple el papel del CTE AS MATERIALIZED de
+    -- ROTAR_CRON_SECRET.sql (que la huella y el valor devuelto salgan del
+    -- mismo secreto).
+    v_secreto := 'hfw_' || replace(gen_random_uuid()::text, '-', '')
+                        || replace(gen_random_uuid()::text, '-', '');
+
+    -- Rotar invalida el anterior en el acto. No toca permite_secreto_url ni
+    -- ultimo_aviso_fallo_at, ni la definición del flujo: no lo despublica (§6.7).
+    INSERT INTO workflow_webhooks (workflow_id, organization_id, secreto_hash,
+                                   generado_por, generado_email, generado_at)
+    VALUES (p_workflow_id, v_org, encode(sha256(convert_to(v_secreto, 'UTF8')), 'hex'),
+            v_uid, v_email, now())
+    ON CONFLICT (workflow_id) DO UPDATE
+       SET secreto_hash   = EXCLUDED.secreto_hash,
+           generado_por   = EXCLUDED.generado_por,
+           generado_email = EXCLUDED.generado_email,
+           generado_at    = EXCLUDED.generado_at;
+
+    -- Se registra el hecho, NUNCA el secreto.
+    INSERT INTO audit_log (organization_id, usuario_id, usuario_email, accion,
+                           entidad, entidad_id, descripcion)
+    VALUES (v_org, v_uid, v_email,
+            CASE WHEN v_habia THEN 'modificar' ELSE 'crear' END,
+            'webhook', p_workflow_id,
+            CASE WHEN v_habia
+                 THEN format('Rotó el secreto del webhook del flujo «%s». El anterior deja de valer.', v_nombre)
+                 ELSE format('Generó el secreto del webhook del flujo «%s».', v_nombre)
+            END);
+
+    RETURN v_secreto;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."generar_secreto_webhook"("p_workflow_id" "uuid") OWNER TO "postgres";
 
 --
 -- Name: guardar_lienzo("uuid", "jsonb", "jsonb"); Type: FUNCTION; Schema: public; Owner: postgres
@@ -628,7 +777,7 @@ BEGIN
                 'trigger:manual', 'trigger:cron', 'trigger:webhook',
                 'trigger:riskguard', 'trigger:indicadores',
                 'processor:aml', 'processor:agente', 'processor:aprobacion',
-                'processor:bcv', 'processor:decision', 'processor:eeff',
+                'processor:bcv', 'processor:cola_aml', 'processor:decision', 'processor:eeff',
                 'processor:indicadores', 'processor:regulatorio', 'processor:reporte',
                 'processor:riskguard', 'processor:semaforo',
                 'output:email', 'output:log', 'output:reporte', 'output:whatsapp'
@@ -912,7 +1061,7 @@ CREATE TABLE IF NOT EXISTS "public"."audit_log" (
     "ip_address" "text",
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "audit_log_accion_check" CHECK (("accion" = ANY (ARRAY['crear'::"text", 'modificar'::"text", 'eliminar'::"text", 'ejecutar'::"text", 'aprobar'::"text", 'rechazar'::"text", 'login'::"text", 'cambio_rol'::"text", 'escalamiento'::"text", 'vencimiento'::"text"]))),
-    CONSTRAINT "audit_log_entidad_check" CHECK (("entidad" = ANY (ARRAY['workflow'::"text", 'usuario'::"text", 'integracion'::"text", 'aprobacion'::"text", 'sesion'::"text", 'matriz_aprobacion'::"text", 'delegacion'::"text"])))
+    CONSTRAINT "audit_log_entidad_check" CHECK (("entidad" = ANY (ARRAY['workflow'::"text", 'usuario'::"text", 'integracion'::"text", 'aprobacion'::"text", 'sesion'::"text", 'matriz_aprobacion'::"text", 'delegacion'::"text", 'webhook'::"text"])))
 );
 
 
@@ -1197,6 +1346,28 @@ CREATE TABLE IF NOT EXISTS "public"."vigilante_reloj" (
 ALTER TABLE "public"."vigilante_reloj" OWNER TO "postgres";
 
 --
+-- Name: webhook_recepciones; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."webhook_recepciones" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "workflow_id" "uuid" NOT NULL,
+    "recibido_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "evento_id" "text",
+    "estado" "text" NOT NULL,
+    "motivo" "text",
+    "payload" "jsonb",
+    "bytes" integer,
+    "execution_run_id" "uuid",
+    CONSTRAINT "webhook_recepciones_estado_check" CHECK (("estado" = ANY (ARRAY['aceptada'::"text", 'lanzada'::"text", 'fallo_al_lanzar'::"text", 'rechazada_inactivo'::"text", 'frenada_limite'::"text", 'duplicada'::"text"]))),
+    CONSTRAINT "webhook_recepciones_evento_id_check" CHECK ((("evento_id" IS NULL) OR (("char_length"("evento_id") >= 1) AND ("char_length"("evento_id") <= 200))))
+);
+
+
+ALTER TABLE "public"."webhook_recepciones" OWNER TO "postgres";
+
+--
 -- Name: workflow_autorizaciones; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -1263,6 +1434,25 @@ CREATE TABLE IF NOT EXISTS "public"."workflow_nodes" (
 
 
 ALTER TABLE "public"."workflow_nodes" OWNER TO "postgres";
+
+--
+-- Name: workflow_webhooks; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."workflow_webhooks" (
+    "workflow_id" "uuid" NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "secreto_hash" "text" NOT NULL,
+    "permite_secreto_url" boolean DEFAULT false NOT NULL,
+    "generado_por" "uuid",
+    "generado_email" "text",
+    "generado_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "ultimo_aviso_fallo_at" timestamp with time zone,
+    CONSTRAINT "workflow_webhooks_secreto_hash_check" CHECK (("secreto_hash" ~ '^[0-9a-f]{64}$'::"text"))
+);
+
+
+ALTER TABLE "public"."workflow_webhooks" OWNER TO "postgres";
 
 --
 -- Name: workflows; Type: TABLE; Schema: public; Owner: postgres
@@ -1395,6 +1585,14 @@ ALTER TABLE ONLY "public"."vigilante_reloj"
 
 
 --
+-- Name: webhook_recepciones webhook_recepciones_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."webhook_recepciones"
+    ADD CONSTRAINT "webhook_recepciones_pkey" PRIMARY KEY ("id");
+
+
+--
 -- Name: workflow_autorizaciones workflow_autorizaciones_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -1424,6 +1622,14 @@ ALTER TABLE ONLY "public"."workflow_connections"
 
 ALTER TABLE ONLY "public"."workflow_nodes"
     ADD CONSTRAINT "workflow_nodes_pkey" PRIMARY KEY ("id");
+
+
+--
+-- Name: workflow_webhooks workflow_webhooks_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_webhooks"
+    ADD CONSTRAINT "workflow_webhooks_pkey" PRIMARY KEY ("workflow_id");
 
 
 --
@@ -1544,6 +1750,27 @@ CREATE INDEX "idx_workflow_nodes_workflow" ON "public"."workflow_nodes" USING "b
 --
 
 CREATE INDEX "idx_workflows_org" ON "public"."workflows" USING "btree" ("organization_id");
+
+
+--
+-- Name: webhook_recepciones_evento_unico; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE UNIQUE INDEX "webhook_recepciones_evento_unico" ON "public"."webhook_recepciones" USING "btree" ("workflow_id", "evento_id") WHERE (("evento_id" IS NOT NULL) AND ("estado" = ANY (ARRAY['aceptada'::"text", 'lanzada'::"text", 'fallo_al_lanzar'::"text"])));
+
+
+--
+-- Name: webhook_recepciones_flujo_fecha; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "webhook_recepciones_flujo_fecha" ON "public"."webhook_recepciones" USING "btree" ("workflow_id", "recibido_at" DESC);
+
+
+--
+-- Name: webhook_recepciones_run; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX "webhook_recepciones_run" ON "public"."webhook_recepciones" USING "btree" ("execution_run_id") WHERE ("execution_run_id" IS NOT NULL);
 
 
 --
@@ -1762,6 +1989,22 @@ ALTER TABLE ONLY "public"."tareas_aprobacion"
 
 
 --
+-- Name: webhook_recepciones webhook_recepciones_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."webhook_recepciones"
+    ADD CONSTRAINT "webhook_recepciones_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id");
+
+
+--
+-- Name: webhook_recepciones webhook_recepciones_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."webhook_recepciones"
+    ADD CONSTRAINT "webhook_recepciones_workflow_id_fkey" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE CASCADE;
+
+
+--
 -- Name: workflow_autorizaciones workflow_autorizaciones_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -1815,6 +2058,22 @@ ALTER TABLE ONLY "public"."workflow_nodes"
 
 ALTER TABLE ONLY "public"."workflow_nodes"
     ADD CONSTRAINT "workflow_nodes_workflow_id_fkey" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: workflow_webhooks workflow_webhooks_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_webhooks"
+    ADD CONSTRAINT "workflow_webhooks_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id");
+
+
+--
+-- Name: workflow_webhooks workflow_webhooks_workflow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."workflow_webhooks"
+    ADD CONSTRAINT "workflow_webhooks_workflow_id_fkey" FOREIGN KEY ("workflow_id") REFERENCES "public"."workflows"("id") ON DELETE CASCADE;
 
 
 --
@@ -2007,6 +2266,13 @@ CREATE POLICY "profiles_read_own_org" ON "public"."profiles" FOR SELECT TO "auth
 
 
 --
+-- Name: webhook_recepciones recepciones_tenant_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "recepciones_tenant_read" ON "public"."webhook_recepciones" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
 -- Name: execution_runs runs_marcar_resuelto; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -2047,6 +2313,19 @@ CREATE POLICY "vigilante_reloj_read" ON "public"."vigilante_reloj" FOR SELECT TO
 
 
 --
+-- Name: webhook_recepciones; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."webhook_recepciones" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: workflow_webhooks webhooks_tenant_read; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "webhooks_tenant_read" ON "public"."workflow_webhooks" FOR SELECT TO "authenticated" USING (("organization_id" = "public"."my_organization_id"()));
+
+
+--
 -- Name: workflow_autorizaciones wf_autorizaciones_tenant_read; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -2070,6 +2349,12 @@ ALTER TABLE "public"."workflow_connections" ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE "public"."workflow_nodes" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: workflow_webhooks; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."workflow_webhooks" ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: workflows; Type: ROW SECURITY; Schema: public; Owner: postgres
@@ -2116,12 +2401,30 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 --
+-- Name: FUNCTION "configurar_webhook_url"("p_workflow_id" "uuid", "p_permitir" boolean); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."configurar_webhook_url"("p_workflow_id" "uuid", "p_permitir" boolean) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."configurar_webhook_url"("p_workflow_id" "uuid", "p_permitir" boolean) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."configurar_webhook_url"("p_workflow_id" "uuid", "p_permitir" boolean) TO "service_role";
+
+
+--
 -- Name: FUNCTION "delegaciones_validar"(); Type: ACL; Schema: public; Owner: postgres
 --
 
 REVOKE ALL ON FUNCTION "public"."delegaciones_validar"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delegaciones_validar"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."delegaciones_validar"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "generar_secreto_webhook"("p_workflow_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."generar_secreto_webhook"("p_workflow_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."generar_secreto_webhook"("p_workflow_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."generar_secreto_webhook"("p_workflow_id" "uuid") TO "service_role";
 
 
 --
@@ -2330,6 +2633,76 @@ GRANT ALL ON TABLE "public"."vigilante_reloj" TO "service_role";
 
 
 --
+-- Name: TABLE "webhook_recepciones"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."webhook_recepciones" TO "service_role";
+
+
+--
+-- Name: COLUMN "webhook_recepciones"."id"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("id") ON TABLE "public"."webhook_recepciones" TO "authenticated";
+
+
+--
+-- Name: COLUMN "webhook_recepciones"."organization_id"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("organization_id") ON TABLE "public"."webhook_recepciones" TO "authenticated";
+
+
+--
+-- Name: COLUMN "webhook_recepciones"."workflow_id"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("workflow_id") ON TABLE "public"."webhook_recepciones" TO "authenticated";
+
+
+--
+-- Name: COLUMN "webhook_recepciones"."recibido_at"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("recibido_at") ON TABLE "public"."webhook_recepciones" TO "authenticated";
+
+
+--
+-- Name: COLUMN "webhook_recepciones"."evento_id"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("evento_id") ON TABLE "public"."webhook_recepciones" TO "authenticated";
+
+
+--
+-- Name: COLUMN "webhook_recepciones"."estado"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("estado") ON TABLE "public"."webhook_recepciones" TO "authenticated";
+
+
+--
+-- Name: COLUMN "webhook_recepciones"."motivo"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("motivo") ON TABLE "public"."webhook_recepciones" TO "authenticated";
+
+
+--
+-- Name: COLUMN "webhook_recepciones"."bytes"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("bytes") ON TABLE "public"."webhook_recepciones" TO "authenticated";
+
+
+--
+-- Name: COLUMN "webhook_recepciones"."execution_run_id"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("execution_run_id") ON TABLE "public"."webhook_recepciones" TO "authenticated";
+
+
+--
 -- Name: TABLE "workflow_autorizaciones"; Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -2354,6 +2727,62 @@ GRANT ALL ON TABLE "public"."workflow_connections" TO "service_role";
 GRANT ALL ON TABLE "public"."workflow_nodes" TO "anon";
 GRANT ALL ON TABLE "public"."workflow_nodes" TO "authenticated";
 GRANT ALL ON TABLE "public"."workflow_nodes" TO "service_role";
+
+
+--
+-- Name: TABLE "workflow_webhooks"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."workflow_webhooks" TO "service_role";
+
+
+--
+-- Name: COLUMN "workflow_webhooks"."workflow_id"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("workflow_id") ON TABLE "public"."workflow_webhooks" TO "authenticated";
+
+
+--
+-- Name: COLUMN "workflow_webhooks"."organization_id"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("organization_id") ON TABLE "public"."workflow_webhooks" TO "authenticated";
+
+
+--
+-- Name: COLUMN "workflow_webhooks"."permite_secreto_url"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("permite_secreto_url") ON TABLE "public"."workflow_webhooks" TO "authenticated";
+
+
+--
+-- Name: COLUMN "workflow_webhooks"."generado_por"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("generado_por") ON TABLE "public"."workflow_webhooks" TO "authenticated";
+
+
+--
+-- Name: COLUMN "workflow_webhooks"."generado_email"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("generado_email") ON TABLE "public"."workflow_webhooks" TO "authenticated";
+
+
+--
+-- Name: COLUMN "workflow_webhooks"."generado_at"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("generado_at") ON TABLE "public"."workflow_webhooks" TO "authenticated";
+
+
+--
+-- Name: COLUMN "workflow_webhooks"."ultimo_aviso_fallo_at"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT("ultimo_aviso_fallo_at") ON TABLE "public"."workflow_webhooks" TO "authenticated";
 
 
 --
@@ -2429,5 +2858,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict GbfGBxLVWYy7xS4ZfvTtua6TB1UNd6EMiyuLgoOPaNhnBB9bdb3W0bg2v5OjSny
+-- \unrestrict sqR4O4sVw0DL9qvXzv4i0VvJllh2cXzwcWu6ZVL0DETHHaZbBt64xvttFY3EdWB
 

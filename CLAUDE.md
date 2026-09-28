@@ -107,6 +107,7 @@ project/
 │       ├── _shared/email.ts         ← ÚNICO punto de salida de correo (ver §9.1)
 │       ├── execute-workflow/        ← el motor: ejecuta TODOS los tipos de nodo
 │       ├── cron-runner/             ← pg_cron cada minuto: dispara y escala (F4)
+│       ├── webhook-in/              ← PÚBLICA: la puerta de las llamadas externas (§8.3)
 │       ├── vigilante-reloj/         ← pg_cron cada 10 min: avisa si el reloj no está (§6.1.1)
 │       ├── resolve-approval/        ← aprobar / rechazar una tarea
 │       ├── health-check/            ← estado de integraciones (lo llama el Sidebar)
@@ -1096,6 +1097,57 @@ por la rama «No» y el silencio se leía como «sin coincidencias».
 (`RiskGuard_Insurance/supabase/functions/_shared/screeningNucleo.ts`), sin
 cabecera propia: se verifica con un `diff` completo, que tiene que salir vacío.
 **Manda el de RiskGuard**; aquí no se edita a mano, se vuelve a copiar.
+
+### 8.3 Webhook de entrada — cualquier sistema puede lanzar un flujo
+
+En producción desde el 28/09/2026 (diseño y desviaciones:
+`docs/superpowers/specs/2026-09-28-webhook-entrada-design.md`, §12 manda).
+Primera llamada real ese día: 202 → recepción `lanzada` → run `success`,
+`triggered_by='webhook'`, correo recibido.
+
+**Dirección:** `https://kbscaxcokxwdbnrltkup.supabase.co/functions/v1/webhook-in/<workflow_id>`,
+`POST` JSON ≤ 256 KB, cabecera `x-webhook-secret` (o `?secreto=` solo si el
+flujo lo permite) y, recomendado, `Idempotency-Key`. El flujo tiene que estar
+`publicado`, activo y empezar por un nodo Webhook.
+
+Piezas y reglas:
+
+1. **`webhook-in` se despliega con `--no-verify-jwt`** (§6.1) y no ejecuta
+   nodos: autentica, registra y llama a `execute-workflow` por `x-cron-secret`.
+   Sondeo: `POST` sin cabeceras con `-d "{}"` ⇒ `{"error":"No autorizado"}`.
+   ⚠️ El 28/09 se desplegó todo **menos** esta función y el síntoma no fue un
+   error sino un flujo que nadie podía lanzar.
+2. **El secreto no se guarda nunca**, solo su `sha256` (`workflow_webhooks`).
+   Lo genera o rota `generar_secreto_webhook()` (DEFINER, roles de
+   `manage_workflows` **copiados** de `ROLE_PERMISSIONS`), se muestra una vez
+   y lleva prefijo `hfw_`. Rotar **no** despublica (§6.7) y duplicar un flujo
+   **no** copia el secreto.
+3. **Un secreto erróneo no deja fila** — 401 genérico, igual exista o no el
+   flujo. Guardar los intentos fallidos sería abrir la puerta a llenar la base
+   (01/08, 743 MB). Los rechazos con secreto válido (inactivo, límite de
+   60/min, duplicada) dejan **como mucho una fila por flujo, estado y minuto**.
+4. **`webhook_recepciones.payload` solo lo lee la clave de servicio**
+   (`20260928_webhook_payload_solo_servicio.sql`, decisión de Hermes). La
+   organización ve las filas —hora, estado, motivo— pero no el contenido, que
+   puede traer datos personales. Si un rol lo necesita algún día, va por una
+   RPC DEFINER filtrada por rol, no reabriendo la columna. Retención 90 días
+   (job `purgar-webhook-recepciones`, que el vigilante **no** mira).
+5. **El motor ancla la recepción** (`aceptada → lanzada`, un solo UPDATE) y
+   lee de ahí los datos: una llamada no se lanza dos veces. Una que siga en
+   `aceptada` > 5 min sale en el panel como «sin confirmar».
+6. **Los datos se usan como `{{webhook.campo}}` y SOLO así.**
+   `context.__webhook` es **no enumerable**: no entra en `{{previous.…}}`,
+   `{{summary}}`, el prompt del agente IA ni el volcado del Email sin cuerpo
+   — por eso el primer correo de prueba no mostraba el `nombre` enviado. En el
+   cuerpo de Email y Reporte se **escapan como HTML**; se sustituyen una vez.
+7. **Un disparador Webhook sin datos revienta**: «Ejecutar» y «Reintentar» no
+   sirven para estos flujos, y el mensaje lo dice. Un `triggeredBy:'webhook'`
+   que no llegue por la vía interna ⇒ 400; sobre un flujo inactivo ⇒ 409.
+
+⚠️ Pendiente de medir: sustitución de `{{webhook.…}}` y escape HTML en un
+correo real (casos 1 y 6 del spec §10) — el flujo de prueba no tenía cuerpo.
+⚠️ Riesgo anotado: datos del webhook que pasen por un nodo IA pueden volver
+como HTML en un correo; el escape solo cubre `{{webhook.…}}` directo.
 
 ---
 

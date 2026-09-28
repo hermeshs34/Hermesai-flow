@@ -1,7 +1,7 @@
 # Webhook de entrada por flujo — Diseño
 
 **Fecha:** 28/09/2026
-**Estado:** aprobado por Hermes (28/09/2026). Plan: `docs/superpowers/plans/2026-09-28-webhook-entrada.md`. **Donde este documento y la §12 difieran, manda la §12.**
+**Estado:** ✅ implementado y en producción (28/09/2026; primera llamada real `lanzada` → `success`). Aprobado por Hermes el mismo día. Plan: `docs/superpowers/plans/2026-09-28-webhook-entrada.md`. **Donde este documento y la §12 difieran, manda la §12.**
 **Entrega:** 1 del punto 1 del plan de reingeniería (disparadores por evento + nodos genéricos)
 
 ---
