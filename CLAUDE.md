@@ -1144,8 +1144,8 @@ Piezas y reglas:
    sirven para estos flujos, y el mensaje lo dice. Un `triggeredBy:'webhook'`
    que no llegue por la vía interna ⇒ 400; sobre un flujo inactivo ⇒ 409.
 
-⚠️ Pendiente de medir: sustitución de `{{webhook.…}}` y escape HTML en un
-correo real (casos 1 y 6 del spec §10) — el flujo de prueba no tenía cuerpo.
+✅ Sustitución de `{{webhook.nombre}}` en asunto y cuerpo medida en un correo
+real el 28/09 («Hola Ana»). ⚠️ Pendiente: el escape HTML (caso 6 del spec §10).
 ⚠️ Riesgo anotado: datos del webhook que pasen por un nodo IA pueden volver
 como HTML en un correo; el escape solo cubre `{{webhook.…}}` directo.
 
