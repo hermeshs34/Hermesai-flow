@@ -1,7 +1,7 @@
 # Webhook de entrada por flujo — Diseño
 
 **Fecha:** 28/09/2026
-**Estado:** aprobado por Hermes por partes (arquitectura, secreto, datos y fallos); pendiente de revisión del documento completo
+**Estado:** aprobado por Hermes (28/09/2026). Plan: `docs/superpowers/plans/2026-09-28-webhook-entrada.md`. **Donde este documento y la §12 difieran, manda la §12.**
 **Entrega:** 1 del punto 1 del plan de reingeniería (disparadores por evento + nodos genéricos)
 
 ---
@@ -298,7 +298,7 @@ tener secreto: el botón explica que primero hay que guardar.
 
 ## 11. Riesgos y decisiones registradas
 
-- **Datos personales guardados dos veces** (recepción y run) durante 90 días.
+- **Datos personales guardados UNA vez** (en la recepción) durante 90 días — ver §12, punto 1; antes decía «dos veces».
   Aceptado: sin guardarlos, una llamada cuyo arranque falla se pierde, y es la
   base de la cola de la entrega 2.
 - **La purga depende de pg_cron**, y el vigilante (§6.1.1) no la mira. Si el
@@ -309,3 +309,39 @@ tener secreto: el botón explica que primero hay que guardar.
   un freno de caudal, no un control de seguridad.
 - **Rotar sin gracia** corta al integrador hasta que actualice. Aceptado para
   la primera versión.
+
+## 12. Desviaciones al escribir el plan (28/09/2026)
+
+Salieron al contrastar el diseño contra el código. El plan ya las incorpora.
+
+1. **El payload no viaja en el cuerpo hacia `execute-workflow`** (§6.3 decía
+   `webhookPayload`). La puerta manda solo `recepcionId`; el motor ancla la
+   recepción (`aceptada → lanzada`) y lee los datos **en el mismo UPDATE**. Una
+   llamada no puede lanzarse dos veces, y los datos se guardan una sola vez.
+2. **`context.__webhook` es una propiedad NO enumerable** y no se guarda en
+   `context_json` (§7.3 decía lo contrario). Así no lo ven `{{previous.…}}`,
+   `{{summary}}`, el prompt del agente IA ni el consolidado del reporte. Al
+   reanudar un run pausado se recarga de la recepción por `execution_run_id`;
+   si ya no está (purgada), **no se reanuda**.
+3. **Un disparador Webhook sin datos revienta** («Ejecutar» a mano, «Reintentar»
+   en Monitoreo o en la bandeja). Si no, el flujo correría con todos los
+   `{{webhook.…}}` en blanco.
+4. **`triggeredBy:'webhook'` fuera de la vía interna → 400.** Una sesión de
+   usuario no puede hacerse pasar por la puerta ni anclar una recepción ajena
+   (sustituye a la prueba 8 de §10).
+5. **Un cuerpo con `\u0000` → 400.** `JSON.parse` lo acepta pero `jsonb` no:
+   sin esto sería un 500 opaco.
+6. **Filas `duplicada`, `rechazada_inactivo` y `frenada_limite`: como mucho una
+   por flujo, estado y minuto**, para que quien tenga el secreto no pueda llenar
+   la tabla con llamadas rechazadas.
+7. **El escape HTML de `{{webhook.…}}` se aplica también al cuerpo del nodo
+   Reporte**, no solo al del Email; y el aviso de «destinatario sacado del
+   webhook» sale en los dos formularios.
+8. **En la RPC, una variable de plpgsql sustituye al `CTE AS MATERIALIZED`**
+   de §5.1: se evalúa una vez, que es lo que se buscaba.
+9. **`audit_log` no tiene CHECK sobre `accion`** (§4.3 decía que sí); solo sobre
+   `entidad`, cuya lista se midió en producción el 28/09 y se reescribe entera
+   con `'webhook'` añadido.
+10. **El ensayo vive en `database/ensayos/`**, carpeta nueva: `runbooks/` es
+    solo lectura por convención y el ensayo corre la migración (y la deshace
+    con un `RAISE EXCEPTION` final).
