@@ -2493,7 +2493,11 @@ serve(async (req) => {
 
         const finalStatus = hasError ? 'error' : 'success';
 
-        await Promise.all([
+        // `status` de workflows solo admite idle|running|error|paused (CHECK de la
+        // base). Aquí se escribía 'active', la base rechazaba el UPDATE entero y,
+        // como nadie leía el `{ error }`, last_run_at y execution_count se
+        // quedaron congelados desde junio en todo run correcto (§5.1 regla 2).
+        const [{ error: errRun }, { error: errWf }] = await Promise.all([
             supabase.from('execution_runs').update({
                 status:        finalStatus,
                 finished_at:   new Date().toISOString(),
@@ -2505,9 +2509,11 @@ serve(async (req) => {
             supabase.from('workflows').update({
                 last_run_at:     new Date().toISOString(),
                 execution_count: (workflow.execution_count ?? 0) + 1,
-                status:          hasError ? 'error' : 'active',
+                status:          hasError ? 'error' : 'idle',
             }).eq('id', workflowId),
         ]);
+        if (errRun) console.error(`execute-workflow: no se pudo cerrar el run ${runId} — ${errRun.message}`);
+        if (errWf)  console.error(`execute-workflow: no se pudo actualizar el flujo ${workflowId} — ${errWf.message}`);
 
         const finalMsg = hasError
             ? `✗ Flujo finalizado con error después de ${totalMs}ms`
