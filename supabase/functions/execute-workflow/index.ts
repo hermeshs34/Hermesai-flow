@@ -2197,6 +2197,23 @@ serve(async (req) => {
             }
         }
 
+        // ── Un webhook no lanza sobre un flujo desactivado ──────────────────
+        // `is_active` es aparte de `estado_definicion`: un flujo publicado
+        // puede estar desactivado (§6.7). webhook-in ya lo filtra en su propia
+        // consulta antes de aceptar la llamada, pero entre esa lectura y este
+        // disparo el flujo puede haberse desactivado; se comprueba también
+        // aquí, ANTES de crear el run, no después. `resume` queda fuera por el
+        // mismo motivo que la comprobación de `publicado` de arriba: no lanza
+        // nada nuevo, solo continúa un run que ya arrancó.
+        if (action !== 'resume' && triggeredBy === 'webhook' && workflow.is_active === false) {
+            return new Response(
+                JSON.stringify({
+                    error: `El flujo "${workflow.name}" está desactivado. No se dispara por webhook.`,
+                }),
+                { status: 409, headers: { ...CORS, 'Content-Type': 'application/json' } }
+            );
+        }
+
         // 2. Cargar nodos y conexiones
         const [{ data: nodes }, { data: connections }] = await Promise.all([
             supabase.from('workflow_nodes').select('*').eq('workflow_id', workflowId),

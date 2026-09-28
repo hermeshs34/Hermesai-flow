@@ -73,21 +73,41 @@ async function registrarLimitado(
     }
 }
 
-async function buscarPrevia(db: SupabaseClient, workflowId: string, eventoId: string): Promise<{ execution_run_id: string | null } | null> {
+interface RecepcionPrevia {
+    execution_run_id: string | null;
+    estado:           string;
+    motivo:           string | null;
+}
+
+async function buscarPrevia(db: SupabaseClient, workflowId: string, eventoId: string): Promise<RecepcionPrevia | null> {
     const { data, error } = await db.from('webhook_recepciones')
-        .select('execution_run_id')
+        .select('execution_run_id, estado, motivo')
         .eq('workflow_id', workflowId).eq('evento_id', eventoId).in('estado', ESTADOS_ACEPTADOS)
         .maybeSingle();
     if (error) throw new Error(`No se pudo comprobar si la llamada estaba repetida: ${error.message}`);
     return data;
 }
 
+// La respuesta dice cómo acabó la llamada original, no solo que hubo una
+// repetida: «duplicada» a secas no distingue una que corrió de una que se
+// quedó en 'aceptada' o que falló al lanzar — el mismo «✓ Guardado» que no
+// medía nada (§12.2), aquí del lado del que llama.
 async function responderDuplicada(
-    db: SupabaseClient, org: string, workflowId: string, eventoId: string, runId: string | null,
+    db: SupabaseClient, org: string, workflowId: string, eventoId: string, previa: RecepcionPrevia,
 ): Promise<Response> {
     await registrarLimitado(db, org, workflowId, 'duplicada',
-        `Llamada repetida con Idempotency-Key «${eventoId}»: no se vuelve a ejecutar.`, eventoId, runId);
-    return json(200, { duplicada: true, execution_run_id: runId });
+        `Llamada repetida con Idempotency-Key «${eventoId}»: no se vuelve a ejecutar.`, eventoId, previa.execution_run_id);
+    const cuerpo: Record<string, unknown> = {
+        duplicada:        true,
+        execution_run_id: previa.execution_run_id,
+        estado_original:  previa.estado,
+    };
+    if (previa.estado === 'fallo_al_lanzar') {
+        const razon = (previa.motivo ?? '').trim();
+        cuerpo.motivo = (razon ? `${razon} ` : '') +
+            'La llamada original no llegó a ejecutarse; para reintentar, usa una Idempotency-Key nueva.';
+    }
+    return json(200, cuerpo);
 }
 
 // ── Aviso a los administradores: uno por flujo y hora ───────────────────────
@@ -268,7 +288,7 @@ serve(async (req: Request) => {
         // ── 5. ¿Repetida? ───────────────────────────────────────────────────
         if (clave.valor) {
             const previa = await buscarPrevia(db, workflowId, clave.valor);
-            if (previa) return await responderDuplicada(db, org, workflowId, clave.valor, previa.execution_run_id);
+            if (previa) return await responderDuplicada(db, org, workflowId, clave.valor, previa);
         }
 
         // ── 6. Aceptar ──────────────────────────────────────────────────────
@@ -287,7 +307,8 @@ serve(async (req: Request) => {
             // Dos llamadas iguales a la vez: la base decidió; la segunda es duplicada.
             if (insErr.code === '23505' && clave.valor) {
                 const previa = await buscarPrevia(db, workflowId, clave.valor);
-                return await responderDuplicada(db, org, workflowId, clave.valor, previa?.execution_run_id ?? null);
+                return await responderDuplicada(db, org, workflowId, clave.valor,
+                    previa ?? { execution_run_id: null, estado: 'aceptada', motivo: null });
             }
             throw new Error(`No se pudo registrar la llamada: ${insErr.message}`);
         }
