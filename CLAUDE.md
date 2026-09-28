@@ -1145,7 +1145,10 @@ Piezas y reglas:
    que no llegue por la vía interna ⇒ 400; sobre un flujo inactivo ⇒ 409.
 
 ✅ Sustitución de `{{webhook.nombre}}` en asunto y cuerpo medida en un correo
-real el 28/09 («Hola Ana»). ⚠️ Pendiente: el escape HTML (caso 6 del spec §10).
+real el 28/09 («Hola Ana»), y el escape también: `<b>x</b> {{summary}}`
+llegó literal en asunto y cuerpo, sin negrita y sin reinterpretar.
+⚠️ Para mandar `<` o `>` desde cmd de Windows van como `\u003c` y `\u003e` (el JSON los devuelve a `<` y `>`):
+cmd los toma por redirecciones y la llamada ni sale.
 ⚠️ Riesgo anotado: datos del webhook que pasen por un nodo IA pueden volver
 como HTML en un correo; el escape solo cubre `{{webhook.…}}` directo.
 
