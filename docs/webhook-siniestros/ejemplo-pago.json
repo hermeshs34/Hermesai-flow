@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "evento": "pago_registrado",
+  "ocurrido_at": "2026-09-29T14:05:00-04:00",
+  "empresa": "Seguros HermesAI",
+  "siniestro": { "id": "5f1c2a90-0000-4000-8000-000000000481", "numero": "SIN-PRUEBA-00481", "poliza": "AUTO-0012345", "ramo": "Automóvil", "estado": "pago_parcial", "estado_anterior": "aprobado" },
+  "asegurado": { "nombre": "María Pérez (PRUEBA)" },
+  "montos": { "moneda": "VES", "reclamado": 277000.00, "aprobado": 250000.00, "pagado": 100000.00, "reclamado_usd": 500.00, "tasa_bcv": 554.00, "tasa_fecha": "2026-09-20" },
+  "fechas": { "ocurrencia": "2026-09-18", "notificacion": "2026-09-19", "ultimo_pago": "2026-09-29", "cierre": null },
+  "pago": { "tipo": "parcial", "monto": 100000.00, "moneda": "VES", "monto_usd": 180.51, "fecha": "2026-09-29" },
+  "para_leer": {
+    "titulo": "PRUEBA — Pago registrado — Siniestro SIN-PRUEBA-00481 — María Pérez",
+    "asegurado": "María Pérez (PRUEBA)",
+    "estado": "Pago parcial (antes: Aprobado)",
+    "reclamado": "Bs. 277.000,00 (USD 500,00 a tasa BCV 554,00 del 20/09/2026)",
+    "aprobado": "Bs. 250.000,00",
+    "pagado": "Bs. 100.000,00",
+    "pago": "Bs. 100.000,00 (USD 180,51) el 29/09/2026",
+    "ocurrencia": "18/09/2026",
+    "ultimo_pago": "29/09/2026"
+  },
+  "enlace": "https://example.com/siniestros/prueba"
+}

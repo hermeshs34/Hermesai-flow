@@ -411,9 +411,14 @@ correo está en el buzón.
 2. **Aprobados los tres eventos** de la §2. Las cargas de SIRWeb **no** avisan.
 3. **No viajan** cédula o RIF, datos bancarios, beneficiario, notas ni
    `fraude_score`.
-4. **Ajuste posterior a la aprobación, pendiente de su visto bueno:** el **409 se
-   reintenta** (§4.2), porque mientras un flujo se vuelve a autorizar Flujos
-   contesta 409 y no reintentar perdería esos avisos.
+4. **El 409 se reintenta** (§4.2) — ajuste posterior a la primera aprobación,
+   **aprobado por Hermes el 29/09/2026** junto con el documento completo:
+   mientras un flujo se vuelve a autorizar, Flujos contesta 409, y no
+   reintentar perdería esos avisos.
+
+Cuerpos de ejemplo listos para `curl -d @…` en el repositorio de Flujos:
+`docs/webhook-siniestros/ejemplo-pago.json` y `ejemplo-alta.json` (este último,
+VES sin tasa y asegurado sin identificar).
 
 ---
 

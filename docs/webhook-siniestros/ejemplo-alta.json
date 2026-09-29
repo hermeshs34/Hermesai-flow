@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "evento": "siniestro_creado",
+  "ocurrido_at": "2026-09-29T21:30:00-04:00",
+  "empresa": "Seguros HermesAI",
+  "siniestro": { "id": "5f1c2a90-0000-4000-8000-000000000482", "numero": "SIN-PRUEBA-00482", "poliza": "SALUD-0098765", "ramo": "Salud", "estado": "abierto", "estado_anterior": null },
+  "asegurado": { "nombre": null },
+  "montos": { "moneda": "VES", "reclamado": 55400.00, "aprobado": null, "pagado": null, "reclamado_usd": null, "tasa_bcv": null, "tasa_fecha": null },
+  "fechas": { "ocurrencia": "2026-09-29", "notificacion": "2026-09-29", "ultimo_pago": null, "cierre": null },
+  "pago": null,
+  "para_leer": {
+    "titulo": "PRUEBA — Siniestro nuevo SIN-PRUEBA-00482 — asegurado sin identificar",
+    "asegurado": "asegurado sin identificar",
+    "estado": "Abierto",
+    "reclamado": "Bs. 55.400,00 (sin tasa BCV registrada)",
+    "aprobado": "—",
+    "pagado": "—",
+    "pago": "—",
+    "ocurrencia": "29/09/2026",
+    "ultimo_pago": "sin pagos"
+  },
+  "enlace": "https://example.com/siniestros/prueba"
+}
