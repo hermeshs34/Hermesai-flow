@@ -424,5 +424,175 @@ VES sin tasa y asegurado sin identificar).
 
 ## 9. Estado y respuestas de la sesión de RiskGuard
 
-*(Lo rellena la sesión de RiskGuard: qué construyó, dónde, qué columnas
-comprobó contra la base y qué difiere de este documento.)*
+*Rellenado por la sesión de RiskGuard el 01/10/2026; cerrado el 04/10/2026.*
+
+**Estado: ✅ ENCARGO CERRADO (04/10/2026).** Desplegado el 01/10 y las 9 pruebas
+del §7 superadas contra el flujo de prueba, todas en la empresa demo de
+RiskGuard (Atlántida, J-DEMO-0001). Detalle en el §9.4. Hoy **sólo Atlántida**
+tiene destino: la empresa real de RiskGuard (Seguros HermesAI) no encola nada
+hasta que tenga fila en `flujos_destinos` (ver §9.5).
+
+### 9.1 Qué se construyó y dónde (repositorio RiskGuard_Insurance)
+
+| Pieza | Dónde |
+|---|---|
+| Destino por empresa + cola de salida (outbox) + trigger + 3 RPC del acto | `database/migrations/20261001_avisos_flujos_siniestros.sql` |
+| Cron cada minuto que llama al enviador | `database/migrations/20261001b_cron_avisos_flujos.sql` (se corre **después** de desplegar la función) |
+| Enviador: `fetch`, decisión por respuesta, reintentos, correo a admins | `supabase/functions/enviar-avisos-flujos/index.ts` + lógica pura en `supabase/functions/_shared/avisosFlujos.ts` |
+| La pantalla deja de escribir directo y pasa por las RPC | `src/lib/services/siniestros.ts` (`crearSiniestro`), `src/lib/services/liquidacion.ts` (`avanzarEstado`, `registrarPago`) |
+| Panel del admin: pendientes, entregados, fallidos con código y cuerpo HTTP reales, botón **Reencolar** | `src/components/AvisosFlujosPanel.tsx` en Administración |
+| Enlace que abre el siniestro | `src/pages/GestionSiniestros.tsx` (`/siniestros?siniestro=<id>`) |
+| Pruebas (43; las 5 últimas, el diagnóstico de un destino que no está en el secreto) | `src/tests/services/avisosFlujos.test.ts` |
+
+**Cómo se cumple «solo personas, un acto = una llamada» (§2, §5.8, §5.9):** el
+trigger `AFTER INSERT OR UPDATE` de `siniestros` sólo encola si la transacción
+lleva la marca local `app.flujos_acto`, y esa marca sólo la ponen las RPC
+`siniestro_crear`, `siniestro_cambiar_estado` y `siniestro_registrar_pago`. El
+ETL de SIRWeb, los rellenos y las migraciones no la ponen y no avisan. El
+navegador no puede ponerla a mano: PostgREST no expone `set_config`. El pago
+y su cambio de estado van en **una** RPC y salen en **un** aviso
+`pago_registrado` con `estado_anterior`.
+
+**Outbox (§5.2, §5.3):** el aviso se escribe en la misma transacción que el acto.
+Si construir el aviso falla, el acto **no** se deshace: queda una fila
+`fallido` con el error a la vista. El envío lo hace la Edge Function, con su
+propio `fetch` y escribiendo ella el código HTTP leído, no con `pg_net` (§5,
+aviso final). El cuerpo se guarda como **texto** y se reenvía byte a byte.
+
+**Secretos (§5.1, §5.5):** la URL y el `hfw_…` viven en el secreto de Edge
+Functions `FLUJOS_WEBHOOK_DESTINOS`. En la base sólo hay `destino_ref`, la clave
+dentro de ese secreto.
+
+### 9.2 Columnas comprobadas
+
+Los nombres salen de las migraciones de RiskGuard y se probaron contra un
+esquema simulado en PostgreSQL 17 local. *(01/10: Hermes corrió la migración en
+la base real y la guarda 0 pasó, así que las columnas quedan medidas contra la
+base real.)* El conector de Supabase no está autorizado. Para cumplir el
+§5.10 sin fiarse de eso, la **guarda 0 de la migración** consulta
+`information_schema.columns` de la base real antes de crear nada. Aborta, sin
+dejar nada a medias, si falta cualquiera de estas columnas:
+
+- `siniestros`: `id`, `empresa_id`, `numero_siniestro`, `ramo`, `estado`,
+  `moneda`, `monto_reclamado`, `monto_aprobado`, `monto_pagado`, `monto_usd`,
+  `tasa_registro_bcv`, `tasa_registro_fecha`, `fecha_ocurrencia`,
+  `fecha_notificacion`, `fecha_cierre`, `asegurado_nombre`,
+  `asegurado_oracle_id`, `poliza_oracle_id`, `origen`, `updated_at`.
+- `siniestros_pagos`: `id`, `empresa_id`, `siniestro_id`, `tipo`, `monto`,
+  `moneda`, `monto_usd`, `fecha_pago`.
+- `oracle_asegurados`: `empresa_id`, `id_oracle`, `nombre`.
+- `oracle_polizas`: `empresa_id`, `id_oracle`, `numero_poliza`.
+- `poliza_analitica`: `empresa_id`, `id_core`, `numero_poliza`,
+  `es_vigente_snapshot`, `snapshot_desde`.
+- `empresas`: `id`, `nombre`.
+- `usuarios`: `id`, `auth_user_id`, `empresa_id`, `rol`, `activo`.
+
+También aborta si alguna de las cinco fechas no es `date` ni `timestamptz`,
+porque entonces no podría pasarse a hora de Caracas.
+
+### 9.3 Qué difiere de este documento
+
+1. **Secreto:** es un único JSON `FLUJOS_WEBHOOK_DESTINOS`
+   (`{"<destino_ref>": {"url": …, "secreto": "hfw_…"}}`) en vez de
+   `FLUJOS_WEBHOOK_URL` y `FLUJOS_WEBHOOK_SECRETO`. Así cada empresa puede
+   tener su destino (§5.6).
+2. **`enlace`:** RiskGuard no tiene ruta de ficha de siniestro. El enlace es
+   `<app>/siniestros?siniestro=<id>`, que abre el detalle en la pantalla de
+   siniestros (se añadió para esto). No lleva empresa: hoy un login es una
+   empresa, y si el siniestro no es de la sesión, la pantalla lo dice.
+3. **`poliza`:** la pantalla de siniestros **no muestra póliza**, así que no
+   hay «la que se ve». Se manda el número del read-model `poliza_analitica`,
+   si no el del espejo `oracle_polizas`, si no el id Oracle, y si no `null`.
+4. **Etiquetas de estado en `para_leer`:** las mismas que pinta RiskGuard
+   (`ETIQUETAS_ESTADO`), con su mayúscula: «Pago Parcial (antes: Aprobado)»,
+   no «Pago parcial». Un test compara el SQL con la pantalla. Los 15 slugs de
+   `siniestro.estado` son los del documento.
+5. **`para_leer.titulo`:** «Siniestro nuevo / Cambio de estado / Pago registrado
+   — Siniestro <número> — <asegurado>».
+6. **Campos añadidos en `para_leer`** (añadir no cambia la versión, §3.3):
+   `numero`, `poliza`, `ramo`, `notificacion` y `cierre`, siempre como texto
+   («—» si falta).
+7. **VES con tasa pero sin `monto_usd` guardado:** `reclamado_usd: null` y el
+   texto lo dice, «Bs. … (sin equivalente en USD registrado; tasa BCV … del …)».
+   Nunca se calcula un USD que RiskGuard no tenga. Igual con un pago en VES
+   sin `monto_usd`.
+8. **Respuestas que el §4.2 no enumera:** cualquier otro 2xx cuenta como
+   entregado, 408 y 425 se reintentan, y cualquier otro 4xx es fallido. Un 429
+   detiene ese destino durante el resto de la pasada.
+9. **Efecto colateral bueno:** el pago y la actualización del siniestro eran
+   dos llamadas sueltas y ahora son una transacción. El cambio de estado da
+   error si no actualizó ninguna fila, cuando antes podía «guardar» sin
+   guardar.
+10. **Aviso al admin de un fallido:** un correo por empresa y pasada al buzón
+    admin configurado en RiskGuard (`email_config`), una sola vez por aviso. El
+    envío se registra en `email_log` con `tipo_alerta = 'flujos_aviso_fallido'`.
+11. **`ocurrido_at`** se toma al segundo. Si una misma persona cambiase dos veces
+    al mismo estado dentro del mismo segundo, saldría un aviso y no dos (misma
+    clave).
+
+### 9.4 Cierre del encargo (04/10/2026)
+
+Los tres pasos que faltaban están hechos:
+
+1. ✅ 01/10 · Hermes corrió `20261001` y `20261001b` (cron cada minuto, jobid 15),
+   puso el secreto `FLUJOS_WEBHOOK_DESTINOS` a mano en el panel, añadió la fila
+   de `flujos_destinos` (`flujos_prueba` → Atlántida) y desplegó
+   `enviar-avisos-flujos` por CLI.
+2. ✅ 01/10 · Flujos creó el flujo de prueba (workflow
+   `e76ce72b-5cb7-4447-8801-adec24ff4743`); el `hfw_…` pasó por el panel, no
+   por chat.
+3. ✅ 9/9 pruebas del §7, con la parte HTTP:
+
+| # | Prueba | Fecha | Resultado |
+|---|---|---|---|
+| 1 | Alta | 02/10 | 1 sola fila `siniestro_creado`, 202 al primer intento, correo recibido |
+| 2 | Cambio de estado | 01/10 | 202 y ejecución `success` en Flujos; correo y enlace correctos. Los 7 primeros intentos fallaron por el JSON del secreto (una comilla), no por el envío. El 02/10, cinco cambios más con `estado_anterior` bien encadenado |
+| 3 | Pago que cambia el estado | 02/10 | SIN-DEMO-2022-0194, de pago_parcial a pago_final: **un solo** aviso `pago_registrado`, con bloque `pago` y último pago |
+| 4 | Reenvío de la misma clave | 02/10 | 200 `duplicada: true` (`estado_original: lanzada`) y ningún segundo correo |
+| 5 | UPDATE directo sin RPC | 02/10 | Marca vacía, 0 avisos (en un `DO` que se deshace) |
+| 6 | 409 y 401 | 02/10 | 409 (flujo desactivado): el aviso queda pendiente y se reintenta; al reactivar el flujo, 202 al segundo intento. 401 (secreto rotado en Flujos): fallido sin reintentos y correo de alerta al admin; con el secreto nuevo y **Reencolar**, 202 |
+| 7 | Nombre del padrón | 02/10 | Un siniestro sin nombre, enlazado a `ASEG-DEMO-0001`, trae «María Gabriela Pérez Rondón». Restaurado después |
+| 8 | Monedas | 02/10 | USD con `tasa_bcv` vacía; VES con tasa (Bs 50.000 → USD 57,70 a 866,5612 del 02/10); VES sin tasa: `reclamado_usd: null` y el texto lo dice |
+| 9 | Acto después de las 20:00 VET | 04/10 | Disparado por un pg_cron de un solo uso, porque Hermes está en Europa. Con `created_at` 2026-10-04 00:30 UTC se obtuvo `ocurrido_at` **`2026-10-03T20:30:00-04:00`**, entregado 202 y el trabajo se desprogramó solo |
+
+**Hallazgos de las pruebas que no bloquean el cierre:**
+
+- **Fecha del pago.** `fecha_pago` la propone el formulario con la fecha del
+  **navegador**, y el aviso la copia tal cual. Desde Venezuela es la correcta.
+  Desde Europa, después de las 20:00 VET, el formulario sugiere la fecha de
+  mañana; se corrige a mano en el campo.
+- **`pago_final` sin pagos.** El workflow de RiskGuard deja llevar un siniestro
+  a `pago_final` sin ningún pago registrado. Es una regla de negocio de
+  RiskGuard que está por decidir; para Flujos no cambia nada.
+
+### 9.5 Lo único que queda — producción
+
+La empresa real de RiskGuard (Seguros HermesAI) **no tiene destino**. Pasos:
+
+1. Flujos crea el flujo de **producción**.
+2. Pasa el `workflow_id` y el `hfw_…` por el panel, nunca por chat.
+3. Hermes añade la entrada al secreto `FLUJOS_WEBHOOK_DESTINOS` y la fila
+   correspondiente en `flujos_destinos` de RiskGuard.
+
+No hace falta código ni volver a desplegar.
+
+**Paso 1 ✅ hecho el 05/10/2026 (sesión de Flujos):**
+
+- Flujo **«Avisos de siniestros RiskGuard»**,
+  `workflow_id` **`b54a3c17-6522-4625-96d5-91f7001a271e`**: Webhook Entrante → Email,
+  copia del flujo de prueba. Está `publicado` (autorizado por otra cuenta) y activo.
+- Correo a los dos administradores: `hermes.hs34@gmail.com` y
+  `hersan_romero@yahoo.com`. Todos los eventos van al mismo grupo, sin Decisión.
+  Ninguna regla decide por importe (§6).
+- URL del webhook (el secreto va aparte, en la cabecera `x-webhook-secret`):
+  `https://kbscaxcokxwdbnrltkup.supabase.co/functions/v1/webhook-in/b54a3c17-6522-4625-96d5-91f7001a271e`
+- Secreto `hfw_…` generado en el panel. Hermes lo copió él mismo y no pasó por chat
+  ni por ningún fichero.
+- Probado con `curl -d @docs/webhook-siniestros/ejemplo-pago.json` el 05/10 a las
+  07:24 UTC. Resultado: ejecución `success` con `triggered_by='webhook'` y correo
+  recibido en el buzón de Daniel.
+- Las dos ejecuciones en `error` de las 07:14–07:15 UTC fueron pulsaciones de
+  «Ejecutar» a mano. Un flujo Webhook sin datos revienta a propósito (CLAUDE.md
+  de Flujos, §8.3.7).
+
+Quedan los pasos 2 y 3, que se hacen en RiskGuard.
