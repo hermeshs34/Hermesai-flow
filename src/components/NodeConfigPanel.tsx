@@ -349,36 +349,30 @@ function AvisoDestinatarioWebhook({ to }: { to: unknown }) {
     );
 }
 
-const BCV_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#ffffff">
-  <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);padding:32px 24px;border-radius:12px 12px 0 0;text-align:center">
-    <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700">📊 Informe Diario — Tasa BCV</h1>
-    <p style="color:#93c5fd;margin:8px 0 0;font-size:14px">Generado automáticamente por HermesAI Flow</p>
-  </div>
-  <div style="padding:28px 24px;background:#f8fafc">
-    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden">
-      <tr style="background:#eff6ff">
-        <td style="padding:14px 18px;font-size:13px;color:#64748b;font-weight:600;width:50%">Tasa BCV Oficial (USD)</td>
-        <td style="padding:14px 18px;font-size:20px;font-weight:700;color:#1e40af">Bs. {{previous.bcv_rate}}</td>
-      </tr>
-      <tr>
-        <td style="padding:14px 18px;font-size:13px;color:#64748b;font-weight:600">Fuente</td>
-        <td style="padding:14px 18px;font-size:13px;color:#374151">{{previous.source}}</td>
-      </tr>
-      <tr style="background:#eff6ff">
-        <td style="padding:14px 18px;font-size:13px;color:#64748b;font-weight:600">Fecha y hora</td>
-        <td style="padding:14px 18px;font-size:13px;color:#374151">{{previous.timestamp}}</td>
-      </tr>
-    </table>
-    <div style="margin-top:20px;padding:14px 18px;background:#fef3c7;border-left:4px solid #f59e0b;border-radius:0 8px 8px 0">
-      <p style="margin:0;font-size:13px;color:#92400e">
-        <strong>Nota:</strong> Esta tasa es referencial. Verificar siempre con la fuente oficial del BCV antes de operaciones cambiarias.
-      </p>
-    </div>
-  </div>
-  <div style="padding:16px 24px;background:#1e3a5f;border-radius:0 0 12px 12px;text-align:center">
-    <p style="margin:0;font-size:11px;color:#93c5fd">HermesAI Flow · Automatización Inteligente de Procesos</p>
-  </div>
-</div>`;
+// Las plantillas son SOLO el contenido. La cabecera «HF · HermesAI Flow», la
+// franja con el flujo y la hora, el título (el asunto) y el pie los pone el
+// motor con plantillaCorreo() de _shared/email.ts (CLAUDE.md §9.1). Si una
+// plantilla trae su propia cabecera, el correo sale con dos — y la de degradado
+// sale en BLANCO: Gmail descarta `linear-gradient` y el texto blanco queda
+// sobre fondo blanco. Pasó con la del BCV el 05/10/2026.
+const BCV_TEMPLATE = `<p style="margin:0 0 16px">Tasa oficial publicada por el Banco Central de Venezuela:</p>
+<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0">
+  <tr style="background:#eff6ff">
+    <td style="padding:14px 18px;font-size:13px;color:#64748b;font-weight:600;width:50%">Tasa BCV Oficial (USD)</td>
+    <td style="padding:14px 18px;font-size:20px;font-weight:700;color:#1e40af">Bs. {{previous.bcv_rate}}</td>
+  </tr>
+  <tr>
+    <td style="padding:14px 18px;font-size:13px;color:#64748b;font-weight:600">Fuente</td>
+    <td style="padding:14px 18px;font-size:13px;color:#374151">{{previous.source}}</td>
+  </tr>
+  <tr style="background:#eff6ff">
+    <td style="padding:14px 18px;font-size:13px;color:#64748b;font-weight:600">Consultada</td>
+    <td style="padding:14px 18px;font-size:13px;color:#374151">{{previous.timestamp}}</td>
+  </tr>
+</table>
+<p style="margin:20px 0 0;padding:14px 18px;background:#fef3c7;border-left:4px solid #f59e0b;font-size:13px;color:#92400e">
+  <strong>Nota:</strong> Esta tasa es referencial. Verificar siempre con la fuente oficial del BCV antes de operaciones cambiarias.
+</p>`;
 
 function EmailForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
     const PLANTILLAS = [
@@ -741,17 +735,8 @@ function EeffForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) 
     );
 }
 
-const REPORTE_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;background:#fff">
-  <div style="background:linear-gradient(135deg,#1e1b4b,#4f46e5);padding:32px 24px;border-radius:12px 12px 0 0;text-align:center">
-    <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700">📊 Reporte de Gestión</h1>
-    <p style="color:#a5b4fc;margin:8px 0 0;font-size:14px">Informe ejecutivo generado automáticamente</p>
-  </div>
-  <div style="padding:28px 24px;background:#f8fafc">
-    <h2 style="color:#1e1b4b;font-size:16px;margin:0 0 16px">Estado de Indicadores</h2>
-    {{summary}}
-    <p style="color:#9ca3af;font-size:11px;margin-top:24px;text-align:center">HermesAI Flow · Automatización Inteligente de Procesos</p>
-  </div>
-</div>`;
+const REPORTE_TEMPLATE = `<h2 style="color:#1e1b4b;font-size:16px;margin:0 0 16px">Estado de Indicadores</h2>
+{{summary}}`;
 
 function ReporteSudeasegForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
     return (
@@ -914,53 +899,29 @@ function AprobacionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => vo
     );
 }
 
-const NO_COINCIDENCIA_TEMPLATE = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#fff">
-  <div style="background:linear-gradient(135deg,#14532d,#16a34a);padding:28px 24px;border-radius:12px 12px 0 0;text-align:center">
-    <h1 style="color:#fff;margin:0;font-size:20px;font-weight:700">✅ Verificación Sin Observaciones</h1>
-    <p style="color:#bbf7d0;margin:8px 0 0;font-size:13px">Verificación OFAC/ONU/UE — HermesAI Flow</p>
-  </div>
-  <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">La persona verificada <strong>no aparece</strong> en las listas restrictivas consultadas.</p>
-    <table style="width:100%;border-collapse:collapse;background:#fff;border-radius:8px;border:1px solid #e5e7eb;margin:16px 0">
-      <tr style="background:#f0fdf4"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Nombre verificado</td><td style="padding:12px 16px;font-size:13px;font-weight:700;color:#15803d">{{previous.nombre_buscado}}</td></tr>
-      <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Documento</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.documento_buscado}}</td></tr>
-      <tr style="background:#f0fdf4"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Resultado</td><td style="padding:12px 16px;font-size:13px;font-weight:700;color:#15803d">Sin coincidencias</td></tr>
-      <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Fecha verificación</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.timestamp}}</td></tr>
-    </table>
-    <div style="background:#dcfce7;border-left:4px solid #16a34a;padding:12px 16px;border-radius:0 8px 8px 0;margin-bottom:16px">
-      <p style="margin:0;font-size:13px;color:#14532d">El proceso puede continuar sin restricciones.</p>
-    </div>
-    <p style="color:#9ca3af;font-size:11px;text-align:center">HermesAI Flow · Automatización Inteligente de Procesos</p>
-  </div>
-</div>`;
+const NO_COINCIDENCIA_TEMPLATE = `<p style="margin:0 0 16px;padding:12px 16px;background:#dcfce7;border-left:4px solid #16a34a;color:#14532d;font-weight:700">
+  ✅ Verificación OFAC / ONU / UE sin observaciones
+</p>
+<p style="margin:0 0 16px">La persona verificada <strong>no aparece</strong> en las listas restrictivas consultadas.</p>
+<table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;margin:0 0 16px">
+  <tr style="background:#f0fdf4"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Nombre verificado</td><td style="padding:12px 16px;font-size:13px;font-weight:700;color:#15803d">{{previous.nombre_buscado}}</td></tr>
+  <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Documento</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.documento_buscado}}</td></tr>
+  <tr style="background:#f0fdf4"><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Resultado</td><td style="padding:12px 16px;font-size:13px;font-weight:700;color:#15803d">Sin coincidencias</td></tr>
+  <tr><td style="padding:12px 16px;font-size:13px;color:#6b7280;font-weight:600">Fecha verificación</td><td style="padding:12px 16px;font-size:13px;color:#374151">{{previous.timestamp}}</td></tr>
+</table>
+<p style="margin:0">El proceso puede continuar sin restricciones.</p>`;
 
-// Estilo de los correos de alerta de RiskGuard. La tabla la arma el motor
+// Solo contenido: el marco lo pone el motor (ver BCV_TEMPLATE). La tabla la arma el motor
 // (`coincidencias_html` del nodo Verificar OFAC) con TODAS las coincidencias,
 // agrupadas por persona; antes esta plantilla leía `hits.0.*` y enseñaba solo
 // la primera de todo el lote.
-const OFAC_EMAIL_TEMPLATE = `<div style="background:#f8fafc;padding:24px 0;font-family:Arial,sans-serif">
-<div style="max-width:640px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0">
-  <div style="background:#0a0f1e;padding:20px 28px">
-    <div style="color:#fff;font-weight:900;font-size:14px;letter-spacing:1px">⚠ HermesAI Flow</div>
-    <div style="color:#64748b;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:2px">Sistema de Alertas</div>
-  </div>
-  <div style="background:#dc262615;border-left:4px solid #dc2626;padding:14px 28px">
-    <span style="color:#dc2626;font-weight:900;font-size:13px;text-transform:uppercase;letter-spacing:1px">⚡ Coincidencias en listas restrictivas</span>
-  </div>
-  <div style="padding:24px 28px 0">
-    <h1 style="margin:0;font-size:20px;font-weight:900;color:#0f172a">Verificación OFAC / ONU / UE</h1>
-  </div>
-  <div style="padding:20px 28px 28px;color:#374151;font-size:14px;line-height:1.6">
-    {{previous.coincidencias_html}}
-    <p style="background:#f1f5f9;border-radius:8px;padding:10px 14px;color:#475569;font-size:12px;margin:16px 0 0">
-      Una coincidencia por nombre es un indicio, no una identificación: confirmar con el documento de identidad antes de actuar.
-    </p>
-  </div>
-  <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:14px 28px">
-    <span style="color:#94a3b8;font-size:11px;font-weight:700">© 2026 HermesAI Tech — Confidencial · GAFI/AML</span>
-  </div>
-</div>
-</div>`;
+const OFAC_EMAIL_TEMPLATE = `<p style="margin:0 0 16px;padding:12px 16px;background:#fef2f2;border-left:4px solid #dc2626;color:#dc2626;font-weight:900;font-size:13px;text-transform:uppercase;letter-spacing:1px">
+  ⚡ Coincidencias en listas restrictivas
+</p>
+{{previous.coincidencias_html}}
+<p style="background:#f1f5f9;padding:10px 14px;color:#475569;font-size:12px;margin:16px 0 0">
+  Una coincidencia por nombre es un indicio, no una identificación: confirmar con el documento de identidad antes de actuar.
+</p>`;
 
 function RiskguardForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void }) {
     return (

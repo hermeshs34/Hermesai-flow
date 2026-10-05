@@ -1229,6 +1229,17 @@ hora VE (§9.3), el título y un pie fijo. Reglas:
    `<!doctype` o `<html`). Quien pegue su propio HTML entero lo conserva tal cual.
 5. **Un correo nuevo usa `plantillaCorreo`.** No vuelvas a escribir un
    `<div style=…>` suelto: es justo lo que dejó cada correo con una cara distinta.
+6. **Las plantillas del Constructor (`NodeConfigPanel.tsx`) son SOLO contenido**
+   — sin cabecera ni pie propios. El primer correo real del BCV con el marco
+   (05/10/2026) salió con **dos** cabeceras, y la suya en blanco: **Gmail
+   descarta `linear-gradient`** y dejaba texto blanco sobre fondo blanco. Si
+   algún día hace falta un degradado, va con `background-color` delante.
+   ⚠️ Los nodos que ya guardaron la plantilla vieja la conservan en
+   `config_json.body`: cambiar la plantilla no los toca. Volver a aplicarla
+   **despublica el flujo** (§6.7).
+7. **En el cuerpo de Email y Reporte, un `{{previous.…}}` con fecha ISO sale en
+   hora VE** (`fechasVE` de `resolveValue`). En Decisión y webhook de salida
+   sigue siendo el ISO: ahí se compara, no se lee.
 
 ⚠️ **El correo aquí lo dispara el motor, no siempre una sesión.** `cron-runner`
 corre por pg_cron sin nadie delante. Por eso la validación de JWT que lleva la

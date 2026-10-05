@@ -152,10 +152,14 @@ function topologicalSort(nodes: any[], connections: any[]): any[] {
 // en el CUERPO HTML de un correo se escapan (se escapa el dato, nunca la
 // plantilla — ver escaparHtml en _shared/email.ts). En asunto y destinatario
 // van como texto.
+// `fechasVE`: en el cuerpo de un correo, un {{previous.…}} que sea una fecha
+// ISO se escribe en hora de Venezuela (§9.3). El correo del BCV enseñaba
+// «2026-10-05T17:48:36.075Z». Solo ahí: en una Decisión o un webhook de salida
+// el valor tiene que seguir siendo el ISO que se puede comparar y parsear.
 function resolveValue(
     expr: string,
     context: Record<string, any>,
-    opciones: { escaparWebhook?: boolean } = {},
+    opciones: { escaparWebhook?: boolean; fechasVE?: boolean } = {},
 ): any {
     if (!expr) return expr;
 
@@ -193,7 +197,10 @@ function resolveValue(
                         if (val === null || val === undefined) { found = false; break; }
                         val = Array.isArray(val) ? val[Number(segment)] : val[segment];
                     }
-                    if (found && val !== null && val !== undefined && val !== '') return val;
+                    if (found && val !== null && val !== undefined && val !== '') {
+                        if (opciones.fechasVE && typeof val === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(val)) return fechaHoraVE(val);
+                        return val;
+                    }
                 }
                 return '';
             }
@@ -720,7 +727,7 @@ async function executeNode(
             }
             const to      = resolveValue(cfg.to ?? '', context);
             const subject = resolveValue(cfg.subject ?? 'Notificación HermesAI Flow', context);
-            let   body    = resolveValue(cfg.body ?? '', context, { escaparWebhook: true });
+            let   body    = resolveValue(cfg.body ?? '', context, { escaparWebhook: true, fechasVE: true });
 
             if (!to) throw new Error('Nodo Email: campo "to" requerido');
 
@@ -1835,7 +1842,7 @@ ${buildContextSummary(context)}`;
             if (canalEmail() === 'ninguno') throw new Error('Sin canal de correo configurado');
             const to      = resolveValue(cfg.to ?? '', context);
             const subject = resolveValue(cfg.subject ?? '📊 Reporte Gerencial — HermesAI Flow', context);
-            let   body    = resolveValue(cfg.body ?? '', context, { escaparWebhook: true });
+            let   body    = resolveValue(cfg.body ?? '', context, { escaparWebhook: true, fechasVE: true });
             if (!to) throw new Error('Nodo Reporte Gerencial: campo "to" requerido');
 
             if (!body?.trim()) {
@@ -2021,8 +2028,10 @@ ${buildContextSummary(context)}`;
                 </table>`;
             }
 
+            // `background-color` antes del degradado: Gmail descarta `linear-gradient`
+            // y sin color de fondo el texto blanco de la cabecera queda invisible.
             const reporte_html = `<div style="font-family:Arial,sans-serif;max-width:680px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb">
-  <div style="background:linear-gradient(135deg,${colorHeader},#1e3a5f);padding:28px 24px">
+  <div style="background-color:${colorHeader};background-image:linear-gradient(135deg,${colorHeader},#1e3a5f);padding:28px 24px">
     <p style="margin:0 0 4px;color:rgba(255,255,255,0.7);font-size:11px;text-transform:uppercase;letter-spacing:1px">${escaparHtml(tipo)} — INFORME REGULATORIO</p>
     <h1 style="margin:0;color:#fff;font-size:20px;font-weight:700">${escaparHtml(empresa)}</h1>
     <p style="margin:8px 0 0;color:rgba(255,255,255,0.8);font-size:13px">Período: ${escaparHtml(periodo)} &nbsp;·&nbsp; Emitido: ${escaparHtml(fechaHora)}</p>
