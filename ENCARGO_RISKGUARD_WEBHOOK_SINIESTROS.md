@@ -595,9 +595,31 @@ No hace falta código ni volver a desplegar.
   «Ejecutar» a mano. Un flujo Webhook sin datos revienta a propósito (CLAUDE.md
   de Flujos, §8.3.7).
 
-**Pasos 2 y 3 ✅ hechos por Hermes el 05/10/2026 en RiskGuard:** entrada nueva en
-`FLUJOS_WEBHOOK_DESTINOS` y fila nueva en `flujos_destinos` para Seguros HermesAI.
-Al anotarlo, el flujo de producción solo tenía la recepción de la prueba con curl;
-aún no había llegado ningún aviso real. **La conexión se confirmará con el primer
-acto real** (alta, cambio de estado o pago) en Seguros HermesAI. Debe dar una
-recepción `lanzada` en Flujos y el correo a los dos administradores.
+**Pasos 2 y 3 ✅ hechos por Hermes el 05/10/2026 en RiskGuard. Hizo falta una
+segunda vuelta:**
+
+- El primer cambio de estado (08:44 UTC, siniestro 1-98-10297) **no dejó ningún
+  rastro**: ni un aviso en el panel ni una recepción en Flujos. La causa era que
+  la fila de Seguros HermesAI no existía en `flujos_destinos`; solo estaba la de
+  Atlántida. Una empresa sin destino se descarta en silencio, y eso es lo
+  esperado (§5.6). Por eso un panel vacío significa «sin destino», no «sin
+  errores».
+- El secreto `FLUJOS_WEBHOOK_DESTINOS` tenía tres fallos:
+  - un JSON inválido, porque faltaba la clave `"url":`;
+  - el trozo `-adec24ff4743` pegado al final de la URL, que es del id del flujo
+    de prueba;
+  - la entrada de `flujos_prueba` aparentemente perdida al sustituir el valor.
+
+  Se reescribió entero con dos entradas: `flujos_prueba` y `flujos_produccion`.
+- Fila creada: Seguros HermesAI (`5a368fc5-…`) → `flujos_produccion`. La
+  `app_url` se copió de la fila de la Demo.
+
+✅ **Primer aviso real, 05/10/2026 a las 09:08 UTC:** cambio de estado del
+1-98-10297 (Dictamen → Inspección). La recepción quedó `lanzada` y la ejecución
+terminó en `success` con `triggered_by='webhook'`. Se comprobó la llegada del
+correo a hermes.hs34@gmail.com. **Encargo cerrado de extremo a extremo.**
+
+Observación sobre los datos de RiskGuard, no sobre la integración: ese siniestro
+llegó con «asegurado sin identificar» y montos USD 0,00. Viene de SIRWeb sin
+identidad, que es el mismo hueco que cubre `v_cobertura_screening_asegurados`
+(CLAUDE.md de Flujos, §8.2.6).
