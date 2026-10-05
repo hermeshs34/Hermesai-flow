@@ -27,7 +27,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { enviarEmail, canalEmail, escaparHtml } from '../_shared/email.ts';
+import { enviarEmail, canalEmail, escaparHtml, plantillaCorreo } from '../_shared/email.ts';
 import { fechaHoraVE } from '../_shared/fecha.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
@@ -83,21 +83,18 @@ function cuerpo(s: Salud, recuperado: boolean): string {
              <td style="padding:5px 0;font-family:ui-monospace,monospace">${escaparHtml(v)}</td></tr>`
     ).join('');
 
-    return `
-    <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:620px;margin:0 auto">
-      <div style="background:${recuperado ? '#065f46' : '#991b1b'};color:#fff;padding:20px 24px;border-radius:12px 12px 0 0">
-        <h1 style="margin:0;font-size:17px">${escaparHtml(cabecera)}</h1>
-      </div>
-      <div style="border:1px solid #e5e7eb;border-top:0;border-radius:0 0 12px 12px;padding:20px 24px">
-        <p style="margin:0 0 14px;font-size:14px;color:#111827">${escaparHtml(s.motivo)}</p>
+    return plantillaCorreo({
+        titulo: cabecera,
+        tono:   recuperado ? 'ok' : 'peligro',
+        fecha:  s.medido_at,
+        cuerpo: `<p style="margin:0 0 14px;font-size:14px;color:#111827">${escaparHtml(s.motivo)}</p>
         ${aviso}
         <table style="width:100%;border-collapse:collapse;font-size:12px;color:#374151">${tabla}</table>
         <p style="margin:18px 0 0;font-size:11px;color:#9ca3af">
           Medido en la base de datos a las ${escaparHtml(fechaHoraVE(s.medido_at))}, hora de Venezuela.
           Aviso automático del vigilante; no se repite antes de ${MINUTOS_ENTRE_AVISOS} minutos.
-        </p>
-      </div>
-    </div>`;
+        </p>`,
+    });
 }
 
 serve(async (req: Request) => {

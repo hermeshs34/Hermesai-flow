@@ -1205,11 +1205,30 @@ salen tres reglas:
    entero, por eso se valida antes de salir.
 
 El único secreto es `RESEND_API_KEY`, en *Supabase → Edge Functions → Secrets*.
-Cuatro funciones mandan correo (`execute-workflow`, `cron-runner`,
-`resolve-approval` y el nodo Email dentro del motor) y **las cuatro pasan por
-este fichero**. No abrir un segundo camino: en concreto, este producto **no
-lleva Netlify Functions** — eso es de Estados Financieros, que sí las necesitaba
-porque su correo salía del navegador.
+Seis funciones mandan correo (`execute-workflow` —nodos Email y Reporte y el
+aviso de aprobación pendiente—, `cron-runner`, `resolve-approval`, `webhook-in`,
+`vigilante-reloj` y `request-password-reset`) y **las seis pasan por este
+fichero**. (Este párrafo decía «cuatro» y ya no era verdad.) No abrir un segundo
+camino: en concreto, este producto **no lleva Netlify Functions** — eso es de
+Estados Financieros, que sí las necesitaba porque su correo salía del navegador.
+
+**Un solo marco: `plantillaCorreo()`** (desde el 05/10/2026). Antes cada función
+armaba su propio HTML y ningún correo llevaba logo ni encabezado. Hoy todos salen
+con la misma cabecera oscura «HF · HermesAI Flow», una barra de color según el
+tono (`info`, `aviso`, `peligro`, `ok`), la franja con el nombre del flujo y la
+hora VE (§9.3), el título y un pie fijo. Reglas:
+
+1. **El logo es texto y colores, no una imagen** — calcado de RiskGuard. Gmail y
+   Outlook no pintan SVG, y una imagen remota sale bloqueada por defecto.
+2. **El `font-family` va repetido en la tabla de la tarjeta**, no solo en
+   `<body>`: Gmail descarta los estilos del `<body>` y el correo sale en serif.
+3. **`titulo` y `flujo` los escapa la plantilla; `cuerpo` NO** — el cuerpo es
+   HTML del llamante, que escapa sus propios datos con `escaparHtml`.
+4. **El nodo Email (y Reporte) envuelve el cuerpo del usuario en el marco, salvo
+   que ya sea un documento completo** (`esDocumentoCompleto`: empieza por
+   `<!doctype` o `<html`). Quien pegue su propio HTML entero lo conserva tal cual.
+5. **Un correo nuevo usa `plantillaCorreo`.** No vuelvas a escribir un
+   `<div style=…>` suelto: es justo lo que dejó cada correo con una cara distinta.
 
 ⚠️ **El correo aquí lo dispara el motor, no siempre una sesión.** `cron-runner`
 corre por pg_cron sin nadie delante. Por eso la validación de JWT que lleva la

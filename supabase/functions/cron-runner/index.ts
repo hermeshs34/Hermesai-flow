@@ -8,7 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { enviarEmail as enviar, canalEmail, escaparHtml } from '../_shared/email.ts';
+import { enviarEmail as enviar, canalEmail, escaparHtml, plantillaCorreo } from '../_shared/email.ts';
 import { fechaHoraVE } from '../_shared/fecha.ts';
 import { destinatariosDelRol } from '../_shared/delegaciones.ts';
 
@@ -352,20 +352,16 @@ serve(async (req) => {
                 await enviarEmail(
                     emails,
                     `⏫ Aprobación escalada — ${wfName}`,
-                    `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-  <div style="background:#92400e;padding:24px;border-radius:8px 8px 0 0">
-    <h2 style="color:#fff;margin:0;font-size:18px">⏫ Aprobación Escalada</h2>
-    <p style="color:#fcd34d;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
-  </div>
-  <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">El rol <strong>${escaparHtml(tarea.rol_aprobador)}</strong> no respondió a tiempo la aprobación del flujo <strong>"${escaparHtml(wfName)}"</strong>. La tarea fue escalada a tu rol (<strong>${escaparHtml(rolSube)}</strong>).</p>
-    ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${escaparHtml(tarea.descripcion)}</p>` : ''}
-    ${tarea.monto ? `<p style="color:#374151;font-size:13px"><strong>Monto:</strong> ${escaparHtml(tarea.monto)}</p>` : ''}
-    <p style="color:#374151;font-size:13px"><strong>Nuevo vencimiento:</strong> ${fechaHoraVE(nuevoVence)} (hora de Venezuela)</p>
-    <p style="color:#374151;font-size:13px">Resuélvela desde la <strong>Cola de Trabajo</strong> de HermesAI Flow.</p>
-    <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
-  </div>
-</div>`,
+                    plantillaCorreo({
+                        titulo: 'Aprobación escalada',
+                        flujo:  wfName,
+                        tono:   'aviso',
+                        cuerpo: `<p style="margin:0 0 12px">El rol <strong>${escaparHtml(tarea.rol_aprobador)}</strong> no respondió a tiempo la aprobación del flujo <strong>«${escaparHtml(wfName)}»</strong>. La tarea se escaló a tu rol (<strong>${escaparHtml(rolSube)}</strong>).</p>
+${tarea.descripcion ? `<p style="margin:0 0 8px"><strong>Solicitud:</strong> ${escaparHtml(tarea.descripcion)}</p>` : ''}
+${tarea.monto ? `<p style="margin:0 0 8px"><strong>Monto:</strong> ${escaparHtml(tarea.monto)}</p>` : ''}
+<p style="margin:0 0 8px"><strong>Nuevo vencimiento:</strong> ${fechaHoraVE(nuevoVence)} (hora de Venezuela)</p>
+<p style="margin:12px 0 0">Resuélvela desde la <strong>Cola de Trabajo</strong> de HermesAI Flow.</p>`,
+                    }),
                 );
 
                 escaladas.push(`${wfName} — ${tarea.rol_aprobador} → ${rolSube}`);
@@ -425,19 +421,15 @@ serve(async (req) => {
                         await enviarEmail(
                             [solicitante.email],
                             `⛔ Flujo cancelado por aprobación vencida — ${wfName}`,
-                            `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-  <div style="background:#7f1d1d;padding:24px;border-radius:8px 8px 0 0">
-    <h2 style="color:#fff;margin:0;font-size:18px">⛔ Aprobación Vencida</h2>
-    <p style="color:#fca5a5;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
-  </div>
-  <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">Hola <strong>${escaparHtml(solicitante.name ?? '')}</strong>,</p>
-    <p style="color:#374151;font-size:14px">Tu solicitud del flujo <strong>"${escaparHtml(wfName)}"</strong> fue <strong style="color:#dc2626">cancelada</strong>: la aprobación venció sin respuesta${nivel > 0 ? ' incluso después de escalarla al nivel superior' : ''}.</p>
-    ${tarea.descripcion ? `<p style="color:#374151;font-size:13px"><strong>Solicitud:</strong> ${escaparHtml(tarea.descripcion)}</p>` : ''}
-    <p style="color:#374151;font-size:13px">Puedes volver a ejecutar el flujo si la solicitud sigue vigente.</p>
-    <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
-  </div>
-</div>`,
+                            plantillaCorreo({
+                                titulo: 'Flujo cancelado: aprobación vencida',
+                                flujo:  wfName,
+                                tono:   'peligro',
+                                cuerpo: `<p style="margin:0 0 12px">Hola <strong>${escaparHtml(solicitante.name ?? '')}</strong>,</p>
+<p style="margin:0 0 12px">Tu solicitud del flujo <strong>«${escaparHtml(wfName)}»</strong> se <strong style="color:#dc2626">canceló</strong>: la aprobación venció sin respuesta${nivel > 0 ? ' incluso después de escalarla al nivel superior' : ''}.</p>
+${tarea.descripcion ? `<p style="margin:0 0 8px"><strong>Solicitud:</strong> ${escaparHtml(tarea.descripcion)}</p>` : ''}
+<p style="margin:12px 0 0">Puedes volver a ejecutar el flujo si la solicitud sigue vigente.</p>`,
+                            }),
                         );
                     }
                 }

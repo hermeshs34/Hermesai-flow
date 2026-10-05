@@ -18,6 +18,8 @@
 // Ver: C:\Desarrollos Sistema IA\Sistema de Horarios y Turnos\docs\PLATAFORMA_HERMESAI.md
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { fechaHoraVE } from './fecha.ts';
+
 const RESEND_API_KEY = Deno.env.get('RESEND_API_KEY') ?? '';
 
 /** Remitente único del producto. La dirección es la de plataforma; solo cambia el nombre visible. */
@@ -118,9 +120,115 @@ export function escaparHtml(valor: unknown): string {
         .replace(/'/g, '&#39;');
 }
 
+// ── Marco corporativo ───────────────────────────────────────────────────────
+// Hasta el 05/10/2026 cada función pintaba su propio HTML —seis cabeceras, tres
+// tipografías, colores distintos— y el nodo Email salía sin marco ninguno: un
+// correo de un flujo no se parecía en nada a los de RiskGuard o Estados
+// Financieros. Este es el único marco, calcado del `templateBase` de RiskGuard
+// (`_shared/alertas.ts`) para que los productos se reconozcan como uno.
+//
+// El logotipo es TEXTO con colores, no una imagen: Gmail y Outlook no pintan
+// SVG, y una imagen externa sale bloqueada hasta que el lector pulsa «mostrar».
+// Todo va con estilos en línea y tablas, que es lo único que respetan todos, y
+// la tipografía se repite en la tabla porque Gmail descarta los de <body>.
+
+const APP_URL = (Deno.env.get('APP_URL') ?? '').trim().replace(/\/$/, '');
+
+export type TonoCorreo = 'info' | 'aviso' | 'peligro' | 'ok';
+
+const COLOR_TONO: Record<TonoCorreo, string> = {
+    info:    '#2563eb',
+    aviso:   '#d97706',
+    peligro: '#dc2626',
+    ok:      '#059669',
+};
+
+export interface OpcionesPlantilla {
+    /** Título visible dentro de la tarjeta. Es TEXTO: se escapa aquí. */
+    titulo:  string;
+    /** HTML del cuerpo. NO se escapa: quien llama escapa los datos que mete. */
+    cuerpo:  string;
+    /** Nombre del flujo para la franja superior. Texto: se escapa aquí. */
+    flujo?:  string;
+    /** Momento que se enseña en la franja; por defecto, ahora. */
+    fecha?:  Date | string;
+    /** Color del filete bajo la cabecera. Por defecto `info`. */
+    tono?:   TonoCorreo;
+}
+
+/**
+ * Envuelve un cuerpo en el marco corporativo de HermesAI Flow: cabecera con el
+ * logotipo, franja con flujo y hora de Venezuela, tarjeta blanca y pie.
+ *
+ * La hora pasa por `fechaHoraVE` (§9.3): un correo sale del sistema y lo lee
+ * gente en otros husos, y la Edge Function corre en UTC.
+ */
+export function plantillaCorreo(o: OpcionesPlantilla): string {
+    const tono  = COLOR_TONO[o.tono ?? 'info'];
+    const fecha = fechaHoraVE(o.fecha ?? new Date());
+    const etiquetaFranja = o.flujo ? 'Flujo' : 'Aviso del sistema';
+    const valorFranja    = o.flujo ? escaparHtml(o.flujo) : 'HermesAI Flow';
+    const enlaceApp = APP_URL
+        ? ` · <a href="${escaparHtml(APP_URL)}" style="color:#64748b;text-decoration:underline">Abrir HermesAI Flow</a>`
+        : '';
+
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escaparHtml(o.titulo)}</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9">
+<tr><td align="center" style="padding:32px 12px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;font-family:Arial,Helvetica,sans-serif;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,.08)">
+  <tr><td style="background:#0a0f1e;padding:22px 32px">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+      <td style="width:40px;height:40px;background:#0f3460;background-image:linear-gradient(135deg,#0f3460,#1a5276);border-radius:10px;text-align:center;vertical-align:middle;color:#ffffff;font-weight:900;font-size:15px;letter-spacing:.5px">HF</td>
+      <td style="padding-left:12px;vertical-align:middle">
+        <div style="color:#ffffff;font-weight:900;font-size:15px;letter-spacing:1px">HermesAI <span style="color:#60a5fa">Flow</span></div>
+        <div style="color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:2px;margin-top:2px">Automatización de procesos</div>
+      </td>
+    </tr></table>
+  </td></tr>
+  <tr><td style="background:${tono};height:4px;line-height:4px;font-size:0">&nbsp;</td></tr>
+  <tr><td style="background:#0f172a;padding:10px 32px">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td style="color:#94a3b8;font-size:11px"><span style="text-transform:uppercase;letter-spacing:1.5px">${etiquetaFranja}</span>&nbsp; <strong style="color:#e2e8f0">${valorFranja}</strong></td>
+      <td align="right" style="color:#94a3b8;font-size:11px;white-space:nowrap">${escaparHtml(fecha)} (hora VE)</td>
+    </tr></table>
+  </td></tr>
+  <tr><td style="padding:28px 32px 8px">
+    <h1 style="margin:0;color:#0f172a;font-size:21px;font-weight:900;line-height:1.3">${escaparHtml(o.titulo)}</h1>
+  </td></tr>
+  <tr><td style="padding:12px 32px 32px;color:#374151;font-size:14px;line-height:1.7">
+${o.cuerpo}
+  </td></tr>
+  <tr><td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 32px;color:#94a3b8;font-size:11px;line-height:1.6">
+    Mensaje automático de HermesAI Flow, no respondas a este correo${enlaceApp}<br>
+    © 2026 HermesAI Tech — Confidencial
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+
+/**
+ * ¿El HTML ya es un documento completo? Entonces el autor puso su propio
+ * marco y no se le mete otro alrededor: un `<html>` dentro de otro lo pinta
+ * cada cliente a su manera.
+ */
+export function esDocumentoCompleto(html: string): boolean {
+    return /^\s*(<!doctype\b|<html\b)/i.test(String(html ?? ''));
+}
+
 /** Versión en texto del HTML: los clientes sin HTML y los filtros antispam lo agradecen. */
 function aTextoPlano(html: string): string {
     return String(html ?? '')
+        .replace(/<head[\s\S]*?<\/head>/gi, '')   // el <title> del marco repetiría el título
         .replace(/<\s*br\s*\/?\s*>/gi, '\n')
         .replace(/<\s*\/\s*(p|div|h[1-6]|li|tr|table)\s*>/gi, '\n')
         .replace(/<[^>]+>/g, ' ')

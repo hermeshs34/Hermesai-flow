@@ -18,7 +18,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { enviarEmail, escaparHtml } from '../_shared/email.ts';
+import { enviarEmail, escaparHtml, plantillaCorreo } from '../_shared/email.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -122,31 +122,18 @@ serve(async (req) => {
         await enviarEmail(
             cleanEmail,
             'Restablecer tu contraseña — HermesAI Flow',
-            `
-            <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;color:#1e293b">
-                <h2 style="color:#4f46e5;margin:0 0 16px">Restablecer tu contraseña</h2>
-                <p style="font-size:15px;line-height:1.6">Hola${nombre ? ` ${nombre}` : ''}:</p>
-                <p style="font-size:15px;line-height:1.6">
-                    Hemos recibido una solicitud para restablecer la contraseña de tu cuenta de
-                    <strong>HermesAI Flow</strong>. Pulsa el botón y elige una contraseña nueva.
-                </p>
-                <p style="text-align:center;margin:28px 0">
-                    <a href="${url}" style="display:inline-block;background:#4f46e5;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:15px">
-                        Elegir contraseña nueva
-                    </a>
-                </p>
-                <p style="font-size:13px;color:#64748b;line-height:1.6">
-                    El enlace caduca en 1 hora y solo se puede usar una vez.
-                </p>
-                <p style="font-size:13px;color:#64748b;line-height:1.6">
-                    <strong>Si no has sido tú</strong>, no hagas nada: tu contraseña actual sigue
-                    funcionando y nadie ha entrado en tu cuenta. Avisa al administrador.
-                </p>
-                <hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0">
-                <p style="font-size:11px;color:#94a3b8">
-                    HermesAI Flow — mensaje automático, no respondas a este correo.
-                </p>
-            </div>`,
+            plantillaCorreo({
+                titulo: 'Restablecer tu contraseña',
+                cuerpo: `<p style="margin:0 0 12px">Hola${nombre ? ` ${nombre}` : ''}:</p>
+<p style="margin:0 0 12px">Hemos recibido una solicitud para restablecer la contraseña de tu cuenta de
+<strong>HermesAI Flow</strong>. Pulsa el botón y elige una contraseña nueva.</p>
+<p style="text-align:center;margin:28px 0">
+  <a href="${escaparHtml(url)}" style="display:inline-block;background:#0f3460;color:#ffffff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:700;font-size:15px">Elegir contraseña nueva</a>
+</p>
+<p style="margin:0 0 12px;font-size:13px;color:#64748b">El enlace caduca en 1 hora y solo se puede usar una vez.</p>
+<p style="margin:0;font-size:13px;color:#64748b"><strong>Si no has sido tú</strong>, no hagas nada: tu contraseña actual sigue
+funcionando y nadie ha entrado en tu cuenta. Avisa al administrador.</p>`,
+            }),
         );
 
         // Traza. No se guarda el enlace: es una credencial de un solo uso.

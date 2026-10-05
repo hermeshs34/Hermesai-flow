@@ -5,7 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { enviarEmail as enviar, enviarEmailPersonalizado as enviarPersonalizado, canalEmail, escaparHtml } from '../_shared/email.ts';
+import { enviarEmail as enviar, enviarEmailPersonalizado as enviarPersonalizado, canalEmail, escaparHtml, plantillaCorreo, esDocumentoCompleto } from '../_shared/email.ts';
 import { fechaHoraVE, fechaVE } from '../_shared/fecha.ts';
 import { resolverRegla, type ReglaMatriz } from '../_shared/matriz.ts';
 import { destinatariosDelRol } from '../_shared/delegaciones.ts';
@@ -686,7 +686,7 @@ async function executeNode(
     context: Record<string, any>,
     db: any,
     organizationId: string,
-    run: { workflowId: string; runId: string | null },
+    run: { workflowId: string; runId: string | null; workflowName: string },
 ): Promise<any> {
     const cfg      = node.config_json ?? {};
     const nodeKey  = `${node.type}:${node.category}`;
@@ -724,18 +724,17 @@ async function executeNode(
 
             if (!to) throw new Error('Nodo Email: campo "to" requerido');
 
-            // Si no hay cuerpo configurado, generar uno automático con todos los datos del flujo
+            // Sin cuerpo configurado, se manda el resumen con todos los datos del flujo.
             if (!body || body.trim() === '') {
-                body = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-  <div style="background:#1e3a5f;padding:24px;border-radius:8px 8px 0 0">
-    <h2 style="color:#fff;margin:0;font-size:18px">📋 Resultado del Flujo — HermesAI Flow</h2>
-  </div>
-  <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">El flujo se completó exitosamente. Datos obtenidos:</p>
-    ${buildContextSummary(context)}
-    <p style="color:#9ca3af;font-size:11px;margin-top:20px">Generado automáticamente · HermesAI Flow</p>
-  </div>
-</div>`;
+                body = `<p style="margin:0 0 12px">El flujo se completó correctamente. Datos obtenidos:</p>
+${buildContextSummary(context)}`;
+            }
+
+            // Todo correo de un flujo sale con el marco corporativo (_shared/email.ts),
+            // salvo que el autor haya escrito un documento HTML completo: ese ya
+            // trae su propio marco y meterle otro alrededor lo descuadra.
+            if (!esDocumentoCompleto(body)) {
+                body = plantillaCorreo({ titulo: subject, cuerpo: body, flujo: run.workflowName });
             }
 
             const emailId = await enviar(to, subject, body, cfg.from);
@@ -1840,16 +1839,11 @@ async function executeNode(
             if (!to) throw new Error('Nodo Reporte Gerencial: campo "to" requerido');
 
             if (!body?.trim()) {
-                body = `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;background:#fff">
-  <div style="background:linear-gradient(135deg,#1e1b4b,#4f46e5);padding:32px 24px;border-radius:12px 12px 0 0;text-align:center">
-    <h1 style="color:#fff;margin:0;font-size:22px">📊 Reporte de Gestión</h1>
-    <p style="color:#a5b4fc;margin:8px 0 0;font-size:13px">Informe ejecutivo generado automáticamente · ${fechaVE(new Date())}</p>
-  </div>
-  <div style="padding:28px 24px;background:#f8fafc">
-    ${buildContextSummary(context)}
-    <p style="color:#9ca3af;font-size:11px;margin-top:20px;text-align:center">HermesAI Flow · Automatización Inteligente de Procesos</p>
-  </div>
-</div>`;
+                body = `<p style="margin:0 0 12px">Informe ejecutivo generado automáticamente el ${escaparHtml(fechaVE(new Date()))}.</p>
+${buildContextSummary(context)}`;
+            }
+            if (!esDocumentoCompleto(body)) {
+                body = plantillaCorreo({ titulo: subject, cuerpo: body, flujo: run.workflowName });
             }
 
             const emailId = await enviar(to, subject, body, cfg.from);
@@ -2484,7 +2478,7 @@ serve(async (req) => {
                     .update({ status: 'running' })
                     .eq('id', node.id);
 
-                const result = await executeNode(node, context, supabase, organizationId, { workflowId, runId });
+                const result = await executeNode(node, context, supabase, organizationId, { workflowId, runId, workflowName: workflow.name });
 
                 context[node.id] = result;
                 completedNodeIds.add(node.id);
@@ -2598,25 +2592,21 @@ serve(async (req) => {
                                 .map((ap: any) => ({
                                     to:      ap.email,
                                     subject: `⏸ Aprobación requerida — ${workflow.name}`,
-                                    html:    `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-  <div style="background:#1e3a5f;padding:24px;border-radius:8px 8px 0 0">
-    <h2 style="color:#fff;margin:0;font-size:18px">⏸ Aprobación Pendiente</h2>
-    <p style="color:#a5b4fc;margin:8px 0 0;font-size:13px">HermesAI Flow — Automatización de Procesos</p>
-  </div>
-  <div style="padding:24px;background:#f8fafc">
-    <p style="color:#374151;font-size:14px">Hola <strong>${escaparHtml(ap.name)}</strong>,</p>
-    <p style="color:#374151;font-size:14px">El flujo <strong>"${escaparHtml(workflow.name)}"</strong> requiere tu aprobación para continuar.</p>
-    ${ap.porDelegacionDe ? `<p style="color:#92400e;font-size:13px;background:#fef3c7;border-left:3px solid #f59e0b;padding:10px 12px;margin:12px 0">Te llega por la <strong>delegación vigente de ${escaparHtml(ap.porDelegacionDe)}</strong>. Al resolverla quedará registrado que actuaste en su nombre.</p>` : ''}
-    <table style="width:100%;border-collapse:collapse;margin:16px 0;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
-      <tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px;width:40%">Descripción</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.descripcion ?? '—')}</td></tr>
-      ${err.monto ? `<tr><td style="padding:10px 16px;color:#6b7280;font-size:12px;background:#f8fafc">Monto</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.monto)}</td></tr>` : ''}
-      ${err.categoria ? `<tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px">Categoría</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.categoria)}</td></tr>` : ''}
-      <tr${err.categoria ? '' : ' style="background:#f1f5f9"'}><td style="padding:10px 16px;color:#6b7280;font-size:12px">Vence</td><td style="padding:10px 16px;font-weight:600;font-size:13px;color:#dc2626">${fechaHoraVE(err.venceAt)} (hora de Venezuela)</td></tr>
-    </table>
-    <p style="color:#374151;font-size:14px">Ingresa a <strong>Gobierno → Bandeja de Aprobación</strong> para aprobar o rechazar.</p>
-    <p style="color:#9ca3af;font-size:11px;margin-top:20px">HermesAI Flow · Automatización Inteligente de Procesos</p>
-  </div>
-</div>`,
+                                    html:    plantillaCorreo({
+                                        titulo: 'Aprobación pendiente',
+                                        flujo:  workflow.name,
+                                        tono:   'aviso',
+                                        cuerpo: `<p style="margin:0 0 12px">Hola <strong>${escaparHtml(ap.name)}</strong>,</p>
+<p style="margin:0 0 12px">El flujo <strong>«${escaparHtml(workflow.name)}»</strong> requiere tu aprobación para continuar.</p>
+${ap.porDelegacionDe ? `<p style="color:#92400e;font-size:13px;background:#fef3c7;border-left:3px solid #f59e0b;padding:10px 12px;margin:12px 0">Te llega por la <strong>delegación vigente de ${escaparHtml(ap.porDelegacionDe)}</strong>. Al resolverla quedará registrado que actuaste en su nombre.</p>` : ''}
+<table style="width:100%;border-collapse:collapse;margin:16px 0;border:1px solid #e5e7eb">
+  <tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px;width:40%">Descripción</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.descripcion ?? '—')}</td></tr>
+  ${err.monto ? `<tr><td style="padding:10px 16px;color:#6b7280;font-size:12px">Monto</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.monto)}</td></tr>` : ''}
+  ${err.categoria ? `<tr style="background:#f1f5f9"><td style="padding:10px 16px;color:#6b7280;font-size:12px">Categoría</td><td style="padding:10px 16px;font-weight:600;font-size:13px">${escaparHtml(err.categoria)}</td></tr>` : ''}
+  <tr><td style="padding:10px 16px;color:#6b7280;font-size:12px">Vence</td><td style="padding:10px 16px;font-weight:600;font-size:13px;color:#dc2626">${fechaHoraVE(err.venceAt)} (hora de Venezuela)</td></tr>
+</table>
+<p style="margin:0">Entra en <strong>Gobierno → Bandeja de Aprobación</strong> para aprobar o rechazar.</p>`,
+                                    }),
                                 }));
 
                             if (mensajes.length > 0) await enviarPersonalizado(mensajes);

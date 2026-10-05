@@ -15,8 +15,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { enviarEmail, escaparHtml } from '../_shared/email.ts';
-import { fechaHoraVE } from '../_shared/fecha.ts';
+import { enviarEmail, escaparHtml, plantillaCorreo } from '../_shared/email.ts';
 import { destinatariosDelRol } from '../_shared/delegaciones.ts';
 import {
     MAX_BYTES, LIMITE_POR_MINUTO,
@@ -134,16 +133,14 @@ async function avisarFallo(
         await enviarEmail(
             emails,
             `⚠️ Webhook recibido pero el flujo no arrancó — ${p.nombreFlujo}`,
-            `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-  <h2 style="color:#b45309;font-size:18px">Una llamada al webhook no pudo lanzar el flujo</h2>
-  <p style="color:#374151;font-size:14px">
-    <strong>Flujo:</strong> ${escaparHtml(p.nombreFlujo)}<br>
-    <strong>Hora:</strong> ${escaparHtml(fechaHoraVE(new Date()))} (hora de Venezuela)
-  </p>
-  <p style="color:#374151;font-size:14px"><strong>Motivo:</strong> ${escaparHtml(motivo)}</p>
-  <p style="color:#6b7280;font-size:13px">La llamada quedó guardada con sus datos, en estado «Falló al lanzar»,
-  en el panel del nodo Webhook del Constructor. Se envía como máximo un aviso por flujo y hora.</p>
-</div>`,
+            plantillaCorreo({
+                titulo: 'Una llamada al webhook no pudo lanzar el flujo',
+                flujo:  p.nombreFlujo,
+                tono:   'aviso',
+                cuerpo: `<p style="margin:0 0 12px"><strong>Motivo:</strong> ${escaparHtml(motivo)}</p>
+<p style="margin:0;color:#6b7280;font-size:13px">La llamada quedó guardada con sus datos, en estado «Falló al lanzar»,
+en el panel del nodo Webhook del Constructor. Se envía como máximo un aviso por flujo y hora.</p>`,
+            }),
         );
     } catch (e) {
         console.error(`webhook-in: no se pudo avisar del fallo de «${p.nombreFlujo}»: ${(e as { message?: string }).message}`);
