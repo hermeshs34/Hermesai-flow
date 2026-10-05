@@ -521,7 +521,9 @@ function DecisionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void
                 <Input value={cfg.left ?? ''} onChange={v => set('left', v)} placeholder="{{bcv.bcv_rate}}" />
             </Field>
             <Field label="Operador">
-                <Select value={cfg.operator ?? '>'} onChange={v => set('operator', v)} options={[
+                {/* '==' es lo que usa el motor si no se guarda nada: pintar
+                    otro valor aquí prometía una comparación que no se hacía. */}
+                <Select value={cfg.operator ?? '=='} onChange={v => set('operator', v)} options={[
                     { value: '>',        label: 'Mayor que (>)'          },
                     { value: '<',        label: 'Menor que (<)'          },
                     { value: '>=',       label: 'Mayor o igual (>=)'     },
@@ -534,8 +536,18 @@ function DecisionForm({ cfg, set }: { cfg: any; set: (k: string, v: any) => void
             <Field label="Valor derecho (referencia)">
                 <Input value={cfg.right ?? ''} onChange={v => set('right', v)} placeholder="50" />
             </Field>
+            {['>', '<', '>=', '<='].includes(cfg.operator ?? '==') && (
+                <Field label="Si el valor no es un número"
+                    hint="Por ejemplo, un importe que llega vacío. No se compara como cero.">
+                    <Select value={cfg.siNoNumero ?? 'detener'} onChange={v => set('siNoNumero', v)} options={[
+                        { value: 'detener', label: 'Detener el flujo con un error' },
+                        { value: 'true',    label: 'Seguir por la rama Sí'        },
+                        { value: 'false',   label: 'Seguir por la rama No'        },
+                    ]} />
+                </Field>
+            )}
             <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs text-gray-600 font-mono">
-                Resultado: <strong>{cfg.left || '?'}</strong> {cfg.operator || '>'} <strong>{cfg.right || '?'}</strong>
+                Resultado: <strong>{cfg.left || '?'}</strong> {cfg.operator || '=='} <strong>{cfg.right || '?'}</strong>
                 <span className="ml-2 text-gray-400">→ true / false</span>
             </div>
         </div>

@@ -1289,6 +1289,20 @@ con la cadena vacía, y una comparación que nadie configuró se convierte en un
 ⚠️ Al revisar un flujo, **un `Decisión (Si/No)` sin configurar es un hallazgo**,
 no un detalle pendiente. Se detectó así el 12/08/2026 en `Prueba Flujo 02032026`.
 
+**Hermano numérico, cerrado el 05/10/2026: `Number('')` es 0.** Con `>`, `<`,
+`>=` o `<=`, un valor vacío se comparaba como cero, así que un importe `null` del
+webhook de siniestros (164 de 256 de SIRWeb, §8.3) decía «sí» a
+«`< 1000`». Hoy el motor no compara lo que no es un número:
+- el **valor derecho** no numérico revienta el nodo, porque es un error de
+  configuración;
+- el **izquierdo** sigue lo que diga `config_json.siNoNumero`: `'true'` o
+  `'false'` (la rama) o `'detener'`. Si no se ha guardado nada, se aplica
+  `'detener'`, que lanza un error con un mensaje para una persona.
+
+El formulario
+pinta además el operador por defecto que usa el motor (`==`), no `>`: antes
+prometía una comparación que no se hacía.
+
 ### 9.5 Se aprueba una versión y se ejecuta esa — huella al pausar
 
 `execute-workflow` carga nodos y conexiones **antes** de bifurcar a `resume`.

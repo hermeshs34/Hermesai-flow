@@ -375,6 +375,10 @@ números con `Number()`, y un campo que llega `null` se lee como **0**. Una regl
 «`{{webhook.montos.reclamado_usd}}` < 1000» daría **sí** en un siniestro en VES
 sin tasa. Es la misma familia que el `'' === ''` de Flujos (su CLAUDE.md, §9.4).
 Hasta corregirlo en Flujos, **no se decide por importe** en este flujo.
+✅ Corregido en el código el 05/10/2026 (CLAUDE.md de Flujos, §9.4). Ahora el nodo
+elige qué hacer con un valor no numérico: detener el flujo, que es lo que pasa
+por defecto, o seguir por la rama Sí o por la rama No. Solo vale en producción
+cuando se despliegue `execute-workflow`.
 
 ---
 

@@ -841,11 +841,51 @@ async function executeNode(
             const operator = cfg.operator ?? '==';
             let result     = false;
 
+            // Comparación numérica: `Number('')` es 0, así que un importe que
+            // llega vacío (`null` en el webhook de siniestros: 164 de 256 de
+            // SIRWeb) se comparaba como CERO y «< 1000» decía que sí. Un valor
+            // que no es un número no se compara: el nodo decide qué hacer con
+            // él según `siNoNumero`, y sin elegir nada el flujo se detiene.
+            if (['>', '<', '>=', '<='].includes(operator)) {
+                const aNumero = (v: unknown): number | null => {
+                    const t = String(v ?? '').trim();
+                    if (t === '') return null;
+                    const n = Number(t);
+                    return Number.isFinite(n) ? n : null;
+                };
+                const der = aNumero(right);
+                if (der === null) {
+                    throw new Error(
+                        `La Decisión compara con "${right}", que no es un número. ` +
+                        `Abre el nodo en el Constructor y pon un número en «Valor derecho».`
+                    );
+                }
+                const izq = aNumero(left);
+                if (izq === null) {
+                    const siNoNumero = cfg.siNoNumero ?? 'detener';
+                    if (siNoNumero !== 'true' && siNoNumero !== 'false') {
+                        throw new Error(
+                            `La Decisión no puede comparar: «${cfg.left}» llegó ` +
+                            `${String(left ?? '').trim() === '' ? 'vacío' : `como "${left}"`}, no como un número. ` +
+                            `El flujo se detuvo porque el nodo está configurado así. Si estos casos ` +
+                            `deben seguir, elige en «Si el valor no es un número» por qué rama van.`
+                        );
+                    }
+                    return {
+                        branch: siNoNumero, evaluated: siNoNumero === 'true', left, right, operator,
+                        valor_no_numerico: true,
+                    };
+                }
+                switch (operator) {
+                    case '>':  result = izq >  der; break;
+                    case '<':  result = izq <  der; break;
+                    case '>=': result = izq >= der; break;
+                    case '<=': result = izq <= der; break;
+                }
+                return { branch: result ? 'true' : 'false', evaluated: result, left, right, operator };
+            }
+
             switch (operator) {
-                case '>':  result = Number(left) > Number(right);  break;
-                case '<':  result = Number(left) < Number(right);  break;
-                case '>=': result = Number(left) >= Number(right); break;
-                case '<=': result = Number(left) <= Number(right); break;
                 case '==': result = String(left).toLowerCase().trim() === String(right).toLowerCase().trim(); break;
                 case '!=': result = String(left).toLowerCase().trim() !== String(right).toLowerCase().trim(); break;
                 case 'contains': result = String(left).toLowerCase().includes(String(right).toLowerCase()); break;
