@@ -595,4 +595,9 @@ No hace falta código ni volver a desplegar.
   «Ejecutar» a mano. Un flujo Webhook sin datos revienta a propósito (CLAUDE.md
   de Flujos, §8.3.7).
 
-Quedan los pasos 2 y 3, que se hacen en RiskGuard.
+**Pasos 2 y 3 ✅ hechos por Hermes el 05/10/2026 en RiskGuard:** entrada nueva en
+`FLUJOS_WEBHOOK_DESTINOS` y fila nueva en `flujos_destinos` para Seguros HermesAI.
+Al anotarlo, el flujo de producción solo tenía la recepción de la prueba con curl;
+aún no había llegado ningún aviso real. **La conexión se confirmará con el primer
+acto real** (alta, cambio de estado o pago) en Seguros HermesAI. Debe dar una
+recepción `lanzada` en Flujos y el correo a los dos administradores.
