@@ -623,3 +623,24 @@ Observación sobre los datos de RiskGuard, no sobre la integración: ese siniest
 llegó con «asegurado sin identificar» y montos USD 0,00. Viene de SIRWeb sin
 identidad, que es el mismo hueco que cubre `v_cobertura_screening_asegurados`
 (CLAUDE.md de Flujos, §8.2.6).
+
+**Cierre del lado RiskGuard, 05/10/2026** (según su agente; no se midió desde
+Flujos):
+
+- **El USD 0,00 era un `0` falso, y ya viaja `null`** (migración RiskGuard
+  `20261005`). SIRWeb carga `0` cuando no hay importe: 164 de los 256 siniestros
+  SIRWeb de Seguros HermesAI lo tienen. Ahora, si el reclamado es 0 en un
+  siniestro SIRWeb, `montos.reclamado` y `montos.reclamado_usd` van en `null` y
+  `para_leer.reclamado` dice «sin importe informado por SIRWeb». No cambian
+  `aprobado`, `pagado` ni las altas manuales. La versión del cuerpo tampoco
+  cambia, porque es lo que ya decía §3.3.
+- Esto hace **más urgente** el pendiente de §6: la Decisión de Flujos lee
+  `null` como **0**. Hoy hay más `null` que importes reales, así que sigue sin
+  poder decidirse por importe hasta corregirlo en Flujos.
+- `flujos_prueba` sigue válido. Al reescribir el secreto, el JSON se rompió dos
+  veces más (faltaba `"secreto":` y faltaba una comilla). Mientras estuvo roto
+  no avisó ninguna empresa. Una vez corregido, los pendientes salieron solos con
+  202 y llegaron los correos de la Demo y de Seguros HermesAI.
+- El panel de RiskGuard ya avisa en rojo cuando una empresa no tiene destino.
+
+Desde RiskGuard este documento ya no se toca: es de Flujos.
