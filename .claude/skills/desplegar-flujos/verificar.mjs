@@ -198,7 +198,7 @@ if (SIN_RED) {
     // ── 4. Edge Functions desplegadas ───────────────────────────────────────
     // verify_jwt=false significa que la autorización es el código (§6.1). Si el
     // código no autentica, la función está abierta a internet.
-    const DEBE_SER_FALSE = ['execute-workflow', 'cron-runner', 'resolve-approval', 'request-password-reset', 'vigilante-reloj', 'webhook-in'];
+    const DEBE_SER_FALSE = ['execute-workflow', 'cron-runner', 'resolve-approval', 'request-password-reset', 'vigilante-reloj', 'webhook-in', 'design-assistant'];
     const PUBLICAS       = ['request-password-reset'];   // públicas por diseño (§6.4)
     let lista = null;
     try { lista = supabaseJson('functions list -o json'); }

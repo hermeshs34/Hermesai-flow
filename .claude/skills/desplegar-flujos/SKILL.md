@@ -73,7 +73,6 @@ En este proyecto casi todos los incidentes fueron **un paso que dijo «hecho» s
 
 ## Deuda conocida (avisar, no arreglar de paso)
 
-- `design-assistant`: `verify_jwt=false` y **sin autenticación en el código** — proxy abierto a Anthropic con la clave de la organización.
 - Carpetas vacías `execute-node/` y `node-*`; `connectionService.ts` remite a una `node-email` inexistente.
 - LegalTech sin conector; Indicadores apunta a un proyecto inactivo.
 - `database/migrations/20260807_restaurar_pg_cron.sql`: **no se ejecuta** (deja el planificador a cero).

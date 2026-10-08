@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { BrainCircuit, X, Send, Loader2, Lightbulb, ChevronDown, ChevronUp } from 'lucide-react';
 import { supabase } from '../core/supabase';
+import { mensajeDeEdgeFunction } from '../utils/errores';
 import type { WorkflowNodeData, WorkflowConnection } from '../types/workflow';
 
 interface Message {
@@ -98,10 +99,11 @@ export function DesignAssistant({ nodes, connections, onClose }: Props) {
             if (error) throw error;
             const reply = data?.content ?? 'Sin respuesta del asistente.';
             setMessages(prev => [...prev, { role: 'assistant', content: reply }]);
-        } catch (e: any) {
+        } catch (e) {
+            const motivo = await mensajeDeEdgeFunction(e, 'No se pudo conectar con el asistente.');
             setMessages(prev => [...prev, {
                 role:    'assistant',
-                content: `⚠️ Error: ${e.message ?? 'No se pudo conectar con el asistente.'}`,
+                content: `⚠️ Error: ${motivo}`,
             }]);
         } finally {
             setLoading(false);
