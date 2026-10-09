@@ -156,17 +156,38 @@ export class GovernanceService {
         });
     }
 
-    static async setUserActive(actor: User, userId: string, active: boolean): Promise<void> {
-        const { error } = await supabase
-            .from('profiles')
-            .update({ is_active: active })
-            .eq('id', userId)
-            .eq('organization_id', actor.organizationId);
-        if (error) throw new Error(error.message);
-        await this.log(actor, 'modificar', 'usuario', {
-            entidadId: userId,
-            descripcion: active ? 'Usuario activado' : 'Usuario desactivado',
+    /**
+     * Activa o desactiva a un usuario por `admin-set-active`, que además lo
+     * bloquea (o desbloquea) en Supabase Auth y deja la traza en audit_log.
+     *
+     * Hasta el 09/10/2026 esto era un UPDATE de `is_active` desde aquí, y Auth
+     * no se enteraba: la persona desactivada seguía pudiendo iniciar sesión.
+     *
+     * Devuelve `{ requiereConfirmacion }` cuando la función se niega porque
+     * dejaría un rol regulatorio sin nadie activo (409): el texto va para un
+     * `confirm()`, y si el admin acepta se repite con `confirmarSinReemplazo`.
+     */
+    static async setUserActive(
+        userId: string, active: boolean, confirmarSinReemplazo = false,
+    ): Promise<{ requiereConfirmacion?: string }> {
+        const { data, error } = await supabase.functions.invoke('admin-set-active', {
+            body: { userId, active, confirmarSinReemplazo },
         });
+        if (error) {
+            const contexto = (error as { context?: Response }).context;
+            if (contexto?.status === 409) {
+                try {
+                    const cuerpo = await contexto.clone().json();
+                    if (cuerpo?.requiereConfirmacion === true && typeof cuerpo.error === 'string') {
+                        return { requiereConfirmacion: cuerpo.error };
+                    }
+                } catch { /* sin cuerpo legible: se cuenta como error normal */ }
+            }
+            throw new Error(await mensajeDeEdgeFunction(error, 'No se pudo actualizar el usuario.'));
+        }
+        if (data?.error) throw new Error(data.error);
+        if (data?.success !== true) throw new Error('El servidor no confirmó el cambio. Vuelve a intentarlo.');
+        return {};
     }
 
     // ── Segregación de Funciones (SoD) ────────────────────────────────────

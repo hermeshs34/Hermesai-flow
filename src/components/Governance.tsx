@@ -535,11 +535,20 @@ export function Governance({ currentUser }: GovernanceProps) {
         if (u.id === currentUser.id) { toast.error('No puedes desactivarte a ti mismo'); return; }
         setSavingId(u.id);
         try {
-            await GovernanceService.setUserActive(currentUser, u.id, !u.isActive);
+            let r = await GovernanceService.setUserActive(u.id, !u.isActive);
+            if (r.requiereConfirmacion) {
+                // Último activo de un rol regulatorio: la función lo explica y
+                // aquí solo se pregunta. Cancelar no cambia nada.
+                if (!confirm(`${r.requiereConfirmacion}\n\n¿Desactivar de todos modos?`)) return;
+                r = await GovernanceService.setUserActive(u.id, !u.isActive, true);
+                if (r.requiereConfirmacion) throw new Error(r.requiereConfirmacion);
+            }
             setUsers(prev => prev.map(x => x.id === u.id ? { ...x, isActive: !x.isActive } : x));
-            toast.success(u.isActive ? `${u.name} desactivado` : `${u.name} activado`);
-        } catch {
-            toast.error('No se pudo actualizar');
+            toast.success(u.isActive
+                ? `${u.name} desactivado — ya no puede iniciar sesión`
+                : `${u.name} activado`);
+        } catch (e) {
+            toast.error((e as Error)?.message ?? 'No se pudo actualizar');
         } finally { setSavingId(null); }
     };
 

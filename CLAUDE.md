@@ -113,6 +113,7 @@ project/
 │       ├── health-check/            ← estado de integraciones (lo llama el Sidebar)
 │       ├── admin-create-user/       ← alta de usuarios
 │       ├── admin-reset-password/    ← clave temporal por olvido — solo admin (§6.4)
+│       ├── admin-set-active/        ← activar / desactivar + ban en Auth — solo admin (§6.8)
 │       ├── request-password-reset/  ← enlace de recuperación — PÚBLICA (§6.4)
 │       ├── design-assistant/        ← asistente de diseño de flujos
 │       └── get-bcv-rate/            ← tasa BCV
@@ -830,11 +831,31 @@ Dónde vive ahora la regla:
    activos; el aviso al solicitante de `resolve-approval` y de `cron-runner` se
    filtra desde esta fecha.
 4. **Pantalla**: `syncSession` cierra la sesión al recargar si el perfil no vuelve.
+5. **Auth** (decisión de Hermes, 09/10/2026) — Gobierno ya no hace un `UPDATE`
+   de `is_active`: llama a **`admin-set-active`**, que cambia el perfil **y**
+   banea en Auth (`ban_duration: '876000h'`; `'none'` al reactivar) y deja la
+   traza. Una cuenta desactivada **ya no puede ni iniciar sesión**. En los dos
+   sentidos va primero lo que deja fuera: si el segundo paso falla, la cuenta
+   queda bloqueada y la función lo dice (500), nunca a medias del lado abierto.
+   Se despliega **sin** `--no-verify-jwt`, como las otras dos `admin-*`.
 
-⚠️ **Lo que NO cubre: Auth.** La persona sigue pudiendo obtener un token; solo
-que con él no puede hacer nada. Banearla en Auth (`ban_duration`) es decisión
-pendiente de Hermes. Y **una delegación muere con su titular**: si se desactiva a
-quien delegó, su suplente deja de poder resolver.
+⚠️ **El ban solo lo pone `admin-set-active`.** `profiles_admin_manage` sigue
+dejando a un admin hacer el `UPDATE` de `is_active` por API: eso deja a la
+persona fuera por la RLS (lado seguro) pero **sin** ban, y reactivar así deja el
+ban puesto. Si algún día aparece alguien «activo que no puede entrar», mira
+`auth.users.banned_until`.
+
+**El último `cumplimiento` no se desactiva sin confirmar.** Si la persona es la
+única activa de un rol de `ROLES_REGULATORIOS` (tercera copia de la lista, en
+`admin-set-active`; `verificar.mjs` compara las tres), la función responde 409
+con el número de tareas pendientes de ese rol y Gobierno pide confirmación
+explícita, que queda en la traza. Sin ella se paran todas las aprobaciones de
+AML (§6.2) — ni un admin las resuelve y al vencer cancelan el flujo.
+
+**Una delegación muere con su titular** (decisión de Hermes: se queda así): si se
+desactiva a quien delegó, su suplente deja de poder resolver. Ausencia temporal ⇒
+delegación (§6.6); salida definitiva ⇒ desactivar y dar de alta al reemplazo el
+mismo día.
 
 ### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
 

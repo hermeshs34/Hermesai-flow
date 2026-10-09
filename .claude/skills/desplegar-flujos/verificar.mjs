@@ -135,6 +135,7 @@ compararConjuntos('listas', 'approve_tasks ↔ ROLES_APROBADORES', PERM.approve,
     compararConjuntos('listas', 'ROLES_APROBADORES ↔ desplegable del Constructor', setDe(motor, 'ROLES_APROBADORES'), 'execute-workflow', valores, 'NodeConfigPanel');
 }
 compararConjuntos('listas', 'ROLES_REGULATORIOS (pantalla ↔ resolve-approval)', arrayDe(userTypes, 'ROLES_REGULATORIOS'), 'user.types', arrayDe(resolver, 'ROLES_REGULATORIOS'), 'resolve-approval');
+compararConjuntos('listas', 'ROLES_REGULATORIOS (resolve-approval ↔ admin-set-active)', arrayDe(resolver, 'ROLES_REGULATORIOS'), 'resolve-approval', arrayDe(leer('supabase/functions/admin-set-active/index.ts'), 'ROLES_REGULATORIOS'), 'admin-set-active');
 
 const CASOS = motor ? conj([...motor.matchAll(/case '((?:trigger|processor|output):[a-z_]+)'/g)].map(m => m[1])) : null;
 {
