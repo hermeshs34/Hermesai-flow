@@ -839,6 +839,14 @@ Dónde vive ahora la regla:
    queda bloqueada y la función lo dice (500), nunca a medias del lado abierto.
    Se despliega **sin** `--no-verify-jwt`, como las otras dos `admin-*`.
 
+   ⚠️ **Auth dice `user_banned` sin mirar la contraseña** (medido el 09/10/2026
+   con un usuario sintético: misma respuesta con la clave buena y con la mala).
+   O sea, quien conozca un correo puede saber por API que esa cuenta existe y
+   está desactivada; ocultarlo en la pantalla no lo impediría. Por eso `login()`
+   lo dice claro —«Esta cuenta está desactivada»— y no lo cuenta como intento
+   fallido. Antes caía en «Error de autenticación» con el contador de intentos
+   al lado, y la persona creía haber escrito mal la clave.
+
 ⚠️ **El ban solo lo pone `admin-set-active`.** `profiles_admin_manage` sigue
 dejando a un admin hacer el `UPDATE` de `is_active` por API: eso deja a la
 persona fuera por la RLS (lado seguro) pero **sin** ban, y reactivar así deja el

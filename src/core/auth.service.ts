@@ -91,6 +91,15 @@ class AuthService {
             email: cleanEmail, password,
         });
 
+        // Una cuenta desactivada está baneada en Auth (admin-set-active, §6.8).
+        // Medido el 09/10/2026: Auth contesta `user_banned` ANTES de mirar la
+        // contraseña, con la buena y con la mala, así que decirlo aquí no
+        // revela nada que la API no diga ya. No cuenta como intento fallido:
+        // no es una clave mal escrita, y el contador la haría parecer una.
+        if (authError?.code === 'user_banned') {
+            throw new Error('Esta cuenta está desactivada. Contacte al administrador.');
+        }
+
         if (authError || !authData.user) {
             this.recordFailedAttempt(cleanEmail);
             const remaining = Math.max(0, MAX_ATTEMPTS - this.getAttempts(cleanEmail));
