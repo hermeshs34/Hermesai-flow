@@ -110,9 +110,12 @@ class AuthService {
             .eq('id', authData.user.id)
             .single();
 
+        // Desde el 09/10/2026 la RLS no le devuelve su perfil a una cuenta
+        // desactivada (20261009_inactivo_fuera_de_rls.sql), así que este caso
+        // cubre las dos cosas y no se pueden distinguir desde aquí.
         if (profileError || !profile) {
             await this.logout();
-            throw new Error('Su cuenta no tiene perfil configurado. Contacte al administrador.');
+            throw new Error('Esta cuenta está desactivada o no tiene perfil configurado. Contacte al administrador.');
         }
 
         if (!profile.is_active) {
@@ -168,8 +171,12 @@ class AuthService {
             .eq('id', session.user.id)
             .single();
 
-        if (!profile?.organization_id) {
-            sessionStorage.removeItem(SESSION_KEY);
+        // Al recargar también: alguien desactivado con la sesión abierta seguía
+        // dentro hasta el 09/10/2026, porque esto solo miraba la organización.
+        // Desde esa fecha la RLS ya no le devuelve su propio perfil, así que el
+        // primer caso es el que salta; el segundo es la segunda red.
+        if (!profile?.organization_id || profile.is_active !== true) {
+            await this.logout();
             return null;
         }
 

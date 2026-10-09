@@ -45,11 +45,13 @@ serve(async (req) => {
         // 2. Verificar que el llamante es admin y obtener su organización
         const { data: callerProfile } = await admin
             .from('profiles')
-            .select('role, organization_id')
+            .select('role, organization_id, is_active')
             .eq('id', caller.id)
             .single();
 
-        if (!callerProfile || callerProfile.role !== 'admin') {
+        // Un admin desactivado conserva su token: sin `is_active` aquí podía
+        // darse de alta otra cuenta de admin y volver a entrar por ella.
+        if (!callerProfile || callerProfile.role !== 'admin' || callerProfile.is_active !== true) {
             return json({ error: 'Solo un administrador puede crear usuarios' }, 403);
         }
 

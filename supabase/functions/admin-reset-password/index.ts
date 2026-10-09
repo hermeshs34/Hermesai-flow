@@ -43,12 +43,14 @@ serve(async (req) => {
         // 2. Solo un admin, y su organización sale de aquí — nunca del cuerpo
         const { data: callerProfile, error: callerErr } = await admin
             .from('profiles')
-            .select('role, organization_id, name')
+            .select('role, organization_id, name, is_active')
             .eq('id', caller.id)
             .single();
 
         if (callerErr) return json({ error: 'No se pudo comprobar tu perfil' }, 500);
-        if (!callerProfile || callerProfile.role !== 'admin') {
+        // Un admin desactivado conserva su token: sin `is_active` aquí podía
+        // asignarle una clave a otra cuenta y entrar por ella.
+        if (!callerProfile || callerProfile.role !== 'admin' || callerProfile.is_active !== true) {
             return json({ error: 'Solo un administrador puede asignar una clave temporal.' }, 403);
         }
 

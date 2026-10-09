@@ -106,12 +106,21 @@ serve(async (req) => {
         // 2a. El aprobador debe pertenecer a la organización de la tarea
         const { data: aprobadorProfile } = await supabase
             .from('profiles')
-            .select('organization_id, email, role')
+            .select('organization_id, email, role, is_active')
             .eq('id', approverId)
             .single();
         if (!aprobadorProfile || aprobadorProfile.organization_id !== tarea.organization_id) {
             return new Response(
                 JSON.stringify({ error: 'No autorizado — el aprobador no pertenece a esta organización' }),
+                { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
+            );
+        }
+        // Desactivar a alguien no le quita el token (Supabase Auth no se
+        // entera). Va antes del rol y de las delegaciones: un desactivado no
+        // aprueba ni por su rol ni como suplente.
+        if (aprobadorProfile.is_active !== true) {
+            return new Response(
+                JSON.stringify({ error: 'Tu usuario está desactivado. Pide a un administrador que lo reactive.' }),
                 { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
             );
         }
@@ -243,11 +252,13 @@ serve(async (req) => {
                 try {
                     const { data: solicitante } = await supabase
                         .from('profiles')
-                        .select('name, email')
+                        .select('name, email, is_active')
                         .eq('id', tarea.solicitante_id)
                         .single();
 
-                    if (solicitante?.email) {
+                    // A alguien desactivado no se le sigue contando qué pasa
+                    // con los flujos de la organización.
+                    if (solicitante?.email && solicitante.is_active === true) {
                         const { data: wfData } = await supabase
                             .from('workflows').select('name').eq('id', tarea.workflow_id).single();
 

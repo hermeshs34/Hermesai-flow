@@ -2150,12 +2150,20 @@ serve(async (req) => {
             callerUserId = userData.user.id;
             const { data: callerProfile } = await supabase
                 .from('profiles')
-                .select('organization_id, role')
+                .select('organization_id, role, is_active')
                 .eq('id', callerUserId)
                 .single();
             if (!callerProfile || callerProfile.organization_id !== organizationId) {
                 return new Response(
                     JSON.stringify({ error: 'No autorizado para esta organización' }),
+                    { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
+            // Desactivar a alguien no le quita el token: Supabase Auth no se
+            // entera. Hasta el 09/10/2026 solo lo miraba la pantalla de entrada.
+            if (callerProfile.is_active !== true) {
+                return new Response(
+                    JSON.stringify({ error: 'Tu usuario está desactivado. Pide a un administrador que lo reactive.' }),
                     { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
                 );
             }

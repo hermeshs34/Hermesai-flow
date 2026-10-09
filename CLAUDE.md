@@ -224,6 +224,9 @@ del `succeeded` de pg_cron.
    (la conexión directa es solo IPv6; `link` configura el pooler IPv4)
 
    Dos cosas que cuestan un rato si no se saben:
+   - ⚠️ **Si falla, deja `schema.sql` VACÍO.** Trunca el fichero antes de
+     volcar: tras un error, `git checkout -- database/schema.sql` y no
+     commitear nada hasta haberlo restaurado (09/10/2026).
    - **`db dump` necesita Docker en marcha.** Corre `pg_dump` dentro de un
      contenedor, así que sin el demonio levantado falla con
      `LegacyDockerRunError` — que no tiene nada que ver con el `LegacyDbConfigIpv6Error`
@@ -798,6 +801,40 @@ exactamente como se paralizó "Prueba Flujo 02032026" (§6).
 publicado; **no está hecho**, porque revierte la decisión de Hermes del
 08/08/2026 (§6) y eso es suyo, no mío. Es aditivo: una línea en
 `ROLE_PERMISSIONS` y otra en su gemelo de Deno.
+
+### 6.8 Un usuario desactivado está fuera por TODOS los caminos, no solo en el login
+
+✅ **En producción desde el 09/10/2026.** Migración aplicada por Hermes y
+verificada fuera del ensayo (8 de 8); las cinco funciones desplegadas y
+sondeadas, `salud_cron()` 10/10 después. Censo ese día: 7 activos, 0 inactivos —
+hoy la regla no deja fuera a nadie, solo cierra la puerta.
+
+Hasta el 09/10/2026 `profiles.is_active = false` solo lo miraba la pantalla de
+entrada. Supabase Auth no sabe nada de esa columna: la persona conservaba sus
+tokens, podía llamar a `signInWithPassword` por su cuenta, y la RLS la trataba
+como activa. Medido en un ensayo: **un admin desactivado podía reactivarse solo**
+con un `UPDATE` a su propia fila.
+
+Dónde vive ahora la regla:
+
+1. **RLS** — `my_organization_id()`, `my_role()` e `is_admin()` devuelven
+   NULL/false para una cuenta inactiva (`20261009_inactivo_fuera_de_rls.sql`).
+   Las 25 políticas de `public` cuelgan de esas tres, así que una cuenta
+   desactivada no ve ni escribe nada — **ni su propio perfil**: por eso el login
+   dice «desactivada o sin perfil», no puede distinguirlo.
+2. **Edge Functions con clave de servicio** (la RLS no las alcanza):
+   `execute-workflow` (llamada de usuario), `resolve-approval` (también por la
+   vía interna con `approverId`), `admin-create-user` y `admin-reset-password`
+   rechazan con 403 a un llamante inactivo. `design-assistant` ya lo hacía.
+3. **Avisos**: `destinatariosDelRol` / `delegacionesVigentes` ya filtraban
+   activos; el aviso al solicitante de `resolve-approval` y de `cron-runner` se
+   filtra desde esta fecha.
+4. **Pantalla**: `syncSession` cierra la sesión al recargar si el perfil no vuelve.
+
+⚠️ **Lo que NO cubre: Auth.** La persona sigue pudiendo obtener un token; solo
+que con él no puede hacer nada. Banearla en Auth (`ban_duration`) es decisión
+pendiente de Hermes. Y **una delegación muere con su titular**: si se desactiva a
+quien delegó, su suplente deja de poder resolver.
 
 ### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
 

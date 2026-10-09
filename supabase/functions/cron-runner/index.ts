@@ -415,9 +415,11 @@ ${tarea.monto ? `<p style="margin:0 0 8px"><strong>Monto:</strong> ${escaparHtml
                 // Notificar al solicitante
                 if (tarea.solicitante_id) {
                     const { data: solicitante } = await supabase
-                        .from('profiles').select('email, name')
+                        .from('profiles').select('email, name, is_active')
                         .eq('id', tarea.solicitante_id).single();
-                    if (solicitante?.email) {
+                    // A alguien desactivado no se le sigue contando qué pasa
+                    // con los flujos de la organización.
+                    if (solicitante?.email && solicitante.is_active === true) {
                         await enviarEmail(
                             [solicitante.email],
                             `⛔ Flujo cancelado por aprobación vencida — ${wfName}`,
