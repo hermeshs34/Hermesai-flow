@@ -847,11 +847,18 @@ Dónde vive ahora la regla:
    fallido. Antes caía en «Error de autenticación» con el contador de intentos
    al lado, y la persona creía haber escrito mal la clave.
 
-⚠️ **El ban solo lo pone `admin-set-active`.** `profiles_admin_manage` sigue
-dejando a un admin hacer el `UPDATE` de `is_active` por API: eso deja a la
-persona fuera por la RLS (lado seguro) pero **sin** ban, y reactivar así deja el
-ban puesto. Si algún día aparece alguien «activo que no puede entrar», mira
-`auth.users.banned_until`.
+✅ **`is_active` solo lo cambia `admin-set-active`** (09/10/2026,
+`20261009_activo_solo_por_admin_set_active.sql`, ensayo ROJA 3/7 → VERDE 7/7,
+7/7 fuera de la transacción). Hasta entonces `profiles_admin_manage` dejaba a un
+admin hacer el `UPDATE` por API con su sesión —medido: desactivar así dejaba a la
+persona **sin** ban, y reactivar así dejaba el ban puesto hasta 2126—. Hoy el
+trigger `profiles_activo_guard` rechaza con 42501 que una sesión
+`authenticated`/`anon` cambie `is_active` **o cree un perfil**; la clave de
+servicio (`admin-set-active`, `admin-create-user`) sí puede. Cambiar el `role`
+desde Gobierno sigue permitido. Va en trigger y no en la política porque la RLS
+decide filas, no columnas. Si alguien escribe `is_active` desde otra Edge
+Function, tiene que mover también el ban, o vuelve el «activo que no puede
+entrar» (mira `auth.users.banned_until`).
 
 **El último `cumplimiento` no se desactiva sin confirmar.** Si la persona es la
 única activa de un rol de `ROLES_REGULATORIOS` (tercera copia de la lista, en

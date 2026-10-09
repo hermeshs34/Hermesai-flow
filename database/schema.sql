@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict dHC153zprO1hVickWupC1U7gxvjd8PjqxDb5Fy3dRaobxhEntWPkgvamCoiMXDE
+-- \restrict kTjjSHNTaMP9z9GKl6svxjvIyvDS6wdLtKQeVUefvd236iUwuAq1BhqflaIsrFj
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -450,6 +450,36 @@ $$;
 
 
 ALTER FUNCTION "public"."my_role"() OWNER TO "postgres";
+
+--
+-- Name: profiles_activo_guard(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."profiles_activo_guard"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+BEGIN
+    IF current_user NOT IN ('authenticated', 'anon') THEN
+        RETURN NEW;
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        RAISE EXCEPTION 'Los usuarios se dan de alta desde Gobierno → Usuarios, no directamente: así la cuenta de acceso y el perfil se crean juntos.'
+            USING ERRCODE = '42501';
+    END IF;
+
+    IF NEW.is_active IS DISTINCT FROM OLD.is_active THEN
+        RAISE EXCEPTION 'Para activar o desactivar a un usuario use Gobierno → Usuarios: así también se bloquea o desbloquea su acceso, y queda en la auditoría.'
+            USING ERRCODE = '42501';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."profiles_activo_guard"() OWNER TO "postgres";
 
 --
 -- Name: salud_cron(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -1789,6 +1819,13 @@ CREATE OR REPLACE TRIGGER "delegaciones_validar_trg" BEFORE INSERT OR UPDATE ON 
 
 
 --
+-- Name: profiles profiles_activo_guard; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "profiles_activo_guard" BEFORE INSERT OR UPDATE OF "is_active" ON "public"."profiles" FOR EACH ROW EXECUTE FUNCTION "public"."profiles_activo_guard"();
+
+
+--
 -- Name: workflow_connections trg_connections_definicion_cambiada; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
@@ -2481,6 +2518,14 @@ GRANT ALL ON FUNCTION "public"."my_role"() TO "service_role";
 
 
 --
+-- Name: FUNCTION "profiles_activo_guard"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."profiles_activo_guard"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."profiles_activo_guard"() TO "service_role";
+
+
+--
 -- Name: FUNCTION "salud_cron"(); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -2866,5 +2911,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict dHC153zprO1hVickWupC1U7gxvjd8PjqxDb5Fy3dRaobxhEntWPkgvamCoiMXDE
+-- \unrestrict kTjjSHNTaMP9z9GKl6svxjvIyvDS6wdLtKQeVUefvd236iUwuAq1BhqflaIsrFj
 
