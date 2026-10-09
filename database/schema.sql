@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict sqR4O4sVw0DL9qvXzv4i0VvJllh2cXzwcWu6ZVL0DETHHaZbBt64xvttFY3EdWB
+-- \restrict dHC153zprO1hVickWupC1U7gxvjd8PjqxDb5Fy3dRaobxhEntWPkgvamCoiMXDE
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -387,8 +387,12 @@ COMMENT ON FUNCTION "public"."guardar_lienzo"("p_workflow_id" "uuid", "p_nodes" 
 
 CREATE OR REPLACE FUNCTION "public"."is_admin"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
     AS $$
-    SELECT EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin');
+    SELECT EXISTS (
+        SELECT 1 FROM public.profiles
+         WHERE id = auth.uid() AND role = 'admin' AND is_active IS TRUE
+    )
 $$;
 
 
@@ -423,8 +427,10 @@ COMMENT ON FUNCTION "public"."marcar_clave_cambiada"() IS 'Limpia debe_cambiar_c
 
 CREATE OR REPLACE FUNCTION "public"."my_organization_id"() RETURNS "uuid"
     LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
     AS $$
-    SELECT organization_id FROM public.profiles WHERE id = auth.uid()
+    SELECT organization_id FROM public.profiles
+     WHERE id = auth.uid() AND is_active IS TRUE
 $$;
 
 
@@ -436,8 +442,10 @@ ALTER FUNCTION "public"."my_organization_id"() OWNER TO "postgres";
 
 CREATE OR REPLACE FUNCTION "public"."my_role"() RETURNS "text"
     LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
     AS $$
-    SELECT role FROM public.profiles WHERE id = auth.uid()
+    SELECT role FROM public.profiles
+     WHERE id = auth.uid() AND is_active IS TRUE
 $$;
 
 
@@ -2858,5 +2866,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict sqR4O4sVw0DL9qvXzv4i0VvJllh2cXzwcWu6ZVL0DETHHaZbBt64xvttFY3EdWB
+-- \unrestrict dHC153zprO1hVickWupC1U7gxvjd8PjqxDb5Fy3dRaobxhEntWPkgvamCoiMXDE
 
