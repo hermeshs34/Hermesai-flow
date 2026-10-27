@@ -3,9 +3,10 @@ import {
     Users, ShieldCheck, ScrollText, Loader2, Search,
     CheckCircle, XCircle, Lock, AlertTriangle, UserPlus, X, Copy, ClipboardCheck,
     Plus, Pencil, Trash2, ToggleLeft, ToggleRight, Sparkles, FlaskConical,
-    TrendingUp, Clock, ChevronDown, ChevronUp, BookOpen, KeyRound, UserCog,
+    TrendingUp, Clock, ChevronDown, ChevronUp, BookOpen, KeyRound, UserCog, Smartphone,
 } from 'lucide-react';
 import { GovernanceService, type ManagedUser, type AuditEntry } from '../services/governance.service';
+import { segundoFactorAdminService, type FactoresPorUsuario } from '../services/segundoFactorAdmin.service';
 import { ROL_META, ROLES_ASIGNABLES, ROLES_REGULATORIOS, puedeResolverTarea, type Role, type User } from '../core/user.types';
 import { useRolesDelegados } from '../utils/delegaciones';
 import { authService } from '../core/auth.service';
@@ -72,6 +73,9 @@ const ACCION_META: Record<string, { label: string; color: string }> = {
 export function Governance({ currentUser }: GovernanceProps) {
     const [tab,          setTab]         = useState<Tab>('usuarios');
     const [users,        setUsers]        = useState<ManagedUser[]>([]);
+    // `null` = no se pudo preguntar: la columna dice «?», nunca «sin factor».
+    const [factores,     setFactores]     = useState<FactoresPorUsuario | null>(null);
+    const [protegidos,   setProtegidos]   = useState<Set<string>>(new Set());
     const [audit,        setAudit]        = useState<AuditEntry[]>([]);
     const [auditSearch,  setAuditSearch]  = useState('');
     const [auditDateFilter, setAuditDateFilter] = useState<'all' | 'today' | '7d' | '30d'>('all');
@@ -409,6 +413,21 @@ export function Governance({ currentUser }: GovernanceProps) {
         toast.success('Regla eliminada');
     };
 
+    // Aparte de `load`: si la Edge Function falla, la lista de usuarios se ve igual.
+    const cargarFactores = useCallback(async () => {
+        if (!isAdmin) return;
+        try {
+            const e = await segundoFactorAdminService.estado();
+            setFactores(e.factores);
+            setProtegidos(e.protegidos);
+        } catch {
+            setFactores(null);
+            setProtegidos(new Set());
+        }
+    }, [isAdmin]);
+
+    useEffect(() => { void cargarFactores(); }, [cargarFactores]);
+
     const load = useCallback(async () => {
         setLoading(true);
         try {
@@ -552,6 +571,25 @@ export function Governance({ currentUser }: GovernanceProps) {
         } finally { setSavingId(null); }
     };
 
+    // Perdió el teléfono: se le quita el factor y en su próximo inicio de sesión
+    // da de alta uno nuevo.
+    const quitarFactor = async (u: ManagedUser) => {
+        if (!confirm(
+            `¿Quitar la verificación en dos pasos de ${u.name}?
+
+` +
+            'Al volver a entrar tendrá que dar de alta un dispositivo nuevo.'
+        )) return;
+        setSavingId(u.id);
+        try {
+            const n = await segundoFactorAdminService.quitar(u.id);
+            toast.success(n > 0 ? `Segundo factor de ${u.name} quitado` : `${u.name} no tenía segundo factor`);
+            await cargarFactores();
+        } catch (e) {
+            toast.error((e as Error)?.message ?? 'No se pudo quitar el segundo factor');
+        } finally { setSavingId(null); }
+    };
+
     // Clave temporal para quien olvidó la suya.
     //
     // Invalida la contraseña actual de esa persona en el acto, así que se
@@ -689,6 +727,7 @@ export function Governance({ currentUser }: GovernanceProps) {
                                             <th className="text-left px-3 py-2 font-bold">Rol</th>
                                             <th className="text-center px-3 py-2 font-bold">Estado</th>
                                             <th className="text-center px-3 py-2 font-bold">Clave</th>
+                                            <th className="text-center px-3 py-2 font-bold">2 pasos</th>
                                             <th className="text-right px-5 py-2 font-bold">Creado</th>
                                         </tr>
                                     </thead>
@@ -710,10 +749,11 @@ export function Governance({ currentUser }: GovernanceProps) {
                                                 <td className="px-3 py-3">
                                                     <select
                                                         value={u.role}
-                                                        disabled={savingId === u.id || u.id === currentUser.id}
+                                                        disabled={savingId === u.id || u.id === currentUser.id || protegidos.has(u.id)}
                                                         onChange={e => changeRole(u, e.target.value as Role)}
                                                         className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-indigo-200"
-                                                        title={ROL_META[u.role]?.descripcion}
+                                                        // Lo impide la base (profiles_admin_plataforma_guard); esto solo lo explica.
+                                                        title={protegidos.has(u.id) ? `${u.name} es administrador de la plataforma: su rol solo lo cambia otro administrador de la plataforma.` : ROL_META[u.role]?.descripcion}
                                                     >
                                                         {ROLES_ASIGNABLES.map(r => (
                                                             <option key={r} value={r}>{ROL_META[r].label}</option>
@@ -726,7 +766,8 @@ export function Governance({ currentUser }: GovernanceProps) {
                                                 <td className="px-3 py-3 text-center">
                                                     <button
                                                         onClick={() => toggleActive(u)}
-                                                        disabled={savingId === u.id || u.id === currentUser.id}
+                                                        disabled={savingId === u.id || u.id === currentUser.id || protegidos.has(u.id)}
+                                                        title={protegidos.has(u.id) ? `${u.name} es administrador de la plataforma: solo otro administrador de la plataforma puede activarlo o desactivarlo.` : undefined}
                                                         className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full disabled:opacity-50 ${
                                                             u.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'
                                                         }`}
@@ -751,6 +792,28 @@ export function Governance({ currentUser }: GovernanceProps) {
                                                         >
                                                             <KeyRound className="w-3 h-3" />
                                                             Restablecer
+                                                        </button>
+                                                    )}
+                                                </td>
+                                                <td className="px-3 py-3 text-center">
+                                                    {factores === null || factores[u.id] === undefined ? (
+                                                        <span className="text-[10px] text-gray-400" title="No se pudo consultar">?</span>
+                                                    ) : factores[u.id] === 0 ? (
+                                                        <span className="text-[10px] text-gray-400">Sin dispositivo</span>
+                                                    ) : u.id === currentUser.id || protegidos.has(u.id) ? (
+                                                        // El propio se gestiona en «Seguridad de la cuenta»; el del
+                                                        // administrador de la plataforma, solo otro de la plataforma.
+                                                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700">
+                                                            <Smartphone className="w-3 h-3" /> Activo
+                                                        </span>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => quitarFactor(u)}
+                                                            disabled={savingId === u.id}
+                                                            title={`Quitar el segundo factor de ${u.name} (perdió el dispositivo)`}
+                                                            className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+                                                        >
+                                                            <Smartphone className="w-3 h-3" /> Activo · Quitar
                                                         </button>
                                                     )}
                                                 </td>

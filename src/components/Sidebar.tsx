@@ -18,6 +18,7 @@ interface SidebarProps {
     onViewChange:      (view: ViewType) => void;
     onShowTutorial?:   () => void;
     onChangePassword?: () => void;
+    onShowSecurity?:   () => void;
     currentUser?:      User;
     onLogout?:         () => void;
 }
@@ -143,7 +144,7 @@ const NAV_BASE = [
     { id: 'settings'   as ViewType, label: 'Configuración',         icon: SettingsIcon,    badgeKey: null      as BadgeKey },
 ];
 
-export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePassword, currentUser, onLogout }: SidebarProps) {
+export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePassword, onShowSecurity, currentUser, onLogout }: SidebarProps) {
     const systems       = useSystemHealth();
     const puedeAutorizar = authService.hasPermission(currentUser ?? null, 'authorize_workflows');
     const badges   = useSidebarBadges(currentUser?.organizationId, currentUser?.id, currentUser?.role, puedeAutorizar);
@@ -269,6 +270,15 @@ export function Sidebar({ currentView, onViewChange, onShowTutorial, onChangePas
                                 title="Cambiar contraseña"
                             >
                                 <KeyRound className="w-3.5 h-3.5" />
+                            </button>
+                        )}
+                        {onShowSecurity && (
+                            <button
+                                onClick={onShowSecurity}
+                                className="p-1.5 rounded-lg hover:bg-indigo-500/20 text-white/40 hover:text-indigo-400 transition-colors"
+                                title="Seguridad de la cuenta"
+                            >
+                                <ShieldCheck className="w-3.5 h-3.5" />
                             </button>
                         )}
                         {onShowTutorial && (

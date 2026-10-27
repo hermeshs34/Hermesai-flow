@@ -1,4 +1,5 @@
-import { supabase } from './supabase.ts';
+import { supabase, crearClienteEfimero } from './supabase.ts';
+import { verificarCodigoCon } from './mfa.ts';
 import { ROLE_PERMISSIONS, type User, type Permission } from './user.types.ts';
 
 const SESSION_KEY     = 'hermesflow_session';
@@ -18,6 +19,20 @@ interface RateData { attempts: number; lockedUntil: number; step: number; }
 export interface TokensDeRecuperacion {
     accessToken:  string;
     refreshToken: string;
+}
+
+/**
+ * Una recuperación de contraseña en curso (27/10/2026). Vive en un cliente en
+ * memoria: si la persona cierra la pestaña a medias, no queda nada guardado.
+ * Quien la abre debe llamar a `cerrar()` al salir, pase lo que pase.
+ */
+export interface Recuperacion {
+    /** La cuenta tiene segundo factor: hay que pasar el código antes de fijar la clave. */
+    necesitaCodigo: boolean;
+    verificarCodigo(codigo: string): Promise<void>;
+    /** Fija la clave nueva y cierra la sesión del enlace. */
+    fijar(clave: string): Promise<void>;
+    cerrar(): Promise<void>;
 }
 
 function getRateData(email: string): RateData {
@@ -98,6 +113,14 @@ class AuthService {
         // no es una clave mal escrita, y el contador la haría parecer una.
         if (authError?.code === 'user_banned') {
             throw new Error('Esta cuenta está desactivada. Contacte al administrador.');
+        }
+
+        // 27/10/2026: con la protección CAPTCHA encendida en Auth y sin widget en
+        // esta pantalla, TODO inicio de sesión volvía `captcha_failed` y se leía
+        // como «Error de autenticación» — parecía una clave mal escrita. No es
+        // culpa de quien entra: no cuenta como intento.
+        if (authError?.code === 'captcha_failed') {
+            throw new Error('El inicio de sesión está bloqueado por la verificación anti-robots. Avise al administrador.');
         }
 
         if (authError || !authData.user) {
@@ -205,20 +228,37 @@ class AuthService {
     }
 
     // ── Cambio de contraseña ──────────────────────────────────────────────
-    // Verifica la clave actual re-autenticando, luego actualiza a la nueva.
+    /**
+     * Verifica la clave actual y la cambia por la nueva.
+     *
+     * La clave actual se comprueba en un cliente aparte (27/10/2026): un
+     * `signInWithPassword` sobre el principal abría una sesión nueva en `aal1`,
+     * y a quien tiene segundo factor Auth le rechaza el cambio sin `aal2`.
+     *
+     * Al volver, quien llama debe cerrar sesión (ChangePasswordModal): Auth
+     * cierra las demás sesiones de la cuenta al cambiar la clave, y medido en
+     * RiskGuard la propia tampoco sobrevive con garantías.
+     */
     async changePassword(email: string, currentPassword: string, newPassword: string): Promise<void> {
         if (newPassword.length < 8) {
             throw new Error('La nueva contraseña debe tener al menos 8 caracteres.');
         }
-        // 1. Verificar clave actual
-        const { error: verifyErr } = await supabase.auth.signInWithPassword({
+        // 1. Verificar clave actual, sin tocar la sesión de la aplicación
+        const comprobador = crearClienteEfimero();
+        const { error: verifyErr } = await comprobador.auth.signInWithPassword({
             email: email.trim().toLowerCase(), password: currentPassword,
         });
+        await comprobador.auth.signOut({ scope: 'local' }).catch(() => { /* sesión en memoria */ });
         if (verifyErr) throw new Error('La contraseña actual es incorrecta.');
 
         // 2. Actualizar a la nueva
         const { error: updateErr } = await supabase.auth.updateUser({ password: newPassword });
-        if (updateErr) throw new Error(`No se pudo actualizar la contraseña: ${updateErr.message}`);
+        if (updateErr) {
+            if (updateErr.code === 'insufficient_aal') {
+                throw new Error('Para cambiar la contraseña tienes que haber verificado tu segundo factor en esta sesión. Cierra sesión y vuelve a entrar.');
+            }
+            throw new Error(`No se pudo actualizar la contraseña: ${updateErr.message}`);
+        }
 
         // 3. La cuenta ya no arrastra una clave puesta por otro
         await this.marcarClaveCambiada();
@@ -258,43 +298,70 @@ class AuthService {
     }
 
     /**
-     * Fija la contraseña nueva con los tokens que traía el enlace del correo.
+     * Abre la recuperación con los tokens que traía el enlace del correo.
      *
-     * El cliente arranca con `detectSessionInUrl: false`, así que ese enlace no
-     * ha abierto ninguna sesión: sus tokens son texto hasta que alguien los usa.
-     * Aquí se usan durante lo que dura el cambio, y se tiran.
+     * El cliente principal arranca con `detectSessionInUrl: false`, así que ese
+     * enlace no ha abierto ninguna sesión: sus tokens son texto hasta que alguien
+     * los usa. Aquí se usan en un cliente EN MEMORIA (`crearClienteEfimero`),
+     * porque desde el 27/10/2026 puede haber un paso intermedio —el código del
+     * segundo factor— y una sesión guardada entre pasos sería una sesión que
+     * sobrevive a cerrar la pestaña (§6.4).
      *
-     * **El `finally` no es limpieza, es el control.** Pase lo que pase —clave
-     * rechazada, enlace caducado, red caída— este método no puede terminar
-     * dejando una sesión abierta, porque entonces el enlace habría servido para
-     * entrar sin saber la contraseña. Al salir de aquí solo se puede seguir por
-     * el login, con la clave que se acaba de elegir.
+     * Con segundo factor, la clave no se cambia solo con el enlace: quien robe el
+     * correo no debe poder quedarse con la cuenta. Se pide el código antes.
      *
-     * No se pide la clave actual: quien la ha olvidado es justo el que está
-     * aquí, y lo que autoriza el cambio es el enlace firmado.
+     * **El `finally` de `fijar` y `cerrar()` no son limpieza, son el control.**
+     * Pase lo que pase, al salir de aquí solo se puede seguir por el login.
+     * No se pide la clave actual: quien la ha olvidado es justo el que está aquí.
      */
-    async setNewPassword(tokens: TokensDeRecuperacion, newPassword: string): Promise<void> {
-        if (newPassword.length < 8) {
-            throw new Error('La nueva contraseña debe tener al menos 8 caracteres.');
-        }
-        try {
-            const { error: sesionErr } = await supabase.auth.setSession({
-                access_token:  tokens.accessToken,
-                refresh_token: tokens.refreshToken,
-            });
-            if (sesionErr) {
-                throw new Error('El enlace ya no es válido o ha caducado. Pide uno nuevo desde «¿Olvidaste tu contraseña?».');
-            }
+    async abrirRecuperacion(tokens: TokensDeRecuperacion): Promise<Recuperacion> {
+        const cliente = crearClienteEfimero();
+        const cerrar = async () => {
+            // `.catch` a propósito: si el cierre fallara, su error taparía el
+            // motivo real y la persona vería el equivocado.
+            await cliente.auth.signOut().catch(() => { /* la sesión ya no sirve igualmente */ });
+        };
 
-            const { error } = await supabase.auth.updateUser({ password: newPassword });
-            if (error) throw new Error(`No se pudo establecer la contraseña: ${error.message}`);
-
-            await this.marcarClaveCambiada();
-        } finally {
-            // `.catch` a propósito: si el cierre fallara, su error taparía el de
-            // arriba y la persona vería el motivo equivocado.
-            await this.logout().catch(() => { /* la sesión ya no sirve igualmente */ });
+        const { error: sesionErr } = await cliente.auth.setSession({
+            access_token:  tokens.accessToken,
+            refresh_token: tokens.refreshToken,
+        });
+        if (sesionErr) {
+            await cerrar();
+            throw new Error('El enlace ya no es válido o ha caducado. Pide uno nuevo desde «¿Olvidaste tu contraseña?».');
         }
+
+        const { data: nivel, error: nivelErr } = await cliente.auth.mfa.getAuthenticatorAssuranceLevel();
+        if (nivelErr || !nivel) {
+            await cerrar();
+            throw new Error('No se pudo comprobar la verificación en dos pasos de la cuenta. Pide un enlace nuevo.');
+        }
+        const necesitaCodigo = nivel.nextLevel === 'aal2' && nivel.currentLevel !== 'aal2';
+
+        return {
+            necesitaCodigo,
+            verificarCodigo: codigo => verificarCodigoCon(cliente, codigo),
+            async fijar(clave: string) {
+                if (clave.length < 8) {
+                    throw new Error('La nueva contraseña debe tener al menos 8 caracteres.');
+                }
+                try {
+                    const { error } = await cliente.auth.updateUser({ password: clave });
+                    if (error) {
+                        if (error.code === 'insufficient_aal') {
+                            throw new Error('Antes de cambiar la contraseña tienes que escribir el código de tu aplicación autenticadora.');
+                        }
+                        throw new Error(`No se pudo establecer la contraseña: ${error.message}`);
+                    }
+                    // Mismo efecto que `marcarClaveCambiada`, pero con la sesión del enlace.
+                    const { error: marcaErr } = await cliente.rpc('marcar_clave_cambiada');
+                    if (marcaErr) throw new Error(`No se pudo confirmar el cambio de contraseña: ${marcaErr.message}`);
+                } finally {
+                    await cerrar();
+                }
+            },
+            cerrar,
+        };
     }
 }
 

@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
-import { KeyRound, Loader2, CheckCircle, Eye, EyeOff } from 'lucide-react';
-import { authService, type TokensDeRecuperacion } from '../../core/auth.service.ts';
+import React, { useState, useEffect, useRef } from 'react';
+import { KeyRound, Loader2, CheckCircle, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { authService, type TokensDeRecuperacion, type Recuperacion } from '../../core/auth.service.ts';
+import { Marco, FormularioCodigo } from '../../components/SegundoFactor';
 
 interface ResetPasswordViewProps {
     /** Los del hash del enlace. Solo en memoria: ver App.tsx. */
@@ -21,14 +22,53 @@ interface ResetPasswordViewProps {
  * Es el punto entero de la función: si pulsar un enlace de correo bastara para
  * entrar, haber olvidado la contraseña dejaría de tener importancia y el correo
  * pasaría a ser la contraseña de todo el mundo.
+ *
+ * **Con segundo factor, el enlace solo no basta** (27/10/2026): antes de elegir
+ * la clave se pide el código de la aplicación autenticadora. Si no, quien se
+ * hiciera con el correo se quedaría con la cuenta y el segundo factor no
+ * protegería de nada.
  */
+
+// Una sola apertura por enlace: en desarrollo React monta dos veces, y abrir la
+// recuperación dos veces con los mismos tokens crearía dos sesiones.
+let apertura: { tokens: TokensDeRecuperacion; promesa: Promise<Recuperacion> } | null = null;
+function abrir(tokens: TokensDeRecuperacion): Promise<Recuperacion> {
+    if (apertura?.tokens !== tokens) apertura = { tokens, promesa: authService.abrirRecuperacion(tokens) };
+    return apertura.promesa;
+}
+
+type Fase = 'abriendo' | 'codigo' | 'formulario' | 'listo' | 'invalido';
+
 export const ResetPasswordView: React.FC<ResetPasswordViewProps> = ({ tokens, onDone }) => {
+    const [fase,    setFase]    = useState<Fase>('abriendo');
     const [next,    setNext]    = useState('');
     const [confirm, setConfirm] = useState('');
     const [show,    setShow]    = useState(false);
     const [saving,  setSaving]  = useState(false);
-    const [done,    setDone]    = useState(false);
     const [error,   setError]   = useState('');
+    const recuperacion = useRef<Recuperacion | null>(null);
+
+    useEffect(() => {
+        let vigente = true;
+        abrir(tokens)
+            .then(r => {
+                if (!vigente) return;
+                recuperacion.current = r;
+                setFase(r.necesitaCodigo ? 'codigo' : 'formulario');
+            })
+            .catch(err => {
+                if (!vigente) return;
+                setError((err as Error)?.message ?? 'El enlace de recuperación no es válido.');
+                setFase('invalido');
+            });
+        return () => { vigente = false; };
+    }, [tokens]);
+
+    // Salir sin terminar también cierra la sesión del enlace.
+    const salir = async () => {
+        await recuperacion.current?.cerrar();
+        onDone();
+    };
 
     const len8     = next.length >= 8;
     const hasNum   = /\d/.test(next);
@@ -41,17 +81,49 @@ export const ResetPasswordView: React.FC<ResetPasswordViewProps> = ({ tokens, on
         if (!valid || saving) return;
         setSaving(true); setError('');
         try {
-            // Abre la sesión con los tokens, cambia la clave y la cierra. El
-            // cierre va dentro, en un `finally`: no puede depender de que esta
-            // pantalla se acuerde de hacerlo.
-            await authService.setNewPassword(tokens, next);
-            setDone(true);
+            if (!recuperacion.current) throw new Error('El enlace de recuperación no está abierto.');
+            // `fijar` cierra la sesión del enlace en un `finally`, se salga bien
+            // o mal: no puede depender de que esta pantalla se acuerde.
+            await recuperacion.current.fijar(next);
+            setFase('listo');
         } catch (err) {
+            // La sesión del enlace ya está cerrada: con él no se puede reintentar.
             setError((err as Error)?.message ?? 'No se pudo establecer la contraseña.');
+            setFase('invalido');
         } finally {
             setSaving(false);
         }
     };
+
+    if (fase === 'abriendo') {
+        return (
+            <div className="flex items-center justify-center min-h-screen" style={{ background: '#0a0f1e' }}>
+                <Loader2 className="animate-spin text-indigo-400" size={28} />
+            </div>
+        );
+    }
+
+    if (fase === 'codigo') {
+        return (
+            <Marco
+                titulo="Verificación en dos pasos"
+                subtitulo="Tu cuenta tiene la verificación en dos pasos. Escribe el código de tu aplicación autenticadora para elegir la contraseña nueva."
+            >
+                <FormularioCodigo
+                    onVerificar={async codigo => {
+                        await recuperacion.current?.verificarCodigo(codigo);
+                        setFase('formulario');
+                    }}
+                    textoBoton="Continuar"
+                    onSalir={() => void salir()}
+                    textoSalir="Cancelar e ir a iniciar sesión"
+                />
+                <p className="text-slate-600 text-[11px] leading-relaxed mt-6 text-center">
+                    Si perdiste el dispositivo, avisa a un administrador de HermesAI Flow: puede quitarte el anterior para que des de alta uno nuevo.
+                </p>
+            </Marco>
+        );
+    }
 
     const campo: React.CSSProperties = {
         width: '100%', padding: '0.875rem 1rem', borderRadius: '10px',
@@ -71,7 +143,36 @@ export const ResetPasswordView: React.FC<ResetPasswordViewProps> = ({ tokens, on
                     <img src="/hermesai-logo-dark.svg" alt="HermesAI" style={{ height: '44px', width: 'auto' }} />
                 </div>
 
-                {done ? (
+                {fase === 'invalido' ? (
+                    <div style={{ textAlign: 'center' }}>
+                        <div style={{
+                            width: '56px', height: '56px', borderRadius: '16px', margin: '0 auto 1.25rem',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)',
+                        }}>
+                            <AlertCircle size={26} color="#f87171" />
+                        </div>
+                        <h2 style={{ fontSize: '1.3rem', fontWeight: 800, color: '#f8fafc', marginBottom: '0.5rem' }}>
+                            No se pudo cambiar la contraseña
+                        </h2>
+                        <p style={{ fontSize: '0.875rem', color: '#fca5a5', marginBottom: '0.5rem', lineHeight: 1.6 }}>
+                            {error}
+                        </p>
+                        <p style={{ fontSize: '0.8rem', color: '#64748b', marginBottom: '1.75rem', lineHeight: 1.6 }}>
+                            Este enlace ya no sirve. Pide uno nuevo desde «¿Olvidaste tu contraseña?».
+                        </p>
+                        <button
+                            onClick={onDone}
+                            style={{
+                                width: '100%', padding: '0.9rem', borderRadius: '10px', border: 'none',
+                                background: 'linear-gradient(135deg, #6366f1, #4f46e5)', color: '#fff',
+                                fontSize: '0.95rem', fontWeight: 700, cursor: 'pointer',
+                            }}
+                        >
+                            Ir a iniciar sesión
+                        </button>
+                    </div>
+                ) : fase === 'listo' ? (
                     <div style={{ textAlign: 'center' }}>
                         <div style={{
                             width: '56px', height: '56px', borderRadius: '16px', margin: '0 auto 1.25rem',
@@ -161,19 +262,6 @@ export const ResetPasswordView: React.FC<ResetPasswordViewProps> = ({ tokens, on
                                     </div>
                                 ))}
                             </div>
-
-                            {error && (
-                                <div style={{
-                                    padding: '0.75rem 1rem', borderRadius: '10px',
-                                    background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)',
-                                    fontSize: '0.85rem', color: '#fca5a5',
-                                }}>
-                                    {error}
-                                    <div style={{ fontSize: '0.75rem', color: '#f87171', marginTop: '4px' }}>
-                                        Si el enlace ha caducado, pide uno nuevo desde «¿Olvidaste tu contraseña?».
-                                    </div>
-                                </div>
-                            )}
 
                             <button
                                 type="submit" disabled={!valid || saving}

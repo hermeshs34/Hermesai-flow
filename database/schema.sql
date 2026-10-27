@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict kTjjSHNTaMP9z9GKl6svxjvIyvDS6wdLtKQeVUefvd236iUwuAq1BhqflaIsrFj
+-- \restrict 1Yg7ufWhIcswGeS0YcSjlxfkQ2JZ3wZ09bGGLZLCCYFr281nUxCnygMoS3EngAD
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -33,6 +33,42 @@ ALTER SCHEMA "public" OWNER TO "pg_database_owner";
 --
 
 COMMENT ON SCHEMA "public" IS 'standard public schema';
+
+
+--
+-- Name: cerrar_sesiones("uuid"[]); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."cerrar_sesiones"("ids" "uuid"[] DEFAULT NULL::"uuid"[]) RETURNS integer
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+    declare
+      n integer;
+    begin
+      if auth.uid() is null or not public.mfa_satisfecho() then
+        raise exception 'Hace falta una sesión verificada para cerrar sesiones'
+          using errcode = '42501';
+      end if;
+
+      delete from auth.sessions s
+       where s.user_id = auth.uid()
+         and s.id is distinct from nullif(auth.jwt() ->> 'session_id', '')::uuid
+         and (ids is null or s.id = any (ids));
+
+      get diagnostics n = row_count;
+      return n;
+    end;
+    $$;
+
+
+ALTER FUNCTION "public"."cerrar_sesiones"("ids" "uuid"[]) OWNER TO "postgres";
+
+--
+-- Name: FUNCTION "cerrar_sesiones"("ids" "uuid"[]); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION "public"."cerrar_sesiones"("ids" "uuid"[]) IS 'Cierra sesiones del usuario que llama: las indicadas o, sin ids, todas menos la actual. Nunca la actual ni las de otro usuario. Exige mfa_satisfecho(). Devuelve cuántas cerró.';
 
 
 --
@@ -160,6 +196,48 @@ $$;
 
 
 ALTER FUNCTION "public"."delegaciones_validar"() OWNER TO "postgres";
+
+--
+-- Name: es_admin_plataforma(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."es_admin_plataforma"() RETURNS boolean
+    LANGUAGE "sql" STABLE
+    SET "search_path" TO ''
+    AS $$
+      select coalesce(auth.jwt() -> 'app_metadata' ->> 'admin_plataforma', '') = 'true';
+    $$;
+
+
+ALTER FUNCTION "public"."es_admin_plataforma"() OWNER TO "postgres";
+
+--
+-- Name: FUNCTION "es_admin_plataforma"(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION "public"."es_admin_plataforma"() IS 'Cierta si el JWT trae app_metadata.admin_plataforma = true. Solo la tiene el dueño de la plataforma; el rol admin de una organización no. 27/10/2026.';
+
+
+--
+-- Name: es_perfil_admin_plataforma("uuid"); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."es_perfil_admin_plataforma"("p_id" "uuid") RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+    SELECT EXISTS (
+        SELECT 1
+          FROM auth.users u
+          JOIN public.profiles p ON p.id = u.id
+         WHERE u.id = p_id
+           AND p.organization_id = public.my_organization_id()
+           AND coalesce(u.raw_app_meta_data ->> 'admin_plataforma', '') = 'true'
+    );
+$$;
+
+
+ALTER FUNCTION "public"."es_perfil_admin_plataforma"("p_id" "uuid") OWNER TO "postgres";
 
 --
 -- Name: generar_secreto_webhook("uuid"); Type: FUNCTION; Schema: public; Owner: postgres
@@ -422,6 +500,81 @@ COMMENT ON FUNCTION "public"."marcar_clave_cambiada"() IS 'Limpia debe_cambiar_c
 
 
 --
+-- Name: mfa_satisfecho(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."mfa_satisfecho"() RETURNS boolean
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+      select
+        exists (
+          select 1
+            from auth.sessions s
+           where s.id = nullif(auth.jwt() ->> 'session_id', '')::uuid
+             and (s.not_after is null or s.not_after > now())
+        )
+        and (
+          (
+            coalesce(auth.jwt() ->> 'aal', 'aal1') = 'aal2'
+            and exists (
+              select 1
+                from jsonb_array_elements(coalesce(auth.jwt() -> 'amr', '[]'::jsonb)) e
+               where e ->> 'method' in ('totp', 'phone', 'webauthn')
+                 and to_timestamp((e ->> 'timestamp')::bigint) > now() - interval '6 hours'
+            )
+          )
+          or not exists (
+            select 1
+              from auth.mfa_factors f
+             where f.user_id = auth.uid()
+               and f.status  = 'verified'
+          )
+        );
+    $$;
+
+
+ALTER FUNCTION "public"."mfa_satisfecho"() OWNER TO "postgres";
+
+--
+-- Name: FUNCTION "mfa_satisfecho"(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION "public"."mfa_satisfecho"() IS 'Cierta si la sesión del JWT sigue abierta en auth.sessions y, además, pasó el segundo factor (aal2) hace menos de 6 horas según el claim amr, o el usuario no tiene ninguno verificado. Para las restrictivas <tabla>_aal2. 27/10/2026.';
+
+
+--
+-- Name: mis_sesiones(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."mis_sesiones"() RETURNS TABLE("id" "uuid", "creada" timestamp with time zone, "ultimo_uso" timestamp with time zone, "nivel" "text", "navegador" "text", "ip" "text", "actual" boolean)
+    LANGUAGE "sql" STABLE SECURITY DEFINER
+    SET "search_path" TO ''
+    AS $$
+      select s.id,
+             s.created_at,
+             coalesce(s.refreshed_at at time zone 'UTC', s.updated_at, s.created_at),
+             s.aal::text,
+             s.user_agent,
+             host(s.ip),
+             s.id = nullif(auth.jwt() ->> 'session_id', '')::uuid
+        from auth.sessions s
+       where s.user_id = auth.uid()
+         and (s.not_after is null or s.not_after > now())
+         and public.mfa_satisfecho();
+    $$;
+
+
+ALTER FUNCTION "public"."mis_sesiones"() OWNER TO "postgres";
+
+--
+-- Name: FUNCTION "mis_sesiones"(); Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON FUNCTION "public"."mis_sesiones"() IS 'Sesiones abiertas del usuario que llama, con la actual marcada. Ventanilla sobre auth.sessions: la tabla no se expone. Exige mfa_satisfecho().';
+
+
+--
 -- Name: my_organization_id(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -452,6 +605,24 @@ $$;
 ALTER FUNCTION "public"."my_role"() OWNER TO "postgres";
 
 --
+-- Name: politicas_seguridad_sello(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."politicas_seguridad_sello"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+    begin
+      new.updated_at := now();
+      new.updated_by := auth.uid();
+      return new;
+    end;
+    $$;
+
+
+ALTER FUNCTION "public"."politicas_seguridad_sello"() OWNER TO "postgres";
+
+--
 -- Name: profiles_activo_guard(); Type: FUNCTION; Schema: public; Owner: postgres
 --
 
@@ -480,6 +651,40 @@ $$;
 
 
 ALTER FUNCTION "public"."profiles_activo_guard"() OWNER TO "postgres";
+
+--
+-- Name: profiles_admin_plataforma_guard(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE FUNCTION "public"."profiles_admin_plataforma_guard"() RETURNS "trigger"
+    LANGUAGE "plpgsql"
+    SET "search_path" TO ''
+    AS $$
+BEGIN
+    -- Clave de servicio (Edge Functions) y SQL Editor: fuera de esta regla.
+    IF current_user NOT IN ('authenticated', 'anon') THEN
+        RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+    END IF;
+
+    IF TG_OP = 'UPDATE'
+       AND NEW.role IS NOT DISTINCT FROM OLD.role
+       AND NEW.organization_id IS NOT DISTINCT FROM OLD.organization_id THEN
+        RETURN NEW;
+    END IF;
+
+    IF public.es_perfil_admin_plataforma(OLD.id)
+       AND NOT (public.es_admin_plataforma()
+                AND coalesce(auth.jwt() ->> 'aal', '') = 'aal2') THEN
+        RAISE EXCEPTION '% es administrador de la plataforma: su rol, su organización y su perfil solo los puede cambiar otro administrador de la plataforma.', OLD.name
+            USING ERRCODE = '42501';
+    END IF;
+
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."profiles_admin_plataforma_guard"() OWNER TO "postgres";
 
 --
 -- Name: salud_cron(); Type: FUNCTION; Schema: public; Owner: postgres
@@ -1301,6 +1506,28 @@ COMMENT ON COLUMN "public"."organizations"."kpi_costo_hora_usd" IS 'Costo hora-h
 
 
 --
+-- Name: politicas_seguridad; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE IF NOT EXISTS "public"."politicas_seguridad" (
+    "id" boolean DEFAULT true NOT NULL,
+    "exigir_mfa" boolean DEFAULT true NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_by" "uuid",
+    CONSTRAINT "politicas_seguridad_id_check" CHECK ("id")
+);
+
+
+ALTER TABLE "public"."politicas_seguridad" OWNER TO "postgres";
+
+--
+-- Name: TABLE "politicas_seguridad"; Type: COMMENT; Schema: public; Owner: postgres
+--
+
+COMMENT ON TABLE "public"."politicas_seguridad" IS 'Política de seguridad de la plataforma: una sola fila. exigir_mfa decide si el navegador obliga a dar de alta el segundo factor a quien no lo tiene; la barrera de datos es mfa_satisfecho() y no depende de esto. 27/10/2026.';
+
+
+--
 -- Name: profiles; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -1599,6 +1826,14 @@ ALTER TABLE ONLY "public"."organizations"
 
 
 --
+-- Name: politicas_seguridad politicas_seguridad_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."politicas_seguridad"
+    ADD CONSTRAINT "politicas_seguridad_pkey" PRIMARY KEY ("id");
+
+
+--
 -- Name: profiles profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -1819,10 +2054,24 @@ CREATE OR REPLACE TRIGGER "delegaciones_validar_trg" BEFORE INSERT OR UPDATE ON 
 
 
 --
+-- Name: politicas_seguridad politicas_seguridad_sello; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "politicas_seguridad_sello" BEFORE UPDATE ON "public"."politicas_seguridad" FOR EACH ROW EXECUTE FUNCTION "public"."politicas_seguridad_sello"();
+
+
+--
 -- Name: profiles profiles_activo_guard; Type: TRIGGER; Schema: public; Owner: postgres
 --
 
 CREATE OR REPLACE TRIGGER "profiles_activo_guard" BEFORE INSERT OR UPDATE OF "is_active" ON "public"."profiles" FOR EACH ROW EXECUTE FUNCTION "public"."profiles_activo_guard"();
+
+
+--
+-- Name: profiles profiles_admin_plataforma_guard; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE OR REPLACE TRIGGER "profiles_admin_plataforma_guard" BEFORE DELETE OR UPDATE OF "role", "organization_id" ON "public"."profiles" FOR EACH ROW EXECUTE FUNCTION "public"."profiles_admin_plataforma_guard"();
 
 
 --
@@ -1999,6 +2248,14 @@ ALTER TABLE ONLY "public"."matriz_aprobacion"
 
 ALTER TABLE ONLY "public"."matriz_aprobacion"
     ADD CONSTRAINT "matriz_aprobacion_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+--
+-- Name: politicas_seguridad politicas_seguridad_updated_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY "public"."politicas_seguridad"
+    ADD CONSTRAINT "politicas_seguridad_updated_by_fkey" FOREIGN KEY ("updated_by") REFERENCES "auth"."users"("id") ON DELETE SET NULL;
 
 
 --
@@ -2291,6 +2548,26 @@ CREATE POLICY "org_read_own" ON "public"."organizations" FOR SELECT TO "authenti
 ALTER TABLE "public"."organizations" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: politicas_seguridad; Type: ROW SECURITY; Schema: public; Owner: postgres
+--
+
+ALTER TABLE "public"."politicas_seguridad" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: politicas_seguridad politicas_seguridad_select; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "politicas_seguridad_select" ON "public"."politicas_seguridad" FOR SELECT TO "authenticated" USING (true);
+
+
+--
+-- Name: politicas_seguridad politicas_seguridad_update; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "politicas_seguridad_update" ON "public"."politicas_seguridad" FOR UPDATE TO "authenticated" USING ((( SELECT "public"."es_admin_plataforma"() AS "es_admin_plataforma") AND (COALESCE(("auth"."jwt"() ->> 'aal'::"text"), ''::"text") = 'aal2'::"text") AND ( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"))) WITH CHECK ((( SELECT "public"."es_admin_plataforma"() AS "es_admin_plataforma") AND (COALESCE(("auth"."jwt"() ->> 'aal'::"text"), ''::"text") = 'aal2'::"text") AND ( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")));
+
+
+--
 -- Name: profiles; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
@@ -2446,6 +2723,15 @@ GRANT USAGE ON SCHEMA "public" TO "service_role";
 
 
 --
+-- Name: FUNCTION "cerrar_sesiones"("ids" "uuid"[]); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."cerrar_sesiones"("ids" "uuid"[]) FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."cerrar_sesiones"("ids" "uuid"[]) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."cerrar_sesiones"("ids" "uuid"[]) TO "service_role";
+
+
+--
 -- Name: FUNCTION "configurar_webhook_url"("p_workflow_id" "uuid", "p_permitir" boolean); Type: ACL; Schema: public; Owner: postgres
 --
 
@@ -2461,6 +2747,24 @@ GRANT ALL ON FUNCTION "public"."configurar_webhook_url"("p_workflow_id" "uuid", 
 REVOKE ALL ON FUNCTION "public"."delegaciones_validar"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."delegaciones_validar"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."delegaciones_validar"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "es_admin_plataforma"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."es_admin_plataforma"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."es_admin_plataforma"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."es_admin_plataforma"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "es_perfil_admin_plataforma"("p_id" "uuid"); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."es_perfil_admin_plataforma"("p_id" "uuid") FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."es_perfil_admin_plataforma"("p_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."es_perfil_admin_plataforma"("p_id" "uuid") TO "service_role";
 
 
 --
@@ -2485,7 +2789,7 @@ GRANT ALL ON FUNCTION "public"."guardar_lienzo"("p_workflow_id" "uuid", "p_nodes
 -- Name: FUNCTION "is_admin"(); Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON FUNCTION "public"."is_admin"() TO "anon";
+REVOKE ALL ON FUNCTION "public"."is_admin"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."is_admin"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."is_admin"() TO "service_role";
 
@@ -2500,10 +2804,28 @@ GRANT ALL ON FUNCTION "public"."marcar_clave_cambiada"() TO "service_role";
 
 
 --
+-- Name: FUNCTION "mfa_satisfecho"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."mfa_satisfecho"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."mfa_satisfecho"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."mfa_satisfecho"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "mis_sesiones"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."mis_sesiones"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."mis_sesiones"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."mis_sesiones"() TO "service_role";
+
+
+--
 -- Name: FUNCTION "my_organization_id"(); Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON FUNCTION "public"."my_organization_id"() TO "anon";
+REVOKE ALL ON FUNCTION "public"."my_organization_id"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."my_organization_id"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."my_organization_id"() TO "service_role";
 
@@ -2512,9 +2834,17 @@ GRANT ALL ON FUNCTION "public"."my_organization_id"() TO "service_role";
 -- Name: FUNCTION "my_role"(); Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON FUNCTION "public"."my_role"() TO "anon";
+REVOKE ALL ON FUNCTION "public"."my_role"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."my_role"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."my_role"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "politicas_seguridad_sello"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."politicas_seguridad_sello"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."politicas_seguridad_sello"() TO "service_role";
 
 
 --
@@ -2523,6 +2853,14 @@ GRANT ALL ON FUNCTION "public"."my_role"() TO "service_role";
 
 REVOKE ALL ON FUNCTION "public"."profiles_activo_guard"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."profiles_activo_guard"() TO "service_role";
+
+
+--
+-- Name: FUNCTION "profiles_admin_plataforma_guard"(); Type: ACL; Schema: public; Owner: postgres
+--
+
+REVOKE ALL ON FUNCTION "public"."profiles_admin_plataforma_guard"() FROM PUBLIC;
+GRANT ALL ON FUNCTION "public"."profiles_admin_plataforma_guard"() TO "service_role";
 
 
 --
@@ -2592,8 +2930,8 @@ GRANT ALL ON FUNCTION "public"."workflows_estado_guard"() TO "service_role";
 -- Name: TABLE "audit_log"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."audit_log" TO "anon";
-GRANT ALL ON TABLE "public"."audit_log" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."audit_log" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."audit_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."audit_log" TO "service_role";
 
 
@@ -2601,8 +2939,8 @@ GRANT ALL ON TABLE "public"."audit_log" TO "service_role";
 -- Name: TABLE "delegaciones"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."delegaciones" TO "anon";
-GRANT ALL ON TABLE "public"."delegaciones" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."delegaciones" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."delegaciones" TO "authenticated";
 GRANT ALL ON TABLE "public"."delegaciones" TO "service_role";
 
 
@@ -2635,8 +2973,8 @@ GRANT UPDATE("status") ON TABLE "public"."execution_runs" TO "authenticated";
 -- Name: TABLE "integrations"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."integrations" TO "anon";
-GRANT ALL ON TABLE "public"."integrations" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."integrations" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."integrations" TO "authenticated";
 GRANT ALL ON TABLE "public"."integrations" TO "service_role";
 
 
@@ -2644,8 +2982,8 @@ GRANT ALL ON TABLE "public"."integrations" TO "service_role";
 -- Name: TABLE "matriz_aprobacion"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."matriz_aprobacion" TO "anon";
-GRANT ALL ON TABLE "public"."matriz_aprobacion" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."matriz_aprobacion" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."matriz_aprobacion" TO "authenticated";
 GRANT ALL ON TABLE "public"."matriz_aprobacion" TO "service_role";
 
 
@@ -2653,17 +2991,32 @@ GRANT ALL ON TABLE "public"."matriz_aprobacion" TO "service_role";
 -- Name: TABLE "organizations"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."organizations" TO "anon";
-GRANT ALL ON TABLE "public"."organizations" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."organizations" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."organizations" TO "authenticated";
 GRANT ALL ON TABLE "public"."organizations" TO "service_role";
+
+
+--
+-- Name: TABLE "politicas_seguridad"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE "public"."politicas_seguridad" TO "service_role";
+GRANT SELECT ON TABLE "public"."politicas_seguridad" TO "authenticated";
+
+
+--
+-- Name: COLUMN "politicas_seguridad"."exigir_mfa"; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE("exigir_mfa") ON TABLE "public"."politicas_seguridad" TO "authenticated";
 
 
 --
 -- Name: TABLE "profiles"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."profiles" TO "anon";
-GRANT ALL ON TABLE "public"."profiles" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."profiles" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."profiles" TO "authenticated";
 GRANT ALL ON TABLE "public"."profiles" TO "service_role";
 
 
@@ -2680,8 +3033,8 @@ GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "service_role";
 -- Name: TABLE "vigilante_reloj"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."vigilante_reloj" TO "anon";
-GRANT ALL ON TABLE "public"."vigilante_reloj" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."vigilante_reloj" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."vigilante_reloj" TO "authenticated";
 GRANT ALL ON TABLE "public"."vigilante_reloj" TO "service_role";
 
 
@@ -2759,8 +3112,8 @@ GRANT SELECT("execution_run_id") ON TABLE "public"."webhook_recepciones" TO "aut
 -- Name: TABLE "workflow_autorizaciones"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."workflow_autorizaciones" TO "anon";
-GRANT ALL ON TABLE "public"."workflow_autorizaciones" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_autorizaciones" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_autorizaciones" TO "authenticated";
 GRANT ALL ON TABLE "public"."workflow_autorizaciones" TO "service_role";
 
 
@@ -2768,8 +3121,8 @@ GRANT ALL ON TABLE "public"."workflow_autorizaciones" TO "service_role";
 -- Name: TABLE "workflow_connections"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."workflow_connections" TO "anon";
-GRANT ALL ON TABLE "public"."workflow_connections" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_connections" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_connections" TO "authenticated";
 GRANT ALL ON TABLE "public"."workflow_connections" TO "service_role";
 
 
@@ -2777,8 +3130,8 @@ GRANT ALL ON TABLE "public"."workflow_connections" TO "service_role";
 -- Name: TABLE "workflow_nodes"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."workflow_nodes" TO "anon";
-GRANT ALL ON TABLE "public"."workflow_nodes" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_nodes" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_nodes" TO "authenticated";
 GRANT ALL ON TABLE "public"."workflow_nodes" TO "service_role";
 
 
@@ -2842,8 +3195,8 @@ GRANT SELECT("ultimo_aviso_fallo_at") ON TABLE "public"."workflow_webhooks" TO "
 -- Name: TABLE "workflows"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON TABLE "public"."workflows" TO "anon";
-GRANT ALL ON TABLE "public"."workflows" TO "authenticated";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflows" TO "anon";
+GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflows" TO "authenticated";
 GRANT ALL ON TABLE "public"."workflows" TO "service_role";
 
 
@@ -2892,8 +3245,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUN
 --
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "anon";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "authenticated";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLES TO "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";
 
 
@@ -2911,5 +3264,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict kTjjSHNTaMP9z9GKl6svxjvIyvDS6wdLtKQeVUefvd236iUwuAq1BhqflaIsrFj
+-- \unrestrict 1Yg7ufWhIcswGeS0YcSjlxfkQ2JZ3wZ09bGGLZLCCYFr281nUxCnygMoS3EngAD
 

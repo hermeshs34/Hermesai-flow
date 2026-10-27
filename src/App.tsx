@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Toaster } from 'sonner';
 import { Sidebar } from './components/Sidebar';
 import { WorkflowCanvas } from './components/WorkflowCanvas';
@@ -10,10 +10,13 @@ import { Governance } from './components/Governance';
 import { GovernanceService } from './services/governance.service';
 import { Tutorial } from './components/Tutorial';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
+import { PanelSeguridad } from './components/PanelSeguridad';
+import { PuertaSegundoFactor, type EstadoPuerta } from './components/SegundoFactor';
 import { LoginView } from './modules/iam/LoginView';
 import { ResetPasswordView } from './modules/iam/ResetPasswordView';
 import { authService } from './core/auth.service';
 import type { TokensDeRecuperacion } from './core/auth.service';
+import { mfaService, avisarMfaCaducado, avisarSesionCerrada, tomarAvisoMfaCaducado } from './core/mfa';
 import type { User } from './core/user.types';
 
 export type ViewType = 'canvas' | 'dashboard' | 'monitoring' | 'settings' | 'governance' | 'workqueue';
@@ -70,15 +73,22 @@ function App() {
   const [showTutorial, setShowTutorial] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [recuperando, setRecuperando] = useState(TOKENS_RECUPERACION !== null);
+  const [showSeguridad, setShowSeguridad] = useState(false);
+  // Segundo factor de la sesión abierta: `ok` deja pasar a la aplicación.
+  const [estadoMfa, setEstadoMfa] = useState<EstadoPuerta | 'ok'>('cargando');
+  // Lo que el login enseña al volver: un error del enlace o el motivo del cierre.
+  const [avisoLogin, setAvisoLogin] = useState(() => ERROR_EN_URL || tomarAvisoMfaCaducado() || '');
 
   // Sincronizar sesión al arrancar
   useEffect(() => {
     // Con un enlace de recuperación abierto no se entra a la aplicación, ni
     // siquiera aunque hubiera una sesión válida de antes en este navegador:
     // aquí solo se viene a elegir contraseña nueva. Al terminar, el cierre de
-    // sesión de `setNewPassword` se lleva también aquella —cambiar la clave
+    // sesión de la recuperación se lleva también aquella —cambiar la clave
     // debe echar a todas las sesiones abiertas—, así que después se entra por
     // el login como todo el mundo.
+    // (La recuperación vive en `authService.abrirRecuperacion`, en un cliente
+    // en memoria que no toca la sesión de este navegador.)
     if (TOKENS_RECUPERACION) { setAuthLoading(false); return; }
 
     authService.syncSession()
@@ -92,10 +102,74 @@ function App() {
     GovernanceService.log(user, 'login', 'sesion', { descripcion: `Inicio de sesión — ${user.email}` });
   };
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     await authService.logout();
+    setShowSeguridad(false);
+    setShowChangePassword(false);
+    setAvisoLogin(tomarAvisoMfaCaducado() ?? '');
+    setEstadoMfa('cargando');
     setCurrentUser(null);
-  };
+  }, []);
+
+  // ── Segundo factor (27/10/2026, portado de RiskGuard) ─────────────────────
+  //
+  // La puerta de la pantalla es onboarding, no control de acceso: lo que
+  // protege los datos es `mfa_satisfecho()` en las políticas de la base.
+  const comprobarMfa = useCallback(async () => {
+    try {
+      const estado = await mfaService.estado();
+      if (estado === 'caducado') {
+        avisarMfaCaducado();
+        await handleLogout();
+        return;
+      }
+      setEstadoMfa(estado);
+    } catch {
+      setEstadoMfa('error');
+    }
+  }, [handleLogout]);
+
+  const usuarioId = currentUser?.id;
+  useEffect(() => {
+    if (usuarioId) void comprobarMfa();
+  }, [usuarioId, comprobarMfa]);
+
+  // Dentro de la aplicación: cada minuto y al volver a la ventana, ¿siguen
+  // valiendo las 6 h y la sesión sigue viva en la base? Una sesión cerrada en
+  // la base (cambio de clave, «Sesiones abiertas», el admin quitando el
+  // factor) seguiría pintando la aplicación, pero vacía.
+  const dentro = usuarioId !== undefined && estadoMfa === 'ok';
+  useEffect(() => {
+    if (!dentro) return;
+    let comprobando = false;
+    const comprobar = async () => {
+      if (comprobando) return;
+      comprobando = true;
+      try {
+        if (await mfaService.haCaducado()) {
+          avisarMfaCaducado();
+          await handleLogout();
+          return;
+        }
+        // `null` = sin red: con eso no se decide nada.
+        if ((await mfaService.sesionViva()) === false) {
+          avisarSesionCerrada();
+          await handleLogout();
+        }
+      } finally {
+        comprobando = false;
+      }
+    };
+    const alVolver = () => { if (document.visibilityState === 'visible') void comprobar(); };
+    const intervalo = window.setInterval(() => void comprobar(), 60_000);
+    window.addEventListener('focus', alVolver);
+    document.addEventListener('visibilitychange', alVolver);
+    return () => {
+      window.clearInterval(intervalo);
+      window.removeEventListener('focus', alVolver);
+      document.removeEventListener('visibilitychange', alVolver);
+    };
+  }, [dentro, handleLogout]);
 
   const renderContent = () => {
     switch (currentView) {
@@ -144,7 +218,18 @@ function App() {
   if (!currentUser) {
     return (
       <>
-        <LoginView onLogin={handleLogin} mensajeInicial={ERROR_EN_URL} />
+        <LoginView onLogin={handleLogin} mensajeInicial={avisoLogin} />
+        <Toaster position="bottom-right" theme="dark" richColors closeButton />
+      </>
+    );
+  }
+
+  // Segundo factor antes que nada: ni el cambio de clave obligatorio ni la
+  // aplicación se pintan con la sesión a medias.
+  if (estadoMfa !== 'ok') {
+    return (
+      <>
+        <PuertaSegundoFactor estado={estadoMfa} onListo={comprobarMfa} onSalir={() => void handleLogout()} />
         <Toaster position="bottom-right" theme="dark" richColors closeButton />
       </>
     );
@@ -182,6 +267,7 @@ function App() {
         onViewChange={setCurrentView}
         onShowTutorial={() => setShowTutorial(true)}
         onChangePassword={() => setShowChangePassword(true)}
+        onShowSecurity={() => setShowSeguridad(true)}
         currentUser={currentUser}
         onLogout={handleLogout}
       />
@@ -190,8 +276,9 @@ function App() {
       </main>
       <Tutorial isOpen={showTutorial} onClose={() => setShowTutorial(false)} />
       {showChangePassword && (
-        <ChangePasswordModal user={currentUser} onClose={() => setShowChangePassword(false)} />
+        <ChangePasswordModal user={currentUser} onClose={() => setShowChangePassword(false)} onLogout={handleLogout} />
       )}
+      {showSeguridad && <PanelSeguridad onClose={() => setShowSeguridad(false)} />}
       <Toaster position="bottom-right" theme="light" richColors closeButton />
     </div>
   );

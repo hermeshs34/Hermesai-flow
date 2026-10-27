@@ -6,6 +6,58 @@
 
 ---
 
+## 🔐 Blindaje de seguridad (/blindar-seguridad) — PLAN, pendiente del sí de Hermes (27/10/2026)
+
+**Un solo entorno: solo PRODUCCIÓN** (`kbscaxcokxwdbnrltkup`), y Netlify despliega
+desde `main` ⇒ cada push es producción. Referencia: RiskGuard (no EE.FF.). Cada SQL
+con ensayo ROJA/VERDE que se deshace solo, antes de aplicarlo.
+
+Diagnóstico de producción (27/10/2026, `supabase db query --linked`, solo lectura):
+16 tablas con RLS, ninguna sin RLS, **ninguna con `_aal2`**; `mfa_satisfecho`,
+`mis_sesiones` y `cerrar_sesiones` no existen; 7 usuarios, **0 con factor**; sin
+buckets de Storage (0 objetos). Sin `netlify.toml` en el repo (ni CSP), sin
+`sw.js` en toda la historia, sin `innerHTML`/`dangerouslySetInnerHTML` en `src/`.
+
+Orden (cada paso, aplicado solo, no le cambia nada a nadie o se deshace en un minuto):
+
+1. [x] **Agujeros previos** — ✅ aplicada 27/10/2026
+   (`20261027_sin_truncate_ni_anon_en_funciones_rls.sql`; ensayo ROJA 2/11 → VERDE 11/11,
+   11/11 fuera de la transacción; diagnóstico: `truncate_para_authenticated` y
+   `definer_ejecutables_por_anon` vacíos). Quitó `TRUNCATE` a `anon` y `authenticated` en
+   todas las tablas (11 lo tenían; PostgREST no lo expone, pero el RLS no lo cubre) y de
+   los permisos por defecto de `postgres`; y `EXECUTE` de `anon` en `is_admin`,
+   `my_organization_id`, `my_role`. `schema.sql` regenerado el mismo día.
+   `vigilante_reloj_read` (`using true`, solo lectura, `authenticated`) es deliberado: se queda.
+2. [x] **01 — funciones + interruptor** (`20261027b_mfa_funciones_e_interruptor.sql`):
+   `mfa_satisfecho`, `mis_sesiones`, `cerrar_sesiones`, `es_admin_plataforma` y la tabla
+   `politicas_seguridad.exigir_mfa` (encendido = MFA obligatorio para todos, como en
+   RiskGuard; solo lo cambia quien tenga `app_metadata.admin_plataforma` y aal2). Sin
+   políticas que las usen y sin pantalla que lea el interruptor, no cambian nada.
+   ✅ Aplicada 27/10/2026 con el sí de Hermes: ensayo ROJA 0/25 → VERDE 25/25, sin
+   residuo; APLICADA 25/25 fuera de la transacción; `schema.sql` regenerado.
+   Falta: poner `app_metadata.admin_plataforma=true` a Hermes (permiso aparte).
+3. [ ] **MFA en pantalla**: alta del factor, código tras la contraseña, cierre a las
+   6 h, comprobación de sesión viva cada minuto, panel de sesiones abiertas, quitar el
+   factor de otro (admin). Hermes da de alta su factor primero.
+4. [ ] **02 — `_aal2` piloto** en `matriz_aprobacion` (2 filas, se ve en Gobierno);
+   luego el resto con lista explícita. **Sin `_aal2`**: `profiles` (lo lee el login),
+   `audit_log` (`App.tsx` inserta el `login`) y `organizations` (revisar el arranque).
+5. [ ] **`exigirMfa` en Edge Functions** con clave de servicio que actúan por el
+   usuario: `execute-workflow` (rama de usuario), `resolve-approval`, `admin-create-user`,
+   `admin-reset-password`, `admin-set-active`, `design-assistant`, `health-check`.
+   Fuera: `cron-runner`, `vigilante-reloj`, `webhook-in` (internas) y
+   `request-password-reset` (pública).
+6. [ ] **CSP**: `netlify.toml` nuevo, solo `[[headers]]`, primero Report-Only → barrera.
+7. [ ] **CAPTCHA Turnstile** en login. ⚠️ El restablecimiento va por
+   `request-password-reset` (`generateLink`), que **no pasa por el CAPTCHA de GoTrue**:
+   la función tiene que verificar el token ella misma (secreto en Edge Secrets).
+
+**Se salta:** restablecer contraseña (ya hecho y más estricto, §6.4), Storage (no hay
+buckets), service worker (nunca hubo), XSS en `src/` (no hay HTML crudo). Queda anotado
+el riesgo ya conocido de §8.3: texto de IA que vuelva como HTML en un correo.
+
+---
+
 ## ✅ Completado 31 Mayo 2026 — F1 GOBIERNO
 
 **Modelo de roles BPM** (`src/core/user.types.ts`)

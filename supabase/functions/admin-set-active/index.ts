@@ -89,6 +89,20 @@ serve(async (req) => {
             return json({ error: 'Ese usuario no pertenece a tu organización.' }, 403);
         }
 
+        // 27/10/2026 (Hermes): al administrador de la PLATAFORMA solo lo
+        // desactiva o reactiva otro administrador de la plataforma con su
+        // segundo factor pasado — la misma regla que el trigger
+        // `profiles_admin_plataforma_guard` (20261027d) pone al rol y al
+        // borrado, que esta función no alcanza porque usa la clave de servicio.
+        // Falla cerrado: si no se puede leer la cuenta de destino, no se toca.
+        const { data: destino, error: destinoErr } = await admin.auth.admin.getUserById(userId);
+        if (destinoErr || !destino?.user) {
+            return json({ error: 'No se pudo comprobar la cuenta de ese usuario; no se cambió nada.' }, 500);
+        }
+        if (esAdminPlataforma(destino.user) && !(esAdminPlataforma(caller) && aalDelToken(token) === 'aal2')) {
+            return json({ error: `${target.name} es administrador de la plataforma: solo otro administrador de la plataforma puede activarlo o desactivarlo.` }, 403);
+        }
+
         if (target.is_active === active) {
             return json({ success: true, sinCambios: true, is_active: active });
         }
@@ -186,6 +200,24 @@ async function auditar(
         descripcion,
     });
     if (error) console.error('[admin-set-active] audit_log:', error.message);
+}
+
+/** Misma marca que mira `es_admin_plataforma()` en SQL (20261027b/c). */
+function esAdminPlataforma(u: { app_metadata?: Record<string, unknown> } | null | undefined): boolean {
+    return u?.app_metadata?.admin_plataforma === true;
+}
+
+/**
+ * `aal` del JWT de quien llama. Solo se usa DESPUÉS de `auth.getUser(token)`,
+ * que ya comprobó la firma: aquí se lee, no se valida. Ilegible ⇒ '' (no aal2).
+ */
+function aalDelToken(token: string): string {
+    try {
+        const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        return String(JSON.parse(atob(b64.padEnd(b64.length + (4 - b64.length % 4) % 4, '='))).aal ?? '');
+    } catch {
+        return '';
+    }
 }
 
 function json(body: unknown, status = 200): Response {

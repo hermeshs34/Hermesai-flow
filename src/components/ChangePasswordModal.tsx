@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { KeyRound, X, Loader2, Eye, EyeOff, CheckCircle, ShieldAlert } from 'lucide-react';
 import { authService } from '../core/auth.service';
+import { avisarClaveCambiada } from '../core/mfa';
 import { GovernanceService } from '../services/governance.service';
 import type { User } from '../core/user.types';
 import { toast } from 'sonner';
@@ -16,8 +17,13 @@ interface ChangePasswordModalProps {
      * Quien no quiera cambiarla todavía tiene la salida honesta: cerrar sesión.
      */
     forced?: boolean;
-    /** Salida en modo obligatorio: si no cambias la clave, sales. */
-    onLogout?: () => void;
+    /**
+     * Cerrar sesión. Es la salida del modo obligatorio y, desde el 27/10/2026,
+     * el final de todo cambio de clave: tras `updateUser` la sesión ya no es de
+     * fiar (con segundo factor puede haber quedado en aal1), así que se vuelve a
+     * entrar con la clave nueva.
+     */
+    onLogout: () => void;
 }
 
 export function ChangePasswordModal({ user, onClose, forced = false, onLogout }: ChangePasswordModalProps) {
@@ -43,6 +49,8 @@ export function ChangePasswordModal({ user, onClose, forced = false, onLogout }:
             await GovernanceService.log(user, 'modificar', 'usuario', {
                 entidadId: user.id, descripcion: 'Cambió su propia contraseña',
             });
+            // El login mostrará el aviso tras cerrar la sesión.
+            avisarClaveCambiada();
             setDone(true);
             toast.success('Contraseña actualizada correctamente');
         } catch (e) {
@@ -54,7 +62,7 @@ export function ChangePasswordModal({ user, onClose, forced = false, onLogout }:
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-            onClick={() => !saving && !forced && onClose()}>
+            onClick={() => !saving && !forced && !done && onClose()}>
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
                 <div className={`px-5 py-4 border-b flex items-center justify-between ${forced ? 'border-amber-100 bg-amber-50/70' : 'border-gray-100 bg-gray-50/60'}`}>
                     <div className="flex items-center gap-2">
@@ -66,7 +74,7 @@ export function ChangePasswordModal({ user, onClose, forced = false, onLogout }:
                         </h3>
                     </div>
                     {/* Sin X en modo obligatorio: no hay forma de esquivarlo. */}
-                    {!forced && (
+                    {!forced && !done && (
                         <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
                     )}
                 </div>
@@ -80,10 +88,11 @@ export function ChangePasswordModal({ user, onClose, forced = false, onLogout }:
                         <p className="text-xs text-gray-500">
                             {forced
                                 ? 'La clave que te dio el administrador ya no sirve. A partir de ahora solo la conoces tú.'
-                                : 'Usa tu nueva contraseña la próxima vez que inicies sesión.'}
+                                : 'Tu contraseña anterior ya no sirve.'}
+                            {' '}Vuelve a entrar con la nueva.
                         </p>
-                        <button onClick={onClose} className="w-full mt-2 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
-                            {forced ? 'Continuar' : 'Listo'}
+                        <button onClick={onLogout} className="w-full mt-2 py-2 text-sm font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+                            Ir a iniciar sesión
                         </button>
                     </div>
                 ) : (
