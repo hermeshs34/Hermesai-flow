@@ -36,8 +36,13 @@ En este orden, una cosa por mensaje:
    `generar_secreto_webhook` y `configurar_webhook_url` preguntan
    `mfa_satisfecho()`. Ensayo ROJA 3/8 → VERDE 8/8, sin residuo; APLICADA 8/8;
    Hermes lo probó en la app. `schema.sql` regenerado (`cf93cc8`).
-   Aparte, sin mezclar: `anon` tiene DML concedido sobre `matriz_aprobacion` (la RLS
-   no le deja pasar, pero el GRANT sobra — otra migración).
+   ✅ **`anon` sin permisos en las tablas de `public`** 28/10/2026, commit `72977b8`
+   (`20261028d_anon_sin_permisos_en_tablas.sql`): fuera de las 14 tablas (11 con
+   DML, 3 con SELECT), de los permisos por defecto de `postgres` y de
+   `set_updated_at()`. Ensayo ROJA 3/9 → VERDE 9/9, sin residuo; APLICADA 9/9;
+   Hermes lo probó en la app. `schema.sql` regenerado (`aa585fa`). Queda, a
+   propósito: una función nueva nace con EXECUTE para `PUBLIC` (defecto global
+   de Postgres) ⇒ cada una sigue llevando su `REVOKE ... FROM PUBLIC, anon`.
 3. [ ] **CSP** (paso 6): primero Report-Only, se prueba en Netlify (no en localhost).
 4. [ ] **Turnstile** bien hecho (paso 7) + revisión final de XSS y service worker.
 5. [ ] **CLAUDE.md**: §6.8 al día, sección nueva de MFA (aal2, 6 h, `exigir_mfa`,
