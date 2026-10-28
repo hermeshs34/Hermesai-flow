@@ -47,7 +47,15 @@ En este orden, una cosa por mensaje:
    vive en el panel). Report-Only `e3783c4`, recorrida por Hermes en Netlify sin avisos;
    barrera `1a55acb`, recorrida otra vez sin fallos. Añade también X-Frame-Options,
    nosniff, Referrer-Policy y Permissions-Policy (antes el sitio no enviaba ninguna).
-4. [ ] **Turnstile** bien hecho (paso 7) + revisión final de XSS y service worker.
+4. [x] **Turnstile** (paso 7) ✅ 28/10/2026 — ver abajo (`10b524a`, `fd6da1e`).
+   [x] Revisión final de XSS y service worker ✅ 28/10/2026, solo lectura, sin cambios:
+   cero `dangerouslySetInnerHTML`/`innerHTML`/`eval`/`document.write`/`javascript:` en
+   `src/` e `index.html`; los 4 `target="_blank"` (Settings) llevan `rel="noreferrer"`;
+   sin librerías de markdown/HTML. Service worker: **nunca hubo** (ni en el historial de
+   git ni en `public/`), así que no hay ninguno que retirar. La CSP de barrera
+   (`script-src 'self'`) cubre además cualquier hueco futuro. Fuera del navegador sigue
+   anotado el riesgo de CLAUDE.md §8.3: datos de webhook que pasen por un nodo IA
+   pueden volver como HTML en un correo.
 5. [ ] **CLAUDE.md**: §6.8 al día, sección nueva de MFA (aal2, 6 h, `exigir_mfa`,
    sesiones) y la regla del admin de plataforma (`profiles_admin_plataforma_guard` +
    control en `admin-set-active`; restablecerle la clave sí se permite).
@@ -92,7 +100,8 @@ Orden (cada paso, aplicado solo, no le cambia nada a nadie o se deshace en un mi
    (las lee el login); `audit_log` solo para lectura (`App.tsx` inserta el `login`).
    `organizations` sí la lleva: solo la leen Dashboard y Settings, tras el código.
    Y las 3 RPC DEFINER piden el segundo factor (`1dd1191`, 28/10/2026).
-5. [ ] **`exigirMfa` en Edge Functions** con clave de servicio que actúan por el
+5. [x] **`exigirMfa` en Edge Functions** ✅ 28/10/2026 (`e680339`, `664f637`, `0f0c1d9`;
+   `health-check` fuera a propósito, ver arriba) — con clave de servicio que actúan por el
    usuario: `execute-workflow` (rama de usuario), `resolve-approval`, `admin-create-user`,
    `admin-reset-password`, `admin-set-active`, `design-assistant`, `health-check`.
    Fuera: `cron-runner`, `vigilante-reloj`, `webhook-in` (internas) y
