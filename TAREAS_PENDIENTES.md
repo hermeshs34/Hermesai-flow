@@ -23,7 +23,17 @@ En este orden, una cosa por mensaje:
 2. [x] **`_aal2` piloto en `matriz_aprobacion`** (paso 4) ✅ 28/10/2026, commit
    `ae5f1c7`: ensayo ROJA 5/11 → VERDE 11/11, sin residuo; aplicada con el sí de
    Hermes; APLICADA 11/11 fuera de la transacción; Hermes la probó en Gobierno →
-   Matriz (ve y guarda). Falta: el resto de tablas con lista explícita.
+   Matriz (ve y guarda).
+   ✅ **Resto de tablas** 28/10/2026, commit `9184161`
+   (`20261028b_aal2_resto_de_tablas.sql`): ensayo ROJA 5/14 → VERDE 14/14, sin
+   residuo; APLICADA 14/14 fuera de la transacción; Hermes probó la app entera
+   (entrar, Dashboard, Constructor, Gobierno, Auditoría). 15 restrictivas en
+   `public`; sin ella solo `profiles` y `politicas_seguridad` (las lee el login);
+   `audit_log` solo en lectura (la traza `login` se escribe en aal1).
+   `schema.sql` regenerado (`842e289`).
+   **Siguiente, otra migración:** tres RPC `SECURITY DEFINER` actúan por el usuario
+   sin preguntar el segundo factor — `transicionar_flujo`, `generar_secreto_webhook`
+   y `configurar_webhook_url`.
    Aparte, sin mezclar: `anon` tiene DML concedido sobre `matriz_aprobacion` (la RLS
    no le deja pasar, pero el GRANT sobra — otra migración).
 3. [ ] **CSP** (paso 6): primero Report-Only, se prueba en Netlify (no en localhost).
@@ -67,9 +77,11 @@ Orden (cada paso, aplicado solo, no le cambia nada a nadie o se deshace en un mi
 3. [x] **MFA en pantalla** ✅ 27/10/2026 (commit `34fd0dc`, probado por Hermes): alta del factor, código tras la contraseña, cierre a las
    6 h, comprobación de sesión viva cada minuto, panel de sesiones abiertas, quitar el
    factor de otro (admin). Hermes da de alta su factor primero.
-4. [ ] **02 — `_aal2` piloto** en `matriz_aprobacion` ✅ 28/10/2026 (`ae5f1c7`);
-   falta el resto con lista explícita. **Sin `_aal2`**: `profiles` (lo lee el login),
-   `audit_log` (`App.tsx` inserta el `login`) y `organizations` (revisar el arranque).
+4. [x] **02 — `_aal2`** ✅ 28/10/2026: piloto en `matriz_aprobacion` (`ae5f1c7`) y
+   resto de tablas (`9184161`). **Sin `_aal2`**: `profiles` y `politicas_seguridad`
+   (las lee el login); `audit_log` solo para lectura (`App.tsx` inserta el `login`).
+   `organizations` sí la lleva: solo la leen Dashboard y Settings, tras el código.
+   Falta: el segundo factor dentro de las 3 RPC DEFINER (ver «MAÑANA», punto 2).
 5. [ ] **`exigirMfa` en Edge Functions** con clave de servicio que actúan por el
    usuario: `execute-workflow` (rama de usuario), `resolve-approval`, `admin-create-user`,
    `admin-reset-password`, `admin-set-active`, `design-assistant`, `health-check`.
