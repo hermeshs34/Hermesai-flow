@@ -11,7 +11,9 @@
 // sitio»), con otro remitente, otra plantilla y otra reputación de dominio que
 // nadie vigila. Aquí solo se pide el enlace; el sobre lo pone el producto.
 //
-// Al ser público y mandar correo, tiene tres defensas:
+// Al ser público y mandar correo, tiene cuatro defensas:
+//   - Captcha Turnstile (28/10/2026). `generateLink` usa la clave de servicio
+//     y el captcha del panel de Auth NO lo cubre: el token se comprueba aquí.
 //   - Respuesta SIEMPRE idéntica: no dice si el correo existe (enumeración).
 //   - Cuentas desactivadas: no se les manda nada.
 //   - Límite de 3 solicitudes por cuenta cada 15 minutos.
@@ -28,6 +30,11 @@ const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 // estar además en Authentication → URL Configuration → Redirect URLs, o Supabase
 // descarta el redirectTo y devuelve al Site URL por defecto.
 const APP_URL = Deno.env.get('APP_URL') ?? '';
+
+// Clave SECRETA de Turnstile (Edge Secrets). La misma que va en el panel de
+// Auth → Attack Protection; la del sitio es la pública del frontend.
+const TURNSTILE_SECRET_KEY = Deno.env.get('TURNSTILE_SECRET_KEY') ?? '';
+const SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 
 const CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -49,7 +56,7 @@ serve(async (req) => {
     if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
 
     try {
-        const { email } = await req.json();
+        const { email, captchaToken } = await req.json();
         const cleanEmail = String(email ?? '').trim().toLowerCase();
 
         // Un correo vacío sí es un error de forma, no una pista sobre nadie.
@@ -62,6 +69,19 @@ serve(async (req) => {
             // un correo con un enlace roto es peor que un error en pantalla.
             console.error('[request-password-reset] Falta el secreto APP_URL');
             return json({ error: 'La recuperación de contraseña no está configurada. Avisa al administrador.' }, 500);
+        }
+
+        if (!TURNSTILE_SECRET_KEY) {
+            // Sin secreto no se puede comprobar el captcha, y «no lo pude
+            // comprobar» no puede acabar en «pasa» (familia `token !== ''`).
+            console.error('[request-password-reset] Falta el secreto TURNSTILE_SECRET_KEY');
+            return json({ error: 'La recuperación de contraseña no está configurada. Avisa al administrador.' }, 500);
+        }
+
+        // El captcha va antes de mirar la base. Decir que falló no delata a
+        // nadie: se responde igual exista o no la cuenta.
+        if (!(await captchaValido(captchaToken, req))) {
+            return json({ error: 'La verificación anti-robots no se completó o caducó. Márquela de nuevo e inténtelo otra vez.' }, 400);
         }
 
         const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
@@ -158,6 +178,30 @@ funcionando y nadie ha entrado en tu cuenta. Avisa al administrador.</p>`,
         return json({ error: 'No se pudo procesar la solicitud. Inténtalo de nuevo.' }, 500);
     }
 });
+
+/**
+ * Pregunta a Cloudflare si el token es bueno. Cada token vale una vez y caduca
+ * a los 5 minutos. Si Cloudflare no contesta, se rechaza: falla cerrado.
+ */
+async function captchaValido(token: unknown, req: Request): Promise<boolean> {
+    if (typeof token !== 'string' || token === '') return false;
+    const form = new FormData();
+    form.append('secret', TURNSTILE_SECRET_KEY);
+    form.append('response', token);
+    const ip = req.headers.get('cf-connecting-ip') ?? req.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
+    if (ip) form.append('remoteip', ip);
+    try {
+        const r = await fetch(SITEVERIFY_URL, { method: 'POST', body: form });
+        const datos = await r.json() as { success?: boolean; 'error-codes'?: string[] };
+        if (datos.success !== true) {
+            console.warn('[request-password-reset] captcha rechazado:', (datos['error-codes'] ?? []).join(', '));
+        }
+        return datos.success === true;
+    } catch (err) {
+        console.error('[request-password-reset] siteverify:', err);
+        return false;
+    }
+}
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), {

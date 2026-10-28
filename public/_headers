@@ -8,14 +8,15 @@
 # Content-Security-Policy-Report-Only.
 # Supabase por nombre de proyecto, nunca *.supabase.co. Google Fonts lo carga
 # index.html (hoja en fonts.googleapis.com, letras en fonts.gstatic.com).
-# Si algo nuevo carga de otro dominio (Turnstile: challenges.cloudflare.com en
-# script-src y frame-src), tiene que entrar aquí o el navegador lo bloquea.
+# Turnstile (captcha, 28/10/2026) carga su script y su iframe de
+# challenges.cloudflare.com: por eso está en script-src y frame-src. Si algo
+# nuevo carga de otro dominio, tiene que entrar aquí o el navegador lo bloquea.
 /*
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://kbscaxcokxwdbnrltkup.supabase.co wss://kbscaxcokxwdbnrltkup.supabase.co; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://kbscaxcokxwdbnrltkup.supabase.co wss://kbscaxcokxwdbnrltkup.supabase.co; worker-src 'self'; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable

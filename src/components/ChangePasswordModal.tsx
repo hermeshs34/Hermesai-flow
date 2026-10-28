@@ -5,6 +5,7 @@ import { avisarClaveCambiada } from '../core/mfa';
 import { GovernanceService } from '../services/governance.service';
 import type { User } from '../core/user.types';
 import { toast } from 'sonner';
+import { Turnstile, TURNSTILE_SITE_KEY } from './Turnstile';
 
 interface ChangePasswordModalProps {
     user:    User;
@@ -33,19 +34,24 @@ export function ChangePasswordModal({ user, onClose, forced = false, onLogout }:
     const [show,    setShow]    = useState(false);
     const [saving,  setSaving]  = useState(false);
     const [done,    setDone]    = useState(false);
+    // Comprobar la clave actual es otro `signInWithPassword`: con el captcha
+    // encendido en Auth, GoTrue también lo exige aquí.
+    const [captcha,    setCaptcha]    = useState<string | null>(null);
+    const [captchaKey, setCaptchaKey] = useState(0);
 
     // Validaciones visuales
     const len8     = next.length >= 8;
     const hasNum   = /\d/.test(next);
     const hasUpper = /[A-Z]/.test(next);
     const match    = next.length > 0 && next === confirm;
-    const valid    = len8 && hasNum && hasUpper && match && current.length > 0;
+    const valid    = len8 && hasNum && hasUpper && match && current.length > 0
+                  && (!TURNSTILE_SITE_KEY || !!captcha);
 
     const handleSave = async () => {
         if (!valid) return;
         setSaving(true);
         try {
-            await authService.changePassword(user.email, current, next);
+            await authService.changePassword(user.email, current, next, captcha ?? undefined);
             await GovernanceService.log(user, 'modificar', 'usuario', {
                 entidadId: user.id, descripcion: 'Cambió su propia contraseña',
             });
@@ -57,6 +63,9 @@ export function ChangePasswordModal({ user, onClose, forced = false, onLogout }:
             toast.error((e as Error)?.message ?? 'No se pudo cambiar la contraseña');
         } finally {
             setSaving(false);
+            // Cada token vale una vez: widget nuevo para el siguiente intento.
+            setCaptcha(null);
+            setCaptchaKey(k => k + 1);
         }
     };
 
@@ -141,6 +150,10 @@ export function ChangePasswordModal({ user, onClose, forced = false, onLogout }:
                                 </div>
                             ))}
                         </div>
+
+                        {TURNSTILE_SITE_KEY && (
+                            <Turnstile key={captchaKey} siteKey={TURNSTILE_SITE_KEY} onToken={setCaptcha} theme="light" />
+                        )}
 
                         <div className="flex gap-2 pt-1">
                             {/* En modo obligatorio no se cancela: la única salida es salir. */}

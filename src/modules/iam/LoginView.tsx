@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Zap, Shield, GitBranch, Bell, Activity, Mail, Loader2, ArrowLeft } from 'lucide-react';
 import { authService } from '../../core/auth.service.ts';
 import type { User } from '../../core/user.types.ts';
+import { Turnstile, TURNSTILE_SITE_KEY } from '../../components/Turnstile.tsx';
 
 interface LoginViewProps {
     onLogin: (user: User) => void;
@@ -19,6 +20,18 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
     const [attempts, setAttempts]     = useState(0);
     const lockoutInterval             = useRef<ReturnType<typeof setInterval> | null>(null);
 
+    // ── Captcha (Turnstile) ───────────────────────────────────────────────
+    // Un solo widget a la vez: el del formulario que está a la vista. Sin clave
+    // de sitio no se pinta y no se exige (`faltaCaptcha` es false).
+    const [captcha,    setCaptcha]    = useState<string | null>(null);
+    const [captchaKey, setCaptchaKey] = useState(0);
+    const faltaCaptcha = !!TURNSTILE_SITE_KEY && !captcha;
+    // Cada token vale una vez: tras cualquier intento, widget nuevo.
+    const renovarCaptcha = () => { setCaptcha(null); setCaptchaKey(k => k + 1); };
+    const widgetCaptcha = TURNSTILE_SITE_KEY
+        ? <Turnstile key={captchaKey} siteKey={TURNSTILE_SITE_KEY} onToken={setCaptcha} />
+        : null;
+
     // ── Olvidé mi contraseña ──────────────────────────────────────────────
     const [modoOlvido,   setModoOlvido]   = useState(false);
     const [correoOlvido, setCorreoOlvido] = useState('');
@@ -27,17 +40,18 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
 
     const pedirEnlace = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (enviando || !correoOlvido.trim()) return;
+        if (enviando || !correoOlvido.trim() || faltaCaptcha) return;
         setEnviando(true);
         try {
             // La función responde lo mismo exista o no la cuenta, y ese mensaje
             // se enseña tal cual: distinguir aquí convertiría el login en un
             // comprobador de «¿trabaja fulano aquí?» abierto a internet.
-            setAvisoOlvido(await authService.requestPasswordReset(correoOlvido));
+            setAvisoOlvido(await authService.requestPasswordReset(correoOlvido, captcha ?? undefined));
         } catch (err) {
             setAvisoOlvido((err as Error)?.message ?? 'No se pudo enviar el enlace. Inténtalo de nuevo en unos minutos.');
         } finally {
             setEnviando(false);
+            renovarCaptcha();
         }
     };
 
@@ -71,9 +85,10 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
         e.preventDefault();
         if (!email || !password) { setError('Ingrese correo y contraseña'); return; }
         if (lockoutSecs > 0) return;
+        if (faltaCaptcha) { setError('Marque la verificación anti-robots antes de entrar.'); return; }
         setIsLoading(true); setError('');
         try {
-            const user = await authService.login(email, password);
+            const user = await authService.login(email, password, captcha ?? undefined);
             onLogin(user);
         } catch (err: any) {
             const msg: string = err.message || '';
@@ -87,6 +102,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
             }
         } finally {
             setIsLoading(false);
+            renovarCaptcha();
         }
     };
 
@@ -190,6 +206,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
                                 />
                             </div>
 
+                            {widgetCaptcha}
+
                             {avisoOlvido && (
                                 <div style={{
                                     padding: '0.75rem 1rem', borderRadius: '10px',
@@ -201,15 +219,15 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
                             )}
 
                             <button
-                                type="submit" disabled={enviando || !correoOlvido.trim()}
+                                type="submit" disabled={enviando || !correoOlvido.trim() || faltaCaptcha}
                                 style={{
                                     width: '100%', padding: '0.9rem', borderRadius: '10px', border: 'none',
-                                    background: enviando || !correoOlvido.trim() ? 'rgba(255,255,255,0.05)' : 'linear-gradient(135deg, #6366f1, #4f46e5)',
-                                    color: enviando || !correoOlvido.trim() ? '#475569' : '#fff',
+                                    background: enviando || !correoOlvido.trim() || faltaCaptcha ? 'rgba(255,255,255,0.05)' : 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                                    color: enviando || !correoOlvido.trim() || faltaCaptcha ? '#475569' : '#fff',
                                     fontSize: '0.95rem', fontWeight: 700,
-                                    cursor: enviando || !correoOlvido.trim() ? 'default' : 'pointer',
+                                    cursor: enviando || !correoOlvido.trim() || faltaCaptcha ? 'default' : 'pointer',
                                     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                                    boxShadow: enviando || !correoOlvido.trim() ? 'none' : '0 4px 15px rgba(99,102,241,0.3)',
+                                    boxShadow: enviando || !correoOlvido.trim() || faltaCaptcha ? 'none' : '0 4px 15px rgba(99,102,241,0.3)',
                                 }}
                             >
                                 {enviando ? <Loader2 size={18} className="animate-spin" /> : <Mail size={18} />}
@@ -275,6 +293,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
                             />
                         </div>
 
+                        {widgetCaptcha}
+
                         {/* Error */}
                         {error && (
                             <div style={{
@@ -304,15 +324,16 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
 
                         {/* Submit */}
                         <button
-                            type="submit" disabled={isLoading || isLocked}
+                            type="submit" disabled={isLoading || isLocked || faltaCaptcha}
+                            title={faltaCaptcha ? 'Marque primero la verificación anti-robots' : undefined}
                             style={{
                                 width: '100%', padding: '0.9rem', borderRadius: '10px', border: 'none',
-                                background: isLocked ? 'rgba(255,255,255,0.05)' : 'linear-gradient(135deg, #6366f1, #4f46e5)',
-                                color: isLocked ? '#475569' : '#fff',
-                                fontSize: '0.95rem', fontWeight: 700, cursor: isLoading || isLocked ? 'default' : 'pointer',
+                                background: isLocked || faltaCaptcha ? 'rgba(255,255,255,0.05)' : 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                                color: isLocked || faltaCaptcha ? '#475569' : '#fff',
+                                fontSize: '0.95rem', fontWeight: 700, cursor: isLoading || isLocked || faltaCaptcha ? 'default' : 'pointer',
                                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
                                 transition: 'all 0.2s',
-                                boxShadow: isLocked ? 'none' : '0 4px 15px rgba(99,102,241,0.3)',
+                                boxShadow: isLocked || faltaCaptcha ? 'none' : '0 4px 15px rgba(99,102,241,0.3)',
                             }}
                         >
                             <Shield size={18} />

@@ -7,6 +7,10 @@ const RATE_KEY_PREFIX = 'hermesflow_rate_';
 const MAX_ATTEMPTS    = 5;
 const LOCKOUT_STEPS   = [30, 120, 300, 900];
 
+// Turnstile (§ blindaje, paso 7): el token falta, caducó o ya se usó. Cada
+// token vale una vez, así que la pantalla remonta el widget tras cada intento.
+const MENSAJE_CAPTCHA = 'La verificación anti-robots no se completó o caducó. Márquela de nuevo e inténtelo otra vez.';
+
 interface RateData { attempts: number; lockedUntil: number; step: number; }
 
 /**
@@ -98,12 +102,17 @@ class AuthService {
 
     // ── Login ─────────────────────────────────────────────────────────────
 
-    async login(email: string, password: string): Promise<User> {
+    /**
+     * `captchaToken` es el de Turnstile: con el captcha encendido en el panel de
+     * Auth, GoTrue rechaza la entrada sin él.
+     */
+    async login(email: string, password: string, captchaToken?: string): Promise<User> {
         const cleanEmail = email.trim().toLowerCase();
         this.checkRateLimit(cleanEmail);
 
         const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
             email: cleanEmail, password,
+            options: captchaToken ? { captchaToken } : undefined,
         });
 
         // Una cuenta desactivada está baneada en Auth (admin-set-active, §6.8).
@@ -117,10 +126,11 @@ class AuthService {
 
         // 27/10/2026: con la protección CAPTCHA encendida en Auth y sin widget en
         // esta pantalla, TODO inicio de sesión volvía `captcha_failed` y se leía
-        // como «Error de autenticación» — parecía una clave mal escrita. No es
-        // culpa de quien entra: no cuenta como intento.
+        // como «Error de autenticación» — parecía una clave mal escrita. Desde el
+        // 28/10 hay widget, y esto es un token que faltó, caducó o ya se usó.
+        // No es una clave mal escrita: no cuenta como intento.
         if (authError?.code === 'captcha_failed') {
-            throw new Error('El inicio de sesión está bloqueado por la verificación anti-robots. Avise al administrador.');
+            throw new Error(MENSAJE_CAPTCHA);
         }
 
         if (authError || !authData.user) {
@@ -239,16 +249,20 @@ class AuthService {
      * cierra las demás sesiones de la cuenta al cambiar la clave, y medido en
      * RiskGuard la propia tampoco sobrevive con garantías.
      */
-    async changePassword(email: string, currentPassword: string, newPassword: string): Promise<void> {
+    async changePassword(email: string, currentPassword: string, newPassword: string, captchaToken?: string): Promise<void> {
         if (newPassword.length < 8) {
             throw new Error('La nueva contraseña debe tener al menos 8 caracteres.');
         }
         // 1. Verificar clave actual, sin tocar la sesión de la aplicación
         const comprobador = crearClienteEfimero();
+        // Es un `signInWithPassword` más: con el captcha encendido, GoTrue también
+        // lo pide aquí, y sin él toda clave actual «sería incorrecta».
         const { error: verifyErr } = await comprobador.auth.signInWithPassword({
             email: email.trim().toLowerCase(), password: currentPassword,
+            options: captchaToken ? { captchaToken } : undefined,
         });
         await comprobador.auth.signOut({ scope: 'local' }).catch(() => { /* sesión en memoria */ });
+        if (verifyErr?.code === 'captcha_failed') throw new Error(MENSAJE_CAPTCHA);
         if (verifyErr) throw new Error('La contraseña actual es incorrecta.');
 
         // 2. Actualizar a la nueva
@@ -288,9 +302,11 @@ class AuthService {
      * punto — si la pantalla distinguiera, sería un comprobador de «¿trabaja
      * fulano aquí?» abierto a internet.
      */
-    async requestPasswordReset(email: string): Promise<string> {
+    async requestPasswordReset(email: string, captchaToken?: string): Promise<string> {
+        // El token lo comprueba la función, no GoTrue: `generateLink` no pasa
+        // por el captcha del panel.
         const { data, error } = await supabase.functions.invoke('request-password-reset', {
-            body: { email: email.trim().toLowerCase() },
+            body: { email: email.trim().toLowerCase(), captchaToken },
         });
         if (error) throw new Error(await mensajeDeFuncion(error));
         if (data?.error) throw new Error(data.error);
