@@ -15,6 +15,7 @@ import {
     bandaPorScore, similitudNombres, UMBRAL_TRGM, SCORE_MINIMO, SCORE_DOCUMENTO,
     type CandidatoLista, type MetodoScreening,
 } from '../_shared/screeningNucleo.ts';
+import { exigirMfa } from '../_shared/salvaguardas.ts';
 
 const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -2182,6 +2183,16 @@ serve(async (req) => {
                                'Administrador, el Dueño de Proceso o el Autorizador Máximo.',
                     }),
                     { status: 403, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
+            // Con el segundo factor hecho en esta sesión (28/10/2026): la clave
+            // de servicio se salta las políticas `_aal2`. Solo en la rama de
+            // usuario; el cron y webhook-in no los lanza una persona.
+            const mfa = await exigirMfa(req, token);
+            if (!mfa.ok) {
+                return new Response(
+                    JSON.stringify({ error: mfa.error }),
+                    { status: mfa.status, headers: { ...CORS, 'Content-Type': 'application/json' } }
                 );
             }
             callerRole = callerProfile.role;
