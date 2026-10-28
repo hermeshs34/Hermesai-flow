@@ -105,6 +105,7 @@ project/
 ├── supabase/
 │   └── functions/                   ← Edge Functions Deno (motor de ejecución)
 │       ├── _shared/email.ts         ← ÚNICO punto de salida de correo (ver §9.1)
+│       ├── _shared/salvaguardas.ts  ← `exigirMfa`: segundo factor en funciones con clave de servicio (§6.9)
 │       ├── execute-workflow/        ← el motor: ejecuta TODOS los tipos de nodo
 │       ├── cron-runner/             ← pg_cron cada minuto: dispara y escala (F4)
 │       ├── webhook-in/              ← PÚBLICA: la puerta de las llamadas externas (§8.3)
@@ -114,7 +115,8 @@ project/
 │       ├── admin-create-user/       ← alta de usuarios
 │       ├── admin-reset-password/    ← clave temporal por olvido — solo admin (§6.4)
 │       ├── admin-set-active/        ← activar / desactivar + ban en Auth — solo admin (§6.8)
-│       ├── request-password-reset/  ← enlace de recuperación — PÚBLICA (§6.4)
+│       ├── segundo-factor-admin/    ← ver / quitar el segundo factor de otro — solo admin (§6.9)
+│       ├── request-password-reset/  ← enlace de recuperación — PÚBLICA, con captcha (§6.4, §7.2)
 │       ├── design-assistant/        ← asistente de diseño de flujos
 │       └── get-bcv-rate/            ← tasa BCV
 └── .claude/
@@ -872,6 +874,100 @@ desactiva a quien delegó, su suplente deja de poder resolver. Ausencia temporal
 delegación (§6.6); salida definitiva ⇒ desactivar y dar de alta al reemplazo el
 mismo día.
 
+⚠️ **Al administrador de la plataforma no lo desactiva un admin de organización**
+(desde el 27/10/2026): `admin-set-active` responde 403 si la cuenta lleva
+`app_metadata.admin_plataforma` y quien llama no. Ver §6.10.
+
+### 6.9 Segundo factor (MFA) — la barrera está en la base, no en la pantalla
+
+✅ **En producción desde el 27–28/10/2026** (`/blindar-seguridad`, portado de
+RiskGuard; detalle paso a paso en `TAREAS_PENDIENTES.md`). Un solo entorno: cada
+migración se ensayó en producción con ROJA/VERDE y `ROLLBACK` antes de aplicarla.
+
+**Quién decide: `public.mfa_satisfecho()`** (`20261027b`). Es cierta si la sesión
+del JWT **sigue viva en `auth.sessions`** y, además, pasó el segundo factor
+(`aal2`) **hace menos de 6 horas** según el claim `amr` — o si la persona **no
+tiene ningún factor verificado**. Esa última rama es a propósito (igual que en
+EE.FF. y RiskGuard): la obligación de darse de alta la pone el interruptor, no la
+función. **No la retires**: el interruptor depende de ella.
+
+**El interruptor: `politicas_seguridad.exigir_mfa`** (una sola fila). Encendido
+⇒ quien entra sin factor no ve la aplicación hasta darlo de alta (`App.tsx`,
+`src/core/mfa.ts`). Quien **tiene** factor pasa el código siempre, esté como
+esté el interruptor. Solo lo cambia un administrador de la plataforma con `aal2`
+(§6.10). Medido el 28/10/2026: **encendido**; 7 personas activas, **2 con
+factor** — las otras 5 tendrán que darlo de alta en su próxima entrada.
+
+**Dónde se exige — cuatro capas, y las cuatro hacen falta:**
+
+1. **RLS — restrictivas `<tabla>_aal2`** (`20261028`, `20261028b`): 15 en
+   `public`, todas con `mfa_satisfecho()`. Las restrictivas se suman con **AND**
+   a las permisivas: sin código, la tabla sale **vacía, sin error** (§6,
+   «Postgres filtra filas, no da error»).
+   **Sin `_aal2`, a propósito:** `profiles` y `politicas_seguridad`, porque las
+   lee el login **antes** de teclear el código; y `audit_log` solo la lleva en
+   lectura (`audit_log_aal2_lectura`), porque la traza `login` se escribe en
+   `aal1`. Una tabla nueva **lleva su `_aal2`** salvo que la lea el login.
+2. **RPC `SECURITY DEFINER`** (`20261028c`): `transicionar_flujo`,
+   `generar_secreto_webhook` y `configurar_webhook_url` preguntan
+   `mfa_satisfecho()` dentro. DEFINER se salta la RLS, así que la restrictiva no
+   las alcanza: **una RPC DEFINER nueva tiene que preguntarlo ella**.
+3. **Edge Functions con clave de servicio que actúan por una persona** —
+   `exigirMfa(req, jwt)` de `_shared/salvaguardas.ts`. Llama a
+   `mfa_satisfecho()` **con el JWT de quien llama** (con la clave de servicio
+   `auth.jwt()` sería el del servicio y no diría nada) y la `apikey` de su
+   cabecera — **no** `SUPABASE_ANON_KEY`, que la plataforma rellena con la anon
+   legacy apagada (§6.1). Falla cerrado. La llevan `execute-workflow` (solo la
+   rama de usuario), `resolve-approval` (solo la llamada del navegador),
+   `design-assistant`, las tres `admin-*` y `segundo-factor-admin`.
+   **Fuera, a propósito:** `cron-runner`, `vigilante-reloj`, `webhook-in` (no
+   hay persona), `request-password-reset` (pública) y `health-check` (no actúa
+   por nadie). ⚠️ **Una Edge Function nueva con la clave de servicio y un usuario
+   detrás lleva `exigirMfa`**, o rodea las otras tres capas de golpe.
+4. **Pantalla** — guía, no protege: alta con QR, código tras la contraseña,
+   cierre a las 6 h y comprobación **cada minuto y al volver a la ventana** de que
+   la sesión sigue viva (`App.tsx`). Sin eso, una sesión cerrada en la base
+   (cambio de clave, «Sesiones abiertas», el admin quitando el factor) seguiría
+   pintando la aplicación, pero vacía.
+
+⚠️ **Las 6 horas viven en DOS sitios**: el `interval '6 hours'` de
+`mfa_satisfecho()` y `CADUCIDAD_MFA_HORAS` de `src/core/mfa.ts`. Si cambias una,
+cambia la otra. Existen por el robo de sesión (AiTM): un `aal2` robado duraría
+lo que el refresh token.
+
+**Sesiones abiertas:** `mis_sesiones()` y `cerrar_sesiones()` (DEFINER, exigen
+`mfa_satisfecho()`, nunca cierran la actual ni las de otro). **Sin códigos de
+recuperación** (decisión deliberada): quien pierde el teléfono pide a un admin
+que le quite el factor — `segundo-factor-admin`, solo `admin` activo con su
+propio `aal2`, organización sacada del perfil del llamante, y se despliega
+**sin** `--no-verify-jwt`, como las otras `admin-*`. Al de un administrador de
+la plataforma solo lo quita otro (§6.10).
+
+### 6.10 Administrador de la plataforma — una marca en `app_metadata`
+
+Es **una cuenta**, no un rol: `app_metadata.admin_plataforma = true`
+(`20261027c`; hoy hersan_romero, perfil «Daniel Sanchez»). `app_metadata` no lo
+puede escribir el usuario —a diferencia de `user_metadata`—: solo la clave de
+servicio o SQL. Lo lee `es_admin_plataforma()`, y **la marca sin `aal2` no
+concede nada**.
+
+Qué gobierna: `politicas_seguridad.exigir_mfa` (§6.9). Y por eso **un admin de
+organización no puede tocarlo** (decisión de Hermes, 27/10/2026, cazado por él
+al probar: un admin le podía cambiar el rol y dejar sin dueño el interruptor):
+
+| Acción sobre un admin de plataforma | Quién la frena |
+|---|---|
+| Cambiarle `role` u `organization_id`, borrar su perfil | trigger `profiles_admin_plataforma_guard` (`20261027d`) |
+| Desactivarlo / reactivarlo | código de `admin-set-active` (va con la clave de servicio) |
+| Quitarle el segundo factor | código de `segundo-factor-admin` |
+| **Restablecerle la clave** | **nadie — permitido a propósito** |
+
+Solo pasa otro administrador de la plataforma con `aal2`. La comprobación vive en
+**cuatro sitios** —`es_admin_plataforma()`, el trigger (vía
+`es_perfil_admin_plataforma()`) y las dos funciones, que leen
+`app_metadata.admin_plataforma` cada una por su cuenta—: si cambias la marca,
+cambia los cuatro.
+
 ### 6.1 Llamadas internas: `x-cron-secret`, NUNCA comparar `Authorization`
 
 **El secreto de las Edge Functions está en el formato NUEVO.**
@@ -1057,6 +1153,49 @@ CREATE POLICY "tenant_isolation" ON nombre_tabla
 3. **Edge Functions:** Validar `organization_id` del JWT antes de ejecutar cualquier nodo
 4. **Credenciales de integraciones:** Almacenadas en `integrations.config_json` encriptado — NUNCA en el frontend
 5. **Audit trail:** Toda ejecución registrada en `execution_logs`
+
+### 7.1 Permisos que Supabase regala y hay que quitar a mano
+
+Medido el 27–28/10/2026 (`20261027`, `20261028d`):
+- **`TRUNCATE` a `authenticated`** en cada tabla nueva. La RLS no lo cubre.
+  Retirado de todas, y de los permisos por defecto de `postgres`.
+- **`anon` con permisos de tabla** en `public` (DML en 11, SELECT en 3).
+  Retirados, también de los permisos por defecto.
+- **`EXECUTE` a `PUBLIC` en cada función nueva** (defecto global de Postgres, no
+  se puede quitar de raíz) **y a `anon` por su nombre** (§6.4). Por eso **cada
+  función nueva lleva `REVOKE EXECUTE ... FROM PUBLIC, anon`**, y se comprueba con
+  `pg_proc.proacl` o llamándola como `anon`, nunca con
+  `has_function_privilege('public', …)`.
+
+### 7.2 La capa del navegador — CSP y captcha
+
+**CSP de barrera** en `public/_headers` (no en `netlify.toml`: el build vive en
+el panel de Netlify y un `[build]` lo sustituiría). En producción desde el
+28/10/2026, junto con `X-Frame-Options`, `nosniff`, `Referrer-Policy` y
+`Permissions-Policy`. **Algo que cargue de un dominio nuevo tiene que entrar en
+la CSP o el navegador lo bloquea**; Supabase va por nombre de proyecto, nunca
+`*.supabase.co`. Para depurar, renombrar la cabecera a
+`Content-Security-Policy-Report-Only`. Solo la pone Netlify: en `localhost` no
+hay CSP. Un rojo `sha256-f7e2Fz…` en consola es la extensión React DevTools.
+
+**Captcha Cloudflare Turnstile** (28/10/2026) en las tres entradas por
+contraseña: login y verificación de la clave actual al cambiarla (los valida
+GoTrue) y «¿Olvidaste tu contraseña?» (lo valida `request-password-reset`,
+porque `generateLink` **no pasa por el captcha de GoTrue**).
+- ⚠️ **La clave secreta vive en DOS sitios de Supabase**: *Auth → Attack
+  Protection → Captcha Secret* y el Edge Secret `TURNSTILE_SECRET_KEY`. Rotar =
+  cambiar los dos. RiskGuard y EE.FF. solo la tienen en el primero porque usan
+  `resetPasswordForEmail`.
+- ⚠️ **Las dos claves de Cloudflare empiezan por `0x4AAAAAAA`**: la del sitio
+  mide ~24 caracteres, la secreta ~35. La secreta en `VITE_TURNSTILE_SITE_KEY`
+  da HTTP 400 en el widget **y la publica** (bundle y URL): hay que rotarla.
+- ⚠️ **Sin `VITE_TURNSTILE_SITE_KEY` el widget no se pinta**, y con el
+  interruptor del panel encendido **nadie puede entrar**. Orden: código y
+  variable de Netlify primero, interruptor del panel después.
+- El enlace de recuperación, una vez pulsado, no lleva captcha: ya exige el
+  enlace de un solo uso y el código MFA.
+- Dos peticiones de recuperación seguidas **anulan el primer enlace**
+  (`otp_expired`); por eso el formulario se cierra tras enviar.
 
 ---
 
@@ -1472,6 +1611,8 @@ type ReportType =
 # Supabase — HermesAI Flow (propio)
 VITE_SUPABASE_URL=
 VITE_SUPABASE_ANON_KEY=
+# Clave del SITIO de Turnstile (pública, la corta) — §7.2
+VITE_TURNSTILE_SITE_KEY=
 
 # Resend (email)
 # ⚠️ Solo en Edge Functions — NUNCA en frontend
@@ -1481,6 +1622,10 @@ RESEND_API_KEY=
 # ⚠️ Solo en Edge Functions. Tiene que estar además en
 #    Authentication → URL Configuration → Redirect URLs, o Supabase la descarta.
 APP_URL=
+
+# Clave SECRETA de Turnstile (la larga) — §7.2
+# ⚠️ Solo en Edge Functions, y la MISMA en Auth → Attack Protection
+TURNSTILE_SECRET_KEY=
 
 # Anthropic (IA)
 # ⚠️ Solo en Edge Functions — NUNCA en frontend
@@ -1740,6 +1885,10 @@ Antes de dar por completado cualquier módulo:
 - [ ] Audit trail en `execution_logs`
 - [ ] Validación de JWT en cada Edge Function antes de ejecutar
 - [ ] Sin `console.log` con datos sensibles en producción
+- [ ] Tabla nueva: restrictiva `<tabla>_aal2`, salvo que la lea el login (§6.9)
+- [ ] Función SQL nueva: `REVOKE EXECUTE ... FROM PUBLIC, anon`; si es DEFINER, pregunta `mfa_satisfecho()` (§6.9, §7.1)
+- [ ] Edge Function nueva con clave de servicio y un usuario detrás: `exigirMfa` (§6.9)
+- [ ] Dominio nuevo cargado desde el navegador: añadido a la CSP de `public/_headers` (§7.2)
 
 ---
 

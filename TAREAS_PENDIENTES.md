@@ -56,9 +56,11 @@ En este orden, una cosa por mensaje:
    (`script-src 'self'`) cubre además cualquier hueco futuro. Fuera del navegador sigue
    anotado el riesgo de CLAUDE.md §8.3: datos de webhook que pasen por un nodo IA
    pueden volver como HTML en un correo.
-5. [ ] **CLAUDE.md**: §6.8 al día, sección nueva de MFA (aal2, 6 h, `exigir_mfa`,
+5. [x] **CLAUDE.md**: §6.8 al día, sección nueva de MFA (aal2, 6 h, `exigir_mfa`,
    sesiones) y la regla del admin de plataforma (`profiles_admin_plataforma_guard` +
    control en `admin-set-active`; restablecerle la clave sí se permite).
+   Hecho el 28/10/2026: §6.9 (MFA), §6.10 (admin de plataforma), §7.1 (permisos que
+   regala Supabase), §7.2 (CSP y captcha), §4, §11 y §14 al día.
 
 ---
 
