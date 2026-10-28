@@ -1,12 +1,31 @@
 # TAREAS_PENDIENTES.md — HermesAI Flow
 > Backlog activo del proyecto. Actualizar al inicio y fin de cada sesión.
 
-**Última actualización:** 31 Mayo 2026 — Fin de sesión
+**Última actualización:** 27 Octubre 2026 — Fin de sesión (ver «MAÑANA»)
 **Fase actual:** F1 Gobierno completado ✅ — Próximo: F2 (aprobaciones reales / human-in-the-loop)
 
 ---
 
-## 🔐 Blindaje de seguridad (/blindar-seguridad) — PLAN, pendiente del sí de Hermes (27/10/2026)
+## ▶️ MAÑANA (28/10/2026) — seguir el blindaje por aquí
+
+Estado al cerrar el 27/10: pasos 1–3 en producción y empujados (commit `34fd0dc`),
+más el administrador de plataforma protegido (`20261027d`, ensayo ROJA 4/10 → VERDE
+10/10, aplicada 10/10; `admin-set-active` v2 desplegada). Hermes lo probó en pantalla.
+
+En este orden, una cosa por mensaje:
+1. [ ] **`exigirMfa` en las Edge Functions con clave de servicio** (paso 5 de abajo),
+   empezando por `admin-set-active`. `_shared/salvaguardas.ts` ya existe.
+2. [ ] **`_aal2` piloto en `matriz_aprobacion`** (paso 4): ensayo ROJA/VERDE, Hermes
+   prueba en Gobierno (con código ve filas; solo con contraseña, vacío); luego el resto.
+3. [ ] **CSP** (paso 6): primero Report-Only, se prueba en Netlify (no en localhost).
+4. [ ] **Turnstile** bien hecho (paso 7) + revisión final de XSS y service worker.
+5. [ ] **CLAUDE.md**: §6.8 al día, sección nueva de MFA (aal2, 6 h, `exigir_mfa`,
+   sesiones) y la regla del admin de plataforma (`profiles_admin_plataforma_guard` +
+   control en `admin-set-active`; restablecerle la clave sí se permite).
+
+---
+
+## 🔐 Blindaje de seguridad (/blindar-seguridad) — en curso (27/10/2026)
 
 **Un solo entorno: solo PRODUCCIÓN** (`kbscaxcokxwdbnrltkup`), y Netlify despliega
 desde `main` ⇒ cada push es producción. Referencia: RiskGuard (no EE.FF.). Cada SQL
@@ -36,7 +55,7 @@ Orden (cada paso, aplicado solo, no le cambia nada a nadie o se deshace en un mi
    ✅ Aplicada 27/10/2026 con el sí de Hermes: ensayo ROJA 0/25 → VERDE 25/25, sin
    residuo; APLICADA 25/25 fuera de la transacción; `schema.sql` regenerado.
    Falta: poner `app_metadata.admin_plataforma=true` a Hermes (permiso aparte).
-3. [ ] **MFA en pantalla**: alta del factor, código tras la contraseña, cierre a las
+3. [x] **MFA en pantalla** ✅ 27/10/2026 (commit `34fd0dc`, probado por Hermes): alta del factor, código tras la contraseña, cierre a las
    6 h, comprobación de sesión viva cada minuto, panel de sesiones abiertas, quitar el
    factor de otro (admin). Hermes da de alta su factor primero.
 4. [ ] **02 — `_aal2` piloto** en `matriz_aprobacion` (2 filas, se ve en Gobierno);

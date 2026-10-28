@@ -24,6 +24,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { exigirMfa } from '../_shared/salvaguardas.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -68,6 +69,11 @@ serve(async (req) => {
         if (!callerProfile || callerProfile.role !== 'admin' || callerProfile.is_active !== true) {
             return json({ error: 'Solo un administrador puede activar o desactivar usuarios.' }, 403);
         }
+
+        // Y con su segundo factor hecho en esta sesión (28/10/2026): la clave de
+        // servicio se salta las políticas `_aal2`, así que lo pregunta la función.
+        const mfa = await exigirMfa(req, token);
+        if (!mfa.ok) return json({ error: mfa.error }, mfa.status);
 
         // 3. Validar la petición
         const { userId, active, confirmarSinReemplazo } = await req.json();
