@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict Swo9whad0y9LEW4hax0PQQEnTYwIrk5c7Pl9TlZsWeHwAZvT4Tcl1EUuObPwjuv
+-- \restrict KpCJeQhix764ptd9qOUDc9KioN1yh6CnOfWmDXLN2dR8seNe7WiKIsr5Oh7RzZO
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -2408,6 +2408,13 @@ CREATE POLICY "audit_insert" ON "public"."audit_log" FOR INSERT TO "authenticate
 ALTER TABLE "public"."audit_log" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: audit_log audit_log_aal2_lectura; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "audit_log_aal2_lectura" ON "public"."audit_log" AS RESTRICTIVE FOR SELECT TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: audit_log audit_read_org; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -2455,10 +2462,24 @@ CREATE POLICY "deleg_write" ON "public"."delegaciones" TO "authenticated" USING 
 ALTER TABLE "public"."delegaciones" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: delegaciones delegaciones_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "delegaciones_aal2" ON "public"."delegaciones" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: execution_logs; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
 ALTER TABLE "public"."execution_logs" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: execution_logs execution_logs_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "execution_logs_aal2" ON "public"."execution_logs" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
 
 --
 -- Name: execution_runs; Type: ROW SECURITY; Schema: public; Owner: postgres
@@ -2467,10 +2488,24 @@ ALTER TABLE "public"."execution_logs" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."execution_runs" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: execution_runs execution_runs_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "execution_runs_aal2" ON "public"."execution_runs" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: integrations; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
 ALTER TABLE "public"."integrations" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: integrations integrations_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "integrations_aal2" ON "public"."integrations" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
 
 --
 -- Name: integrations integrations_admin_manage; Type: POLICY; Schema: public; Owner: postgres
@@ -2555,6 +2590,13 @@ CREATE POLICY "org_read_own" ON "public"."organizations" FOR SELECT TO "authenti
 ALTER TABLE "public"."organizations" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: organizations organizations_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "organizations_aal2" ON "public"."organizations" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: politicas_seguridad; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
@@ -2622,6 +2664,13 @@ CREATE POLICY "runs_tenant_read" ON "public"."execution_runs" FOR SELECT TO "aut
 ALTER TABLE "public"."tareas_aprobacion" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: tareas_aprobacion tareas_aprobacion_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "tareas_aprobacion_aal2" ON "public"."tareas_aprobacion" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: tareas_aprobacion tareas_tenant_read; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -2635,6 +2684,13 @@ CREATE POLICY "tareas_tenant_read" ON "public"."tareas_aprobacion" FOR SELECT TO
 ALTER TABLE "public"."vigilante_reloj" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: vigilante_reloj vigilante_reloj_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "vigilante_reloj_aal2" ON "public"."vigilante_reloj" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: vigilante_reloj vigilante_reloj_read; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -2646,6 +2702,13 @@ CREATE POLICY "vigilante_reloj_read" ON "public"."vigilante_reloj" FOR SELECT TO
 --
 
 ALTER TABLE "public"."webhook_recepciones" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: webhook_recepciones webhook_recepciones_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "webhook_recepciones_aal2" ON "public"."webhook_recepciones" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
 
 --
 -- Name: workflow_webhooks webhooks_tenant_read; Type: POLICY; Schema: public; Owner: postgres
@@ -2668,10 +2731,24 @@ CREATE POLICY "wf_autorizaciones_tenant_read" ON "public"."workflow_autorizacion
 ALTER TABLE "public"."workflow_autorizaciones" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: workflow_autorizaciones workflow_autorizaciones_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "workflow_autorizaciones_aal2" ON "public"."workflow_autorizaciones" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: workflow_connections; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
 ALTER TABLE "public"."workflow_connections" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: workflow_connections workflow_connections_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "workflow_connections_aal2" ON "public"."workflow_connections" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
 
 --
 -- Name: workflow_nodes; Type: ROW SECURITY; Schema: public; Owner: postgres
@@ -2680,16 +2757,37 @@ ALTER TABLE "public"."workflow_connections" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."workflow_nodes" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: workflow_nodes workflow_nodes_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "workflow_nodes_aal2" ON "public"."workflow_nodes" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: workflow_webhooks; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
 ALTER TABLE "public"."workflow_webhooks" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: workflow_webhooks workflow_webhooks_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "workflow_webhooks_aal2" ON "public"."workflow_webhooks" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: workflows; Type: ROW SECURITY; Schema: public; Owner: postgres
 --
 
 ALTER TABLE "public"."workflows" ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: workflows workflows_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "workflows_aal2" ON "public"."workflows" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
 
 --
 -- Name: workflows workflows_admin_delete; Type: POLICY; Schema: public; Owner: postgres
@@ -3271,5 +3369,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict Swo9whad0y9LEW4hax0PQQEnTYwIrk5c7Pl9TlZsWeHwAZvT4Tcl1EUuObPwjuv
+-- \unrestrict KpCJeQhix764ptd9qOUDc9KioN1yh6CnOfWmDXLN2dR8seNe7WiKIsr5Oh7RzZO
 
