@@ -98,9 +98,28 @@ Orden (cada paso, aplicado solo, no le cambia nada a nadie o se deshace en un mi
    Fuera: `cron-runner`, `vigilante-reloj`, `webhook-in` (internas) y
    `request-password-reset` (pública).
 6. [x] **CSP** ✅ 28/10/2026 — ver arriba (en `public/_headers`, `1a55acb`).
-7. [ ] **CAPTCHA Turnstile** en login. ⚠️ El restablecimiento va por
+7. [x] **CAPTCHA Turnstile** ✅ 28/10/2026 (`10b524a`, `fd6da1e`; probado por Hermes
+   en Netlify: login, recuperación por enlace y cambio de clave). El restablecimiento va por
    `request-password-reset` (`generateLink`), que **no pasa por el CAPTCHA de GoTrue**:
-   la función tiene que verificar el token ella misma (secreto en Edge Secrets).
+   la función verifica el token ella misma. **La clave secreta vive en DOS sitios de
+   Supabase**: Auth → Attack Protection → «Captcha Secret» y Edge Secrets
+   `TURNSTILE_SECRET_KEY` (RiskGuard y EE.FF. solo la tienen en el primero porque usan
+   `resetPasswordForEmail`). Si se rota, se cambian los dos.
+   Tropiezos que costaron una vuelta cada uno:
+   - **Las dos claves de Cloudflare empiezan por `0x4AAAAAAA`.** En `.env.local` se puso
+     la SECRETA en `VITE_TURNSTILE_SITE_KEY` ⇒ el widget da **HTTP 400** y no se pinta.
+     Se distinguen por la longitud: la de sitio es corta (~24 caracteres), la secreta
+     larga (~35). Una clave en una variable `VITE_` acaba en el bundle y en la URL de
+     Cloudflare: si es la secreta, está expuesta y hay que rotarla.
+   - **Encender el interruptor del panel antes de publicar el código bloquea todo login.**
+   - **Dos correos de recuperación seguidos anulan el primer enlace** (`otp_expired`):
+     el captcha se resolvía solo y reactivaba el botón. Desde `fd6da1e` el formulario se
+     cierra tras enviar.
+   - El widget recién configurado (Netlify o `localhost` nuevo) puede dar error unos
+     minutos hasta que Cloudflare propaga el hostname.
+   - [x] **Clave secreta rotada** ✅ 28/10/2026: estuvo en `VITE_TURNSTILE_SITE_KEY` de
+     `.env.local` y salió en la URL de la petición y en el chat. Rotada en Cloudflare y
+     cambiada en los dos sitios de Supabase; Hermes probó login y recuperación después.
 
 **Se salta:** restablecer contraseña (ya hecho y más estricto, §6.4), Storage (no hay
 buckets), service worker (nunca hubo), XSS en `src/` (no hay HTML crudo). Queda anotado
