@@ -13,8 +13,13 @@ más el administrador de plataforma protegido (`20261027d`, ensayo ROJA 4/10 →
 10/10, aplicada 10/10; `admin-set-active` v2 desplegada). Hermes lo probó en pantalla.
 
 En este orden, una cosa por mensaje:
-1. [ ] **`exigirMfa` en las Edge Functions con clave de servicio** (paso 5 de abajo),
-   empezando por `admin-set-active`. `_shared/salvaguardas.ts` ya existe.
+1. [x] **`exigirMfa` en las Edge Functions con clave de servicio** (paso 5 de abajo).
+   ✅ 28/10: las 3 `admin-*` (`e680339`), `resolve-approval` + `design-assistant`
+   (`664f637`, la pantalla manda `apikey` en el fetch crudo) y `execute-workflow`
+   solo en la rama de usuario (`0f0c1d9`). Todas sondeadas; Hermes probó Gobierno,
+   aprobar y el asistente. El reloj siguió 10/10 y el BCV + Cola AML corrieron solos
+   a las 11:00 UTC con la versión nueva. `health-check` se queda fuera a propósito
+   (no actúa por un usuario).
 2. [ ] **`_aal2` piloto en `matriz_aprobacion`** (paso 4): ensayo ROJA/VERDE, Hermes
    prueba en Gobierno (con código ve filas; solo con contraseña, vacío); luego el resto.
 3. [ ] **CSP** (paso 6): primero Report-Only, se prueba en Netlify (no en localhost).
