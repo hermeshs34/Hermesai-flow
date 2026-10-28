@@ -20,8 +20,12 @@ En este orden, una cosa por mensaje:
    aprobar y el asistente. El reloj siguió 10/10 y el BCV + Cola AML corrieron solos
    a las 11:00 UTC con la versión nueva. `health-check` se queda fuera a propósito
    (no actúa por un usuario).
-2. [ ] **`_aal2` piloto en `matriz_aprobacion`** (paso 4): ensayo ROJA/VERDE, Hermes
-   prueba en Gobierno (con código ve filas; solo con contraseña, vacío); luego el resto.
+2. [x] **`_aal2` piloto en `matriz_aprobacion`** (paso 4) ✅ 28/10/2026, commit
+   `ae5f1c7`: ensayo ROJA 5/11 → VERDE 11/11, sin residuo; aplicada con el sí de
+   Hermes; APLICADA 11/11 fuera de la transacción; Hermes la probó en Gobierno →
+   Matriz (ve y guarda). Falta: el resto de tablas con lista explícita.
+   Aparte, sin mezclar: `anon` tiene DML concedido sobre `matriz_aprobacion` (la RLS
+   no le deja pasar, pero el GRANT sobra — otra migración).
 3. [ ] **CSP** (paso 6): primero Report-Only, se prueba en Netlify (no en localhost).
 4. [ ] **Turnstile** bien hecho (paso 7) + revisión final de XSS y service worker.
 5. [ ] **CLAUDE.md**: §6.8 al día, sección nueva de MFA (aal2, 6 h, `exigir_mfa`,
@@ -63,8 +67,8 @@ Orden (cada paso, aplicado solo, no le cambia nada a nadie o se deshace en un mi
 3. [x] **MFA en pantalla** ✅ 27/10/2026 (commit `34fd0dc`, probado por Hermes): alta del factor, código tras la contraseña, cierre a las
    6 h, comprobación de sesión viva cada minuto, panel de sesiones abiertas, quitar el
    factor de otro (admin). Hermes da de alta su factor primero.
-4. [ ] **02 — `_aal2` piloto** en `matriz_aprobacion` (2 filas, se ve en Gobierno);
-   luego el resto con lista explícita. **Sin `_aal2`**: `profiles` (lo lee el login),
+4. [ ] **02 — `_aal2` piloto** en `matriz_aprobacion` ✅ 28/10/2026 (`ae5f1c7`);
+   falta el resto con lista explícita. **Sin `_aal2`**: `profiles` (lo lee el login),
    `audit_log` (`App.tsx` inserta el `login`) y `organizations` (revisar el arranque).
 5. [ ] **`exigirMfa` en Edge Functions** con clave de servicio que actúan por el
    usuario: `execute-workflow` (rama de usuario), `resolve-approval`, `admin-create-user`,
