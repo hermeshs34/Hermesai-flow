@@ -6,6 +6,7 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { enviarEmail as enviar, canalEmail, escaparHtml, plantillaCorreo } from '../_shared/email.ts';
 import { delegacionesVigentes } from '../_shared/delegaciones.ts';
+import { exigirMfa } from '../_shared/salvaguardas.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -86,6 +87,17 @@ serve(async (req) => {
                 );
             }
             approverId = userData.user.id;
+
+            // Con el segundo factor hecho en esta sesión (28/10/2026): la clave
+            // de servicio se salta las políticas `_aal2`. Solo en la rama de
+            // usuario; la interna no la lanza una persona.
+            const mfa = await exigirMfa(req, token);
+            if (!mfa.ok) {
+                return new Response(
+                    JSON.stringify({ error: mfa.error }),
+                    { status: mfa.status, headers: { ...CORS, 'Content-Type': 'application/json' } }
+                );
+            }
         }
 
         // 1. Cargar la tarea

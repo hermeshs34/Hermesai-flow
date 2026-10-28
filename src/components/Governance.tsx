@@ -481,6 +481,9 @@ export function Governance({ currentUser }: GovernanceProps) {
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${accessToken}`,
+                    // resolve-approval pregunta `mfa_satisfecho()` con esta
+                    // clave pública y el JWT de quien aprueba (exigirMfa).
+                    'apikey': import.meta.env.VITE_SUPABASE_ANON_KEY,
                 },
                 body: JSON.stringify({
                     tareaId:    tarea.id,

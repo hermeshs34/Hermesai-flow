@@ -4,6 +4,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { exigirMfa } from '../_shared/salvaguardas.ts';
 
 const SUPABASE_URL     = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -39,6 +40,10 @@ serve(async (req) => {
             .maybeSingle();
         if (perfilErr) return json({ error: `No se pudo comprobar tu perfil: ${perfilErr.message}` }, 500);
         if (!perfil?.is_active) return json({ error: 'Tu usuario no está activo.' }, 403);
+
+        // Y con el segundo factor hecho en esta sesión (28/10/2026).
+        const mfa = await exigirMfa(req, token);
+        if (!mfa.ok) return json({ error: mfa.error }, mfa.status);
 
         const ANTHROPIC_KEY = Deno.env.get('ANTHROPIC_API_KEY');
         if (!ANTHROPIC_KEY) {
