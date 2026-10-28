@@ -37,16 +37,21 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
     const [correoOlvido, setCorreoOlvido] = useState('');
     const [enviando,     setEnviando]     = useState(false);
     const [avisoOlvido,  setAvisoOlvido]  = useState('');
+    // Tras un envío correcto el formulario se cierra: cada enlace nuevo anula
+    // el anterior, y con el captcha resolviéndose solo en un segundo, un
+    // segundo clic dejaba muerto el enlace del primer correo (28/10/2026).
+    const [enviado,      setEnviado]      = useState(false);
 
     const pedirEnlace = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (enviando || !correoOlvido.trim() || faltaCaptcha) return;
+        if (enviando || enviado || !correoOlvido.trim() || faltaCaptcha) return;
         setEnviando(true);
         try {
             // La función responde lo mismo exista o no la cuenta, y ese mensaje
             // se enseña tal cual: distinguir aquí convertiría el login en un
             // comprobador de «¿trabaja fulano aquí?» abierto a internet.
             setAvisoOlvido(await authService.requestPasswordReset(correoOlvido, captcha ?? undefined));
+            setEnviado(true);
         } catch (err) {
             setAvisoOlvido((err as Error)?.message ?? 'No se pudo enviar el enlace. Inténtalo de nuevo en unos minutos.');
         } finally {
@@ -58,6 +63,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
     const abrirOlvido = () => {
         setCorreoOlvido(email);   // si ya escribió el correo arriba, no lo repite
         setAvisoOlvido('');
+        setEnviado(false);
         setError('');
         setModoOlvido(true);
     };
@@ -196,7 +202,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
                                 </label>
                                 <input
                                     type="email" value={correoOlvido} onChange={e => setCorreoOlvido(e.target.value)}
-                                    placeholder="usuario@empresa.com" disabled={enviando} autoFocus
+                                    placeholder="usuario@empresa.com" disabled={enviando || enviado} autoFocus
                                     style={{
                                         width: '100%', padding: '0.875rem 1rem', borderRadius: '10px',
                                         border: '1px solid rgba(255,255,255,0.08)', fontSize: '0.9rem',
@@ -206,7 +212,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
                                 />
                             </div>
 
-                            {widgetCaptcha}
+                            {!enviado && widgetCaptcha}
 
                             {avisoOlvido && (
                                 <div style={{
@@ -218,7 +224,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
                                 </div>
                             )}
 
-                            <button
+                            {!enviado && <button
                                 type="submit" disabled={enviando || !correoOlvido.trim() || faltaCaptcha}
                                 style={{
                                     width: '100%', padding: '0.9rem', borderRadius: '10px', border: 'none',
@@ -232,7 +238,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin, mensajeInicial })
                             >
                                 {enviando ? <Loader2 size={18} className="animate-spin" /> : <Mail size={18} />}
                                 {enviando ? 'Enviando...' : 'Enviarme el enlace'}
-                            </button>
+                            </button>}
 
                             <button
                                 type="button" onClick={() => setModoOlvido(false)}
