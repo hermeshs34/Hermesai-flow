@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict 1Yg7ufWhIcswGeS0YcSjlxfkQ2JZ3wZ09bGGLZLCCYFr281nUxCnygMoS3EngAD
+-- \restrict Swo9whad0y9LEW4hax0PQQEnTYwIrk5c7Pl9TlZsWeHwAZvT4Tcl1EUuObPwjuv
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -2507,6 +2507,13 @@ CREATE POLICY "matriz_admin_write" ON "public"."matriz_aprobacion" TO "authentic
 ALTER TABLE "public"."matriz_aprobacion" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: matriz_aprobacion matriz_aprobacion_aal2; Type: POLICY; Schema: public; Owner: postgres
+--
+
+CREATE POLICY "matriz_aprobacion_aal2" ON "public"."matriz_aprobacion" AS RESTRICTIVE TO "authenticated" USING (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho")) WITH CHECK (( SELECT "public"."mfa_satisfecho"() AS "mfa_satisfecho"));
+
+
+--
 -- Name: matriz_aprobacion matriz_read_org; Type: POLICY; Schema: public; Owner: postgres
 --
 
@@ -3264,5 +3271,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict 1Yg7ufWhIcswGeS0YcSjlxfkQ2JZ3wZ09bGGLZLCCYFr281nUxCnygMoS3EngAD
+-- \unrestrict Swo9whad0y9LEW4hax0PQQEnTYwIrk5c7Pl9TlZsWeHwAZvT4Tcl1EUuObPwjuv
 
