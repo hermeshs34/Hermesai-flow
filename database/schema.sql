@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict KpCJeQhix764ptd9qOUDc9KioN1yh6CnOfWmDXLN2dR8seNe7WiKIsr5Oh7RzZO
+-- \restrict NC3yb8IXRxkx0ggEHsdoXowj2ptPzg9iBOXHUVYNSIs613TEOSG3faRW7k33jZV
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -99,6 +99,13 @@ BEGIN
     IF v_rol IS NULL OR v_activo IS NOT TRUE THEN
         RAISE EXCEPTION 'Tu usuario no está activo.';
     END IF;
+
+    -- >>> 20261028c: segundo factor. DEFINER se salta la RLS, incluidas las
+    --     restrictivas `_aal2`: la comprobación tiene que estar escrita aquí.
+    IF NOT public.mfa_satisfecho() THEN
+        RAISE EXCEPTION 'Falta el segundo factor o tu sesión caducó. Cierra sesión y vuelve a entrar.';
+    END IF;
+    -- <<< 20261028c
 
     SELECT w.organization_id, w.name INTO v_wf_org, v_nombre
       FROM workflows w WHERE w.id = p_workflow_id;
@@ -269,6 +276,13 @@ BEGIN
     IF v_rol IS NULL OR v_activo IS NOT TRUE THEN
         RAISE EXCEPTION 'Tu usuario no está activo.';
     END IF;
+
+    -- >>> 20261028c: segundo factor. DEFINER se salta la RLS, incluidas las
+    --     restrictivas `_aal2`: la comprobación tiene que estar escrita aquí.
+    IF NOT public.mfa_satisfecho() THEN
+        RAISE EXCEPTION 'Falta el segundo factor o tu sesión caducó. Cierra sesión y vuelve a entrar.';
+    END IF;
+    -- <<< 20261028c
 
     SELECT w.organization_id, w.name INTO v_wf_org, v_nombre
       FROM workflows w WHERE w.id = p_workflow_id;
@@ -912,6 +926,13 @@ BEGIN
     IF v_rol IS NULL OR v_activo IS NOT TRUE THEN
         RAISE EXCEPTION 'Tu usuario no está activo.';
     END IF;
+
+    -- >>> 20261028c: segundo factor. DEFINER se salta la RLS, incluidas las
+    --     restrictivas `_aal2`: la comprobación tiene que estar escrita aquí.
+    IF NOT public.mfa_satisfecho() THEN
+        RAISE EXCEPTION 'Falta el segundo factor o tu sesión caducó. Cierra sesión y vuelve a entrar.';
+    END IF;
+    -- <<< 20261028c
 
     SELECT w.estado_definicion, w.organization_id, w.name
       INTO v_estado, v_wf_org, v_nombre
@@ -3369,5 +3390,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict KpCJeQhix764ptd9qOUDc9KioN1yh6CnOfWmDXLN2dR8seNe7WiKIsr5Oh7RzZO
+-- \unrestrict NC3yb8IXRxkx0ggEHsdoXowj2ptPzg9iBOXHUVYNSIs613TEOSG3faRW7k33jZV
 
