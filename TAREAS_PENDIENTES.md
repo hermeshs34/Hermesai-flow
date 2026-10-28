@@ -43,7 +43,10 @@ En este orden, una cosa por mensaje:
    Hermes lo probó en la app. `schema.sql` regenerado (`aa585fa`). Queda, a
    propósito: una función nueva nace con EXECUTE para `PUBLIC` (defecto global
    de Postgres) ⇒ cada una sigue llevando su `REVOKE ... FROM PUBLIC, anon`.
-3. [ ] **CSP** (paso 6): primero Report-Only, se prueba en Netlify (no en localhost).
+3. [x] **CSP** (paso 6) ✅ 28/10/2026: `public/_headers` (no `netlify.toml`: el build
+   vive en el panel). Report-Only `e3783c4`, recorrida por Hermes en Netlify sin avisos;
+   barrera `1a55acb`, recorrida otra vez sin fallos. Añade también X-Frame-Options,
+   nosniff, Referrer-Policy y Permissions-Policy (antes el sitio no enviaba ninguna).
 4. [ ] **Turnstile** bien hecho (paso 7) + revisión final de XSS y service worker.
 5. [ ] **CLAUDE.md**: §6.8 al día, sección nueva de MFA (aal2, 6 h, `exigir_mfa`,
    sesiones) y la regla del admin de plataforma (`profiles_admin_plataforma_guard` +
@@ -94,7 +97,7 @@ Orden (cada paso, aplicado solo, no le cambia nada a nadie o se deshace en un mi
    `admin-reset-password`, `admin-set-active`, `design-assistant`, `health-check`.
    Fuera: `cron-runner`, `vigilante-reloj`, `webhook-in` (internas) y
    `request-password-reset` (pública).
-6. [ ] **CSP**: `netlify.toml` nuevo, solo `[[headers]]`, primero Report-Only → barrera.
+6. [x] **CSP** ✅ 28/10/2026 — ver arriba (en `public/_headers`, `1a55acb`).
 7. [ ] **CAPTCHA Turnstile** en login. ⚠️ El restablecimiento va por
    `request-password-reset` (`generateLink`), que **no pasa por el CAPTCHA de GoTrue**:
    la función tiene que verificar el token ella misma (secreto en Edge Secrets).
