@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
--- \restrict NC3yb8IXRxkx0ggEHsdoXowj2ptPzg9iBOXHUVYNSIs613TEOSG3faRW7k33jZV
+-- \restrict zhXYRSCziMfaOGuYfmXwsohxmF30CbXXmhpGPhna1HeuLrJVZCs6iGHvsFkkyCS
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -3002,7 +3002,7 @@ GRANT ALL ON FUNCTION "public"."salud_cron"() TO "service_role";
 -- Name: FUNCTION "set_updated_at"(); Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "anon";
+REVOKE ALL ON FUNCTION "public"."set_updated_at"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "service_role";
 
@@ -3056,7 +3056,6 @@ GRANT ALL ON FUNCTION "public"."workflows_estado_guard"() TO "service_role";
 -- Name: TABLE "audit_log"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."audit_log" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."audit_log" TO "authenticated";
 GRANT ALL ON TABLE "public"."audit_log" TO "service_role";
 
@@ -3065,7 +3064,6 @@ GRANT ALL ON TABLE "public"."audit_log" TO "service_role";
 -- Name: TABLE "delegaciones"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."delegaciones" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."delegaciones" TO "authenticated";
 GRANT ALL ON TABLE "public"."delegaciones" TO "service_role";
 
@@ -3074,7 +3072,6 @@ GRANT ALL ON TABLE "public"."delegaciones" TO "service_role";
 -- Name: TABLE "execution_logs"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."execution_logs" TO "anon";
 GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."execution_logs" TO "authenticated";
 GRANT ALL ON TABLE "public"."execution_logs" TO "service_role";
 
@@ -3083,7 +3080,6 @@ GRANT ALL ON TABLE "public"."execution_logs" TO "service_role";
 -- Name: TABLE "execution_runs"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."execution_runs" TO "anon";
 GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."execution_runs" TO "authenticated";
 GRANT ALL ON TABLE "public"."execution_runs" TO "service_role";
 
@@ -3099,7 +3095,6 @@ GRANT UPDATE("status") ON TABLE "public"."execution_runs" TO "authenticated";
 -- Name: TABLE "integrations"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."integrations" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."integrations" TO "authenticated";
 GRANT ALL ON TABLE "public"."integrations" TO "service_role";
 
@@ -3108,7 +3103,6 @@ GRANT ALL ON TABLE "public"."integrations" TO "service_role";
 -- Name: TABLE "matriz_aprobacion"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."matriz_aprobacion" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."matriz_aprobacion" TO "authenticated";
 GRANT ALL ON TABLE "public"."matriz_aprobacion" TO "service_role";
 
@@ -3117,7 +3111,6 @@ GRANT ALL ON TABLE "public"."matriz_aprobacion" TO "service_role";
 -- Name: TABLE "organizations"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."organizations" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."organizations" TO "authenticated";
 GRANT ALL ON TABLE "public"."organizations" TO "service_role";
 
@@ -3141,7 +3134,6 @@ GRANT UPDATE("exigir_mfa") ON TABLE "public"."politicas_seguridad" TO "authentic
 -- Name: TABLE "profiles"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."profiles" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."profiles" TO "authenticated";
 GRANT ALL ON TABLE "public"."profiles" TO "service_role";
 
@@ -3150,7 +3142,6 @@ GRANT ALL ON TABLE "public"."profiles" TO "service_role";
 -- Name: TABLE "tareas_aprobacion"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."tareas_aprobacion" TO "anon";
 GRANT SELECT,REFERENCES,TRIGGER,MAINTAIN ON TABLE "public"."tareas_aprobacion" TO "authenticated";
 GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "service_role";
 
@@ -3159,7 +3150,6 @@ GRANT ALL ON TABLE "public"."tareas_aprobacion" TO "service_role";
 -- Name: TABLE "vigilante_reloj"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."vigilante_reloj" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."vigilante_reloj" TO "authenticated";
 GRANT ALL ON TABLE "public"."vigilante_reloj" TO "service_role";
 
@@ -3238,7 +3228,6 @@ GRANT SELECT("execution_run_id") ON TABLE "public"."webhook_recepciones" TO "aut
 -- Name: TABLE "workflow_autorizaciones"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_autorizaciones" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_autorizaciones" TO "authenticated";
 GRANT ALL ON TABLE "public"."workflow_autorizaciones" TO "service_role";
 
@@ -3247,7 +3236,6 @@ GRANT ALL ON TABLE "public"."workflow_autorizaciones" TO "service_role";
 -- Name: TABLE "workflow_connections"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_connections" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_connections" TO "authenticated";
 GRANT ALL ON TABLE "public"."workflow_connections" TO "service_role";
 
@@ -3256,7 +3244,6 @@ GRANT ALL ON TABLE "public"."workflow_connections" TO "service_role";
 -- Name: TABLE "workflow_nodes"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_nodes" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflow_nodes" TO "authenticated";
 GRANT ALL ON TABLE "public"."workflow_nodes" TO "service_role";
 
@@ -3321,7 +3308,6 @@ GRANT SELECT("ultimo_aviso_fallo_at") ON TABLE "public"."workflow_webhooks" TO "
 -- Name: TABLE "workflows"; Type: ACL; Schema: public; Owner: postgres
 --
 
-GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflows" TO "anon";
 GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLE "public"."workflows" TO "authenticated";
 GRANT ALL ON TABLE "public"."workflows" TO "service_role";
 
@@ -3331,7 +3317,6 @@ GRANT ALL ON TABLE "public"."workflows" TO "service_role";
 --
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "service_role";
 
@@ -3351,7 +3336,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQ
 --
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "service_role";
 
@@ -3371,7 +3355,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUN
 --
 
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLES TO "anon";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT SELECT,INSERT,REFERENCES,DELETE,TRIGGER,MAINTAIN,UPDATE ON TABLES TO "authenticated";
 ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";
 
@@ -3390,5 +3373,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TAB
 -- PostgreSQL database dump complete
 --
 
--- \unrestrict NC3yb8IXRxkx0ggEHsdoXowj2ptPzg9iBOXHUVYNSIs613TEOSG3faRW7k33jZV
+-- \unrestrict zhXYRSCziMfaOGuYfmXwsohxmF30CbXXmhpGPhna1HeuLrJVZCs6iGHvsFkkyCS
 
