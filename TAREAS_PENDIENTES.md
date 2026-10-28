@@ -31,9 +31,11 @@ En este orden, una cosa por mensaje:
    `public`; sin ella solo `profiles` y `politicas_seguridad` (las lee el login);
    `audit_log` solo en lectura (la traza `login` se escribe en aal1).
    `schema.sql` regenerado (`842e289`).
-   **Siguiente, otra migración:** tres RPC `SECURITY DEFINER` actúan por el usuario
-   sin preguntar el segundo factor — `transicionar_flujo`, `generar_secreto_webhook`
-   y `configurar_webhook_url`.
+   ✅ **Las tres RPC `SECURITY DEFINER`** 28/10/2026, commit `1dd1191`
+   (`20261028c_mfa_en_rpc_definer.sql`): `transicionar_flujo`,
+   `generar_secreto_webhook` y `configurar_webhook_url` preguntan
+   `mfa_satisfecho()`. Ensayo ROJA 3/8 → VERDE 8/8, sin residuo; APLICADA 8/8;
+   Hermes lo probó en la app. `schema.sql` regenerado (`cf93cc8`).
    Aparte, sin mezclar: `anon` tiene DML concedido sobre `matriz_aprobacion` (la RLS
    no le deja pasar, pero el GRANT sobra — otra migración).
 3. [ ] **CSP** (paso 6): primero Report-Only, se prueba en Netlify (no en localhost).
@@ -81,7 +83,7 @@ Orden (cada paso, aplicado solo, no le cambia nada a nadie o se deshace en un mi
    resto de tablas (`9184161`). **Sin `_aal2`**: `profiles` y `politicas_seguridad`
    (las lee el login); `audit_log` solo para lectura (`App.tsx` inserta el `login`).
    `organizations` sí la lleva: solo la leen Dashboard y Settings, tras el código.
-   Falta: el segundo factor dentro de las 3 RPC DEFINER (ver «MAÑANA», punto 2).
+   Y las 3 RPC DEFINER piden el segundo factor (`1dd1191`, 28/10/2026).
 5. [ ] **`exigirMfa` en Edge Functions** con clave de servicio que actúan por el
    usuario: `execute-workflow` (rama de usuario), `resolve-approval`, `admin-create-user`,
    `admin-reset-password`, `admin-set-active`, `design-assistant`, `health-check`.
